@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Interaction, Message } from 'discord.js';
-import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
+import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed, startCountdown } from './modules/timerManager';
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -59,7 +59,9 @@ client.on('messageCreate', async (msg: Message) => {
   });
 
   const embed = makeTimerSetEmbed(at);
-  await msg.reply({ embeds: [embed] });
+  const sent = await msg.reply({ embeds: [embed] });
+  at.messageId = sent.id;
+  await startCountdown(client, at);
 });
 
 client.login(token);
