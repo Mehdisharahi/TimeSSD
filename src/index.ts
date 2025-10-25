@@ -46,7 +46,7 @@ client.on('messageCreate', async (msg: Message) => {
   const reason = rest.join(' ').trim() || null;
   const durationMs = parseDuration(first);
   if (!durationMs || durationMs < 1000) {
-    await msg.reply({ content: 'مدت زمان نامعتبر. نمونه: 10m یا 2h یا 60 (ثانیه)' });
+    await msg.reply({ content: 'مدت زمان نامعتبر. نمونه: 10m یا 2h یا 1d یا فقط عدد (ثانیه): 45' });
     return;
   }
 
