@@ -1,14 +1,4 @@
-import {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ChatInputCommandInteraction,
-  Client,
-  EmbedBuilder,
-  GuildTextBasedChannel,
-  SlashCommandBuilder,
-  userMention,
-} from 'discord.js';
+import { ChatInputCommandInteraction, Client, EmbedBuilder, GuildTextBasedChannel, SlashCommandBuilder, userMention } from 'discord.js';
 import ms from 'ms';
 
 export const timerCommand = new SlashCommandBuilder()
@@ -22,22 +12,30 @@ export const timerCommand = new SlashCommandBuilder()
         opt
           .setName('duration')
           .setDescription('Duration (e.g., 10m, 2h, 1d) or pure number as seconds (e.g., 45)')
-          .setRequired(true),
+          .setRequired(true)
       )
       .addStringOption((opt: import('discord.js').SlashCommandStringOption) =>
-        opt.setName('reason').setDescription('Optional reason for the timer').setRequired(false),
-      ),
+        opt
+          .setName('reason')
+          .setDescription('Optional reason for the timer')
+          .setRequired(false)
+      )
   )
   .addSubcommand((sub: import('discord.js').SlashCommandSubcommandBuilder) =>
-    sub.setName('list').setDescription('List your active timers in this server'),
+    sub
+      .setName('list')
+      .setDescription('List your active timers in this server')
   )
   .addSubcommand((sub: import('discord.js').SlashCommandSubcommandBuilder) =>
     sub
       .setName('cancel')
       .setDescription('Cancel a timer by its ID (from /timer list)')
       .addStringOption((opt: import('discord.js').SlashCommandStringOption) =>
-        opt.setName('id').setDescription('Timer ID to cancel').setRequired(true),
-      ),
+        opt
+          .setName('id')
+          .setDescription('Timer ID to cancel')
+          .setRequired(true)
+      )
   );
 
 export type ActiveTimer = {
@@ -47,31 +45,23 @@ export type ActiveTimer = {
   channelId: string;
   reason?: string | null;
   endsAt: number; // epoch ms
-  // Visuals
-  messageId?: string;
-  totalMs?: number;
-  lastPaintSec?: number; // برای جلوگیری از ادیت‌های بیهوده
+  timeout: NodeJS.Timeout;
 };
 
 export class TimerManager {
   private client: Client;
   // Map guildId -> Map timerId -> ActiveTimer
   private timers: Map<string, Map<string, ActiveTimer>> = new Map();
-  private tickHandle: NodeJS.Timeout;
 
   constructor(client: Client) {
     this.client = client;
-    // حلقه تکی برای همه تایمرها (هر ۱ ثانیه)
-    this.tickHandle = setInterval(() => {
-      this.tick().catch(() => {});
-    }, 1000);
   }
 
   public list(guildId: string, userId?: string): ActiveTimer[] {
     const g = this.timers.get(guildId);
     if (!g) return [];
     const values = Array.from(g.values());
-    return userId ? values.filter((t) => t.userId === userId) : values;
+    return userId ? values.filter(t => t.userId === userId) : values;
   }
 
   public findById(guildId: string, id: string): ActiveTimer | undefined {
@@ -84,20 +74,34 @@ export class TimerManager {
     if (!g) return false;
     const t = g.get(id);
     if (!t) return false;
+    clearTimeout(t.timeout);
     g.delete(id);
     if (g.size === 0) this.timers.delete(guildId);
     return true;
   }
 
-  public setTimer(opts: {
-    guildId: string;
-    channelId: string;
-    userId: string;
-    durationMs: number;
-    reason?: string | null;
-  }): ActiveTimer {
+  public setTimer(opts: { guildId: string; channelId: string; userId: string; durationMs: number; reason?: string | null; }): ActiveTimer {
     const id = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
     const endsAt = Date.now() + opts.durationMs;
+
+    const timeout = setTimeout(async () => {
+      try {
+        const channel = await this.client.channels.fetch(opts.channelId);
+        if (channel && channel.isTextBased()) {
+          const c = channel as GuildTextBasedChannel;
+          const mention = userMention(opts.userId);
+          const reasonText = opts.reason ? `Reason: ${opts.reason}` : '';
+          await c.send(`⏰ ${mention} زمان تموم شد! ${reasonText}`.trim());
+        }
+      } catch {}
+      finally {
+        const g = this.timers.get(opts.guildId);
+        if (g) {
+          g.delete(id);
+          if (g.size === 0) this.timers.delete(opts.guildId);
+        }
+      }
+    }, opts.durationMs);
 
     const at: ActiveTimer = {
       id,
@@ -106,83 +110,16 @@ export class TimerManager {
       channelId: opts.channelId,
       reason: opts.reason ?? null,
       endsAt,
-      totalMs: opts.durationMs,
-      lastPaintSec: undefined,
+      timeout,
     };
 
     if (!this.timers.has(opts.guildId)) this.timers.set(opts.guildId, new Map());
     this.timers.get(opts.guildId)!.set(id, at);
     return at;
   }
-
-  public extend(guildId: string, id: string, deltaMs: number): ActiveTimer | null {
-    if (deltaMs <= 0) return null;
-    const g = this.timers.get(guildId);
-    if (!g) return null;
-    const t = g.get(id);
-    if (!t) return null;
-    t.endsAt += deltaMs;
-    t.totalMs = (t.totalMs ?? 0) + deltaMs;
-    t.lastPaintSec = undefined; // فورس رندر فریم بعدی
-    return t;
-  }
-
-  private async tick() {
-    const now = Date.now();
-    for (const [guildId, gmap] of this.timers) {
-      for (const [id, t] of gmap) {
-        const remainingMs = Math.max(t.endsAt - now, 0);
-        const remainingSec = Math.ceil(remainingMs / 1000);
-
-        // پایان تایمر
-        if (remainingMs <= 0) {
-          try {
-            const channel = await this.client.channels.fetch(t.channelId);
-            if (channel && channel.isTextBased()) {
-              const c = channel as GuildTextBasedChannel;
-              const mention = userMention(t.userId);
-              const reasonText = t.reason ? `Reason: ${t.reason}` : '';
-              await c.send(`⏰ ${mention} زمان تموم شد! ${reasonText}`.trim());
-              if (t.messageId) {
-                const m = await c.messages.fetch(t.messageId).catch(() => null);
-                if (m) await m.edit({ embeds: [buildFinishedEmbed(t)], components: [] });
-              }
-            }
-          } catch {}
-          // حذف تایمر
-          gmap.delete(id);
-          continue;
-        }
-
-        // آپدیت ویژوال فقط زمانی که ثانیه عوض شده
-        if (t.messageId && t.lastPaintSec !== remainingSec) {
-          t.lastPaintSec = remainingSec;
-          try {
-            const channel = await this.client.channels.fetch(t.channelId);
-            if (channel && channel.isTextBased()) {
-              const c = channel as GuildTextBasedChannel;
-              const m = await c.messages.fetch(t.messageId).catch(() => null);
-              if (m) {
-                await m.edit({
-                  embeds: [buildCountdownEmbed(t)],
-                  components: [buildAddTimeRow(t.id)],
-                });
-              }
-            }
-          } catch {
-            // اگر ادیت خطا داد، صرفاً رها کن تا تیک بعدی دوباره تلاش کند
-          }
-        }
-      }
-      if (gmap.size === 0) this.timers.delete(guildId);
-    }
-  }
 }
 
-export async function handleTimerInteraction(
-  interaction: ChatInputCommandInteraction,
-  manager: TimerManager,
-) {
+export async function handleTimerInteraction(interaction: ChatInputCommandInteraction, manager: TimerManager) {
   const sub = interaction.options.getSubcommand();
 
   if (sub === 'set') {
@@ -191,10 +128,7 @@ export async function handleTimerInteraction(
 
     const durationMs = parseDuration(durationRaw);
     if (!durationMs || durationMs < 1000) {
-      await interaction.reply({
-        content: 'مدت زمان نامعتبر. نمونه: 10m یا 2h یا 1d یا فقط عدد (ثانیه): 45',
-        ephemeral: true,
-      });
+      await interaction.reply({ content: 'مدت زمان نامعتبر. نمونه: 10m یا 2h یا 1d یا فقط عدد (ثانیه): 45', ephemeral: true });
       return;
     }
 
@@ -212,11 +146,7 @@ export async function handleTimerInteraction(
     });
 
     const embed = makeTimerSetEmbed(at);
-    const replied = await interaction.reply({ embeds: [embed], fetchReply: true });
-    if ('id' in (replied as any)) {
-      const msg = replied as any;
-      at.messageId = msg.id; // حلقه تکی کار آپدیت را به عهده می‌گیرد
-    }
+    await interaction.reply({ embeds: [embed] });
     return;
   }
 
@@ -232,12 +162,7 @@ export async function handleTimerInteraction(
     }
     const lines = timers
       .sort((a, b) => a.endsAt - b.endsAt)
-      .map(
-        (t) =>
-          `• ID: ${t.id} | پایان: ${formatHMS(Math.max(t.endsAt - Date.now(), 0))}${
-            t.reason ? ` | دلیل: ${t.reason}` : ''
-          }`,
-      );
+      .map(t => `• ID: ${t.id} | پایان: <t:${Math.floor(t.endsAt / 1000)}:R>${t.reason ? ` | دلیل: ${t.reason}` : ''}`);
     const embed = new EmbedBuilder()
       .setTitle('تایمرهای فعال شما')
       .setDescription(lines.join('\n'))
@@ -254,7 +179,10 @@ export async function handleTimerInteraction(
     const id = interaction.options.getString('id', true);
     const ok = manager.cancel(interaction.guildId, id);
     if (ok) {
-      const embed = new EmbedBuilder().setDescription(`❌ تایمر لغو شد.`).setColor(0xff5555);
+      const embed = new EmbedBuilder()
+        .setDescription(`❌ تایمر با ID 
+${id}
+ لغو شد.`).setColor(0xff5555);
       await interaction.reply({ embeds: [embed] });
     } else {
       await interaction.reply({ content: 'شناسه تایمر پیدا نشد.', ephemeral: true });
@@ -265,11 +193,13 @@ export async function handleTimerInteraction(
 
 export function parseDuration(input: string): number | null {
   const trimmed = input.trim();
+  // If input is purely numeric, treat as seconds (override ms default which would treat as ms)
   if (/^\d+$/.test(trimmed)) {
     const n = Number(trimmed);
     if (n > 0) return n * 1000;
     return null;
   }
+  // Else, use ms package (supports 1h, 10m, 30s, etc.)
   const v = ms(trimmed);
   if (typeof v === 'number' && isFinite(v) && v > 0) return v;
   return null;
@@ -285,47 +215,10 @@ export function makeTimerSetEmbed(at: ActiveTimer): EmbedBuilder {
     );
 }
 
-export function buildCountdownEmbed(at: ActiveTimer): EmbedBuilder {
-  const remaining = Math.max(at.endsAt - Date.now(), 0);
-  const total = Math.max(at.totalMs ?? remaining, 1);
-  const bar = makeBar(remaining, total);
-  const embed = new EmbedBuilder()
-    .setTitle('⏳ شمارش معکوس')
-    .setColor(0x5865f2)
-    .setDescription(`${bar}\nباقی‌مانده: ${formatHMS(remaining)}`);
-  if (at.reason) embed.addFields({ name: 'دلیل', value: at.reason, inline: true });
-  return embed;
-}
-
-export function buildFinishedEmbed(at: ActiveTimer): EmbedBuilder {
-  const embed = new EmbedBuilder()
-    .setTitle('⏰ تایمر به پایان رسید')
-    .setColor(0xff5555)
-    .setDescription('تمام شد.');
-  if (at.reason) embed.addFields({ name: 'دلیل', value: at.reason, inline: true });
-  return embed;
-}
-
-export function buildAddTimeRow(timerId: string) {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`timer:add:${timerId}`).setStyle(ButtonStyle.Primary).setLabel('افزودن زمان'),
-  );
-}
-
-function makeBar(remainingMs: number, totalMs: number): string {
-  const width = 20;
-  const clamped = Math.max(0, Math.min(1, remainingMs / Math.max(totalMs, 1)));
-  const filled = Math.round((1 - clamped) * width);
-  const empty = width - filled;
-  return `【${'▰'.repeat(filled)}${'▱'.repeat(empty)}】`;
-}
-
 function formatHMS(msNum: number): string {
   let s = Math.floor(msNum / 1000);
-  const hrs = Math.floor(s / 3600);
-  s -= hrs * 3600;
-  const mins = Math.floor(s / 60);
-  s -= mins * 60;
+  const hrs = Math.floor(s / 3600); s -= hrs * 3600;
+  const mins = Math.floor(s / 60); s -= mins * 60;
   const sec = s;
   const hh = hrs > 0 ? String(hrs).padStart(2, '0') + ':' : '';
   const mm = String(mins).padStart(2, '0');
