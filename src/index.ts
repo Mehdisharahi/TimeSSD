@@ -1,6 +1,6 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Interaction, Message } from 'discord.js';
-import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed, startCountdown } from './modules/timerManager';
+import { ActionRowBuilder, Client, GatewayIntentBits, Interaction, Message, ModalBuilder, TextInputBuilder, TextInputStyle } from 'discord.js';
+import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed, startCountdown, buildCountdownEmbed, buildAddTimeRow } from './modules/timerManager';
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -22,10 +22,62 @@ client.once('ready', () => {
 });
 
 client.on('interactionCreate', async (interaction: Interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+  if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === 'timer') {
+      await handleTimerInteraction(interaction, timerManager);
+    }
+    return;
+  }
 
-  if (interaction.commandName === 'timer') {
-    await handleTimerInteraction(interaction, timerManager);
+  if (interaction.isButton()) {
+    const id = interaction.customId;
+    if (!id.startsWith('timer:add:')) return;
+    const timerId = id.split(':')[2];
+    const modal = new ModalBuilder()
+      .setCustomId(`timer:addmodal:${timerId}`)
+      .setTitle('افزودن زمان');
+    const input = new TextInputBuilder()
+      .setCustomId('delta')
+      .setLabel('مدت زمان اضافه (مثال: 30s, 2m, 45)')
+      .setRequired(true)
+      .setStyle(TextInputStyle.Short);
+    const row = new ActionRowBuilder<TextInputBuilder>().addComponents(input);
+    modal.addComponents(row);
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (interaction.isModalSubmit()) {
+    const id = interaction.customId;
+    if (!id.startsWith('timer:addmodal:')) return;
+    const timerId = id.split(':')[2];
+    const deltaRaw = interaction.fields.getTextInputValue('delta').trim();
+    const deltaMs = parseDuration(deltaRaw);
+    if (!deltaMs || deltaMs <= 0) {
+      await interaction.reply({ content: 'مقدار نامعتبر. نمونه: 30s یا 2m یا 45 (ثانیه).', ephemeral: true });
+      return;
+    }
+    if (!interaction.guildId) {
+      await interaction.reply({ content: 'این عمل باید داخل سرور انجام شود.', ephemeral: true });
+      return;
+    }
+    const t = timerManager.extend(interaction.guildId, timerId, deltaMs);
+    if (!t) {
+      await interaction.reply({ content: 'تایمر پیدا نشد یا پایان یافته است.', ephemeral: true });
+      return;
+    }
+    try {
+      const ch = await interaction.client.channels.fetch(t.channelId);
+      if (ch && ch.isTextBased() && t.messageId) {
+        const c = ch as any;
+        const m = await c.messages.fetch(t.messageId).catch(() => null);
+        if (m) {
+          await m.edit({ embeds: [buildCountdownEmbed(t)], components: [buildAddTimeRow(t.id)] });
+        }
+      }
+    } catch {}
+    await interaction.reply({ content: 'زمان اضافه شد.', ephemeral: true });
+    return;
   }
 });
 
