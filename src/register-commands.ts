@@ -15,7 +15,7 @@ const rest = new REST({ version: '10' }).setToken(token as string);
 
 async function main() {
   const commands = [timerCommand.toJSON()];
-  const appIdStr = appId as string; // safe due to guard above
+  const appIdStr = appId as string;
   const guildIdStr = guildId as string | undefined;
 
   try {
