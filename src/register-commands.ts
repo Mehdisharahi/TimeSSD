@@ -11,19 +11,21 @@ if (!token || !appId) {
   process.exit(1);
 }
 
-const rest = new REST({ version: '10' }).setToken(token);
+const rest = new REST({ version: '10' }).setToken(token as string);
 
 async function main() {
   const commands = [timerCommand.toJSON()];
+  const appIdStr = appId as string; // safe due to guard above
+  const guildIdStr = guildId as string | undefined;
 
   try {
-    if (guildId) {
-      console.log(`Registering guild commands for guild ${guildId}...`);
-      await rest.put(Routes.applicationGuildCommands(appId, guildId), { body: commands });
+    if (guildIdStr) {
+      console.log(`Registering guild commands for guild ${guildIdStr}...`);
+      await rest.put(Routes.applicationGuildCommands(appIdStr, guildIdStr), { body: commands });
       console.log('Guild commands registered.');
     } else {
       console.log('Registering global commands (may take up to 1 hour to propagate)...');
-      await rest.put(Routes.applicationCommands(appId), { body: commands });
+      await rest.put(Routes.applicationCommands(appIdStr), { body: commands });
       console.log('Global commands registered.');
     }
   } catch (err) {
