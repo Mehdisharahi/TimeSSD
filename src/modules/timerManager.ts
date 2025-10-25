@@ -1,4 +1,4 @@
-import { ChatInputCommandInteraction, Client, EmbedBuilder, GuildTextBasedChannel, SlashCommandBuilder, userMention } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChatInputCommandInteraction, Client, EmbedBuilder, GuildTextBasedChannel, SlashCommandBuilder, userMention } from 'discord.js';
 import ms from 'ms';
 
 export const timerCommand = new SlashCommandBuilder()
@@ -68,13 +68,24 @@ export class TimerManager {
     return userId ? values.filter(t => t.userId === userId) : values;
   }
 
+  public findById(guildId: string, id: string): ActiveTimer | undefined {
+    const g = this.timers.get(guildId);
+    return g?.get(id);
+  }
+
+  public findByMessage(guildId: string, messageId: string): ActiveTimer | undefined {
+    const g = this.timers.get(guildId);
+    if (!g) return undefined;
+    for (const t of g.values()) if (t.messageId === messageId) return t;
+    return undefined;
+  }
+
   public cancel(guildId: string, id: string): boolean {
     const g = this.timers.get(guildId);
     if (!g) return false;
     const t = g.get(id);
     if (!t) return false;
     clearTimeout(t.timeout);
-    if (t.interval) clearInterval(t.interval);
     g.delete(id);
     if (g.size === 0) this.timers.delete(guildId);
     return true;
@@ -130,6 +141,17 @@ export class TimerManager {
     if (!this.timers.has(opts.guildId)) this.timers.set(opts.guildId, new Map());
     this.timers.get(opts.guildId)!.set(id, at);
     return at;
+  }
+
+  public extend(guildId: string, id: string, deltaMs: number): ActiveTimer | null {
+    if (deltaMs <= 0) return null;
+    const g = this.timers.get(guildId);
+    if (!g) return null;
+    const t = g.get(id);
+    if (!t) return null;
+    t.endsAt += deltaMs;
+    t.totalMs = (t.totalMs ?? 0) + deltaMs;
+    return t;
   }
 }
 
@@ -229,7 +251,7 @@ export function makeTimerSetEmbed(at: ActiveTimer): EmbedBuilder {
     .setTitle('⏳ تایمر تنظیم شد')
     .setColor(0x5865f2)
     .addFields(
-      { name: 'پایان', value: `<t:${Math.floor(at.endsAt / 1000)}:R>`, inline: true },
+      { name: 'پایان', value: formatHMS(Math.max(at.endsAt - Date.now(), 0)), inline: true },
       { name: 'دلیل', value: at.reason ?? '—', inline: true },
     );
 }
@@ -242,7 +264,7 @@ export function buildCountdownEmbed(at: ActiveTimer): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setTitle('⏳ شمارش معکوس')
     .setColor(0x5865f2)
-    .setDescription(`${bar}\nباقی‌مانده: <t:${Math.floor(at.endsAt / 1000)}:R>`);
+    .setDescription(`${bar}\nباقی‌مانده: ${formatHMS(remaining)}`);
   if (at.reason) embed.addFields({ name: 'دلیل', value: at.reason, inline: true });
   return embed;
 }
@@ -263,8 +285,8 @@ export async function startCountdown(client: Client, at: ActiveTimer): Promise<v
     if (!at.messageId) return;
     const msg = await c.messages.fetch(at.messageId).catch(() => null);
     if (!msg) return;
-    // Initial paint
-    await msg.edit({ embeds: [buildCountdownEmbed(at)] });
+    // Initial paint with button
+    await msg.edit({ embeds: [buildCountdownEmbed(at)], components: [buildAddTimeRow(at.id)] });
     // Update every second
     at.interval = setInterval(async () => {
       try {
@@ -272,10 +294,10 @@ export async function startCountdown(client: Client, at: ActiveTimer): Promise<v
         if (now >= at.endsAt) {
           clearInterval(at.interval!);
           at.interval = null;
-          await msg.edit({ embeds: [buildCountdownEmbed({ ...at, endsAt: now })] });
+          await msg.edit({ embeds: [buildCountdownEmbed({ ...at, endsAt: now })], components: [] });
           return;
         }
-        await msg.edit({ embeds: [buildCountdownEmbed(at)] });
+        await msg.edit({ embeds: [buildCountdownEmbed(at)], components: [buildAddTimeRow(at.id)] });
       } catch {
         // stop on edit issues
         if (at.interval) clearInterval(at.interval);
@@ -285,4 +307,24 @@ export async function startCountdown(client: Client, at: ActiveTimer): Promise<v
   } catch {
     // ignore
   }
+}
+
+export function buildAddTimeRow(timerId: string) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`timer:add:${timerId}`)
+      .setStyle(ButtonStyle.Primary)
+      .setLabel('افزودن زمان')
+  );
+}
+
+function formatHMS(msNum: number): string {
+  let s = Math.floor(msNum / 1000);
+  const hrs = Math.floor(s / 3600); s -= hrs * 3600;
+  const mins = Math.floor(s / 60); s -= mins * 60;
+  const sec = s;
+  const hh = hrs > 0 ? String(hrs).padStart(2, '0') + ':' : '';
+  const mm = String(mins).padStart(2, '0');
+  const ss = String(sec).padStart(2, '0');
+  return `${hh}${mm}:${ss}`;
 }
