@@ -56,6 +56,41 @@ export class TimerManager {
   private client: Client;
   // Map guildId -> Map timerId -> ActiveTimer
   private timers: Map<string, Map<string, ActiveTimer>> = new Map();
+  
+  private schedule(guildId: string, at: ActiveTimer) {
+    // Clear any previous timeout
+    if (at.timeout) clearTimeout(at.timeout);
+    const remaining = Math.max(at.endsAt - Date.now(), 0);
+    at.timeout = setTimeout(async () => {
+      try {
+        const g = this.timers.get(guildId);
+        const t = g?.get(at.id);
+        if (!t) return; // already cancelled
+        const channel = await this.client.channels.fetch(t.channelId);
+        if (channel && channel.isTextBased()) {
+          const c = channel as GuildTextBasedChannel;
+          const mention = userMention(t.userId);
+          const reasonText = t.reason ? `Reason: ${t.reason}` : '';
+          await c.send(`⏰ ${mention} زمان تموم شد! ${reasonText}`.trim());
+          if (t.messageId) {
+            try {
+              const m = await c.messages.fetch(t.messageId);
+              await m.edit({ embeds: [buildCountdownEmbed({ ...t, endsAt: Date.now() })], components: [] });
+            } catch {}
+          }
+        }
+      } catch {}
+      finally {
+        const g = this.timers.get(guildId);
+        if (g) {
+          const t = g.get(at.id);
+          if (t && t.interval) clearInterval(t.interval);
+          g.delete(at.id);
+          if (g.size === 0) this.timers.delete(guildId);
+        }
+      }
+    }, remaining);
+  }
 
   constructor(client: Client) {
     this.client = client;
@@ -86,6 +121,7 @@ export class TimerManager {
     const t = g.get(id);
     if (!t) return false;
     clearTimeout(t.timeout);
+    if (t.interval) clearInterval(t.interval);
     g.delete(id);
     if (g.size === 0) this.timers.delete(guildId);
     return true;
@@ -95,36 +131,7 @@ export class TimerManager {
     const id = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
     const endsAt = Date.now() + opts.durationMs;
 
-    const timeout = setTimeout(async () => {
-      try {
-        const channel = await this.client.channels.fetch(opts.channelId);
-        if (channel && channel.isTextBased()) {
-          const c = channel as GuildTextBasedChannel;
-          const mention = userMention(opts.userId);
-          const reasonText = opts.reason ? `Reason: ${opts.reason}` : '';
-          await c.send(`⏰ ${mention} زمان تموم شد! ${reasonText}`.trim());
-          // Try to update the countdown message (if any) to final state
-          const g = this.timers.get(opts.guildId);
-          const t = g ? Array.from(g.values()).find(x => x.userId === opts.userId && x.channelId === opts.channelId && Math.abs(x.endsAt - endsAt) < 2000) : undefined;
-          if (t && t.messageId) {
-            try {
-              const m = await c.messages.fetch(t.messageId);
-              await m.edit({ embeds: [buildCountdownEmbed({ ...t, endsAt: Date.now() })] });
-            } catch {}
-          }
-        }
-      } catch {
-        // ignore
-      } finally {
-        const g = this.timers.get(opts.guildId);
-        if (g) {
-          const t = g.get(id);
-          if (t && t.interval) clearInterval(t.interval);
-          g.delete(id);
-          if (g.size === 0) this.timers.delete(opts.guildId);
-        }
-      }
-    }, opts.durationMs);
+    const timeout = setTimeout(() => {}, 0); // placeholder; will be immediately replaced by schedule
 
     const at: ActiveTimer = {
       id,
@@ -140,6 +147,7 @@ export class TimerManager {
 
     if (!this.timers.has(opts.guildId)) this.timers.set(opts.guildId, new Map());
     this.timers.get(opts.guildId)!.set(id, at);
+    this.schedule(opts.guildId, at);
     return at;
   }
 
@@ -151,6 +159,7 @@ export class TimerManager {
     if (!t) return null;
     t.endsAt += deltaMs;
     t.totalMs = (t.totalMs ?? 0) + deltaMs;
+    this.schedule(guildId, t);
     return t;
   }
 }
