@@ -53,17 +53,19 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     const timerId = id.split(':')[2];
     const deltaRaw = interaction.fields.getTextInputValue('delta').trim();
     const deltaMs = parseDuration(deltaRaw);
+    // Acknowledge immediately to avoid Unknown interaction
+    await interaction.deferReply({ ephemeral: true });
     if (!deltaMs || deltaMs <= 0) {
-      await interaction.reply({ content: 'مقدار نامعتبر. نمونه: 30s یا 2m یا 45 (ثانیه).', ephemeral: true });
+      await interaction.editReply({ content: 'مقدار نامعتبر. نمونه: 30s یا 2m یا 45 (ثانیه).' });
       return;
     }
     if (!interaction.guildId) {
-      await interaction.reply({ content: 'این عمل باید داخل سرور انجام شود.', ephemeral: true });
+      await interaction.editReply({ content: 'این عمل باید داخل سرور انجام شود.' });
       return;
     }
     const t = timerManager.extend(interaction.guildId, timerId, deltaMs);
     if (!t) {
-      await interaction.reply({ content: 'تایمر پیدا نشد یا پایان یافته است.', ephemeral: true });
+      await interaction.editReply({ content: 'تایمر پیدا نشد یا پایان یافته است.' });
       return;
     }
     try {
@@ -76,7 +78,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         }
       }
     } catch {}
-    await interaction.reply({ content: 'زمان اضافه شد.', ephemeral: true });
+    await interaction.editReply({ content: 'زمان اضافه شد.' });
     return;
   }
 });
@@ -98,7 +100,7 @@ client.on('messageCreate', async (msg: Message) => {
   const reason = rest.join(' ').trim() || null;
   const durationMs = parseDuration(first);
   if (!durationMs || durationMs < 1000) {
-    await msg.reply({ content: 'مدت زمان نامعتبر. نمونه: 10m یا 2h یا 1d یا فقط عدد (ثانیه): 45' });
+    await msg.reply({ content: 'مدت زمان نامعتبر. نمونه: 10m یا 2h یا 60 (ثانیه)' });
     return;
   }
 
