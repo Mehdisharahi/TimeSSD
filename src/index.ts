@@ -148,8 +148,33 @@ async function addDuration(guildId: string, a: string, b: string, deltaMs: numbe
   const bMap = getMap(gMap, b, () => new Map());
   aMap.set(b, (aMap.get(b) || 0) + deltaMs);
   bMap.set(a, (bMap.get(a) || 0) + deltaMs);
-  // persist to SQLite
+  // persist to SQLite/Postgres
   await store.addDuration(guildId, a, b, deltaMs);
+}
+
+// Compute live totals for a user: persisted totals + ongoing sessions until now
+function computeTotalsUpToNow(guildId: string, userId: string): Map<string, number> | null {
+  const baseGuild = partnerTotals.get(guildId);
+  const base = baseGuild?.get(userId);
+  const out = new Map<string, number>();
+  if (base) {
+    for (const [pid, ms] of base.entries()) out.set(pid, ms);
+  }
+  const pMap = pairStarts.get(guildId);
+  if (!pMap || pMap.size === 0) return out.size ? out : null;
+  const now = Date.now();
+  for (const [key, start] of pMap.entries()) {
+    // key format: idA:idB:channelId
+    const parts = key.split(':');
+    if (parts.length < 3) continue;
+    const idA = parts[0];
+    const idB = parts[1];
+    const other = userId === idA ? idB : (userId === idB ? idA : null);
+    if (!other) continue;
+    const delta = now - start;
+    if (delta > 0) out.set(other, (out.get(other) || 0) + delta);
+  }
+  return out.size ? out : null;
 }
 
 client.once('ready', async () => {
@@ -269,8 +294,7 @@ client.on('messageCreate', async (msg: Message) => {
       }
     }
     if (!target) target = msg.author;
-    const gTotals = partnerTotals.get(msg.guildId!);
-    const map = gTotals?.get(target.id);
+    const map = computeTotalsUpToNow(msg.guildId!, target.id);
     if (!map || map.size === 0) {
       await msg.reply({ content: 'داده‌ای برای این کاربر یافت نشد.' });
       return;
