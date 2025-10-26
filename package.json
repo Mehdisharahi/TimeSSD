@@ -11,23 +11,14 @@
     "register:commands": "ts-node-dev --transpile-only src/register-commands.ts"
   },
   "dependencies": {
-<<<<<<< HEAD
-    "@types/better-sqlite3": "^7.6.13",
-=======
     "@napi-rs/canvas": "^0.1.81",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/pg": "^8.15.5",
->>>>>>> 87b9972 (feat: add .ll with @napi-rs/canvas; improve .av/.ba/.friend UI)
     "better-sqlite3": "^12.4.1",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
     "ms": "^2.1.3",
-<<<<<<< HEAD
     "pg": "^8.16.3",
     "@types/pg": "^8.15.5"
-=======
-    "pg": "^8.16.3"
->>>>>>> 87b9972 (feat: add .ll with @napi-rs/canvas; improve .av/.ba/.friend UI)
   },
   "devDependencies": {
     "@types/ms": "^0.7.34",
