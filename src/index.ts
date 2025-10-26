@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, AttachmentBuilder } from 'discord.js';
-import { createCanvas, loadImage } from '@napi-rs/canvas';
+import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
 import { PgFriendStore } from './storage/pgFriendStore';
@@ -11,6 +11,30 @@ if (!token) {
   console.error('Missing BOT_TOKEN in .env');
   process.exit(1);
 }
+
+// Register a font so text renders on minimal Linux images
+let loveFontFamily = 'DejaVu Sans';
+(function registerLoveFont() {
+  try {
+    // Common font locations on Linux/Windows
+    const candidates = [
+      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+      '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+      '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+      'C:/Windows/Fonts/arial.ttf',
+      'C:/Windows/Fonts/segoeui.ttf',
+    ];
+    for (const p of candidates) {
+      try {
+        if (fs.existsSync(p)) {
+          GlobalFonts.registerFromPath(p, 'LoveSans');
+          loveFontFamily = 'LoveSans';
+          break;
+        }
+      } catch {}
+    }
+  } catch {}
+})();
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
@@ -395,7 +419,7 @@ client.on('messageCreate', async (msg: Message) => {
       ctx.restore();
 
       // Percentage text inside heart (outlined for visibility)
-      ctx.font = 'bold 40px sans-serif';
+      ctx.font = `bold 40px "${loveFontFamily}", "DejaVu Sans", "Liberation Sans", sans-serif`;
       ctx.lineWidth = 6;
       ctx.strokeStyle = 'rgba(0,0,0,0.7)';
       ctx.strokeText(`${love}%`, cx, cy);
