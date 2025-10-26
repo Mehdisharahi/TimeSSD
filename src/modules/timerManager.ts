@@ -46,6 +46,9 @@ export type ActiveTimer = {
   reason?: string | null;
   endsAt: number; // epoch ms
   timeout: NodeJS.Timeout;
+  messageId?: string;
+  interval?: NodeJS.Timeout | null;
+  totalMs?: number;
 };
 
 export class TimerManager {
@@ -111,6 +114,8 @@ export class TimerManager {
       reason: opts.reason ?? null,
       endsAt,
       timeout,
+      interval: null,
+      totalMs: opts.durationMs,
     };
 
     if (!this.timers.has(opts.guildId)) this.timers.set(opts.guildId, new Map());
@@ -146,7 +151,12 @@ export async function handleTimerInteraction(interaction: ChatInputCommandIntera
     });
 
     const embed = makeTimerSetEmbed(at);
-    await interaction.reply({ embeds: [embed] });
+    const replied = await interaction.reply({ embeds: [embed], fetchReply: true });
+    if ('id' in (replied as any)) {
+      const msg = replied as any;
+      at.messageId = msg.id;
+      await startCountdown((manager as any)['client'], at);
+    }
     return;
   }
 
@@ -179,11 +189,9 @@ export async function handleTimerInteraction(interaction: ChatInputCommandIntera
     const id = interaction.options.getString('id', true);
     const ok = manager.cancel(interaction.guildId, id);
     if (ok) {
-      const embed = new EmbedBuilder()
-        .setDescription(`❌ تایمر با ID 
+      const embed = new EmbedBuilder().setDescription(`❌ تایمر با ID 
 ${id}
- لغو شد.`)
-        .setColor(0xff5555);
+ لغو شد.`).setColor(0xff5555);
       await interaction.reply({ embeds: [embed] });
     } else {
       await interaction.reply({ content: 'شناسه تایمر پیدا نشد.', ephemeral: true });
@@ -194,26 +202,60 @@ ${id}
 
 export function parseDuration(input: string): number | null {
   const trimmed = input.trim();
-  // If input is purely numeric, treat as seconds (override ms default which would treat as ms)
   if (/^\d+$/.test(trimmed)) {
     const n = Number(trimmed);
     if (n > 0) return n * 1000;
     return null;
   }
-  // Else, use ms package (supports 1h, 10m, 30s, etc.)
   const v = ms(trimmed);
   if (typeof v === 'number' && isFinite(v) && v > 0) return v;
   return null;
 }
 
 export function makeTimerSetEmbed(at: ActiveTimer): EmbedBuilder {
-  // از زمان نسبی دیسکورد استفاده می‌کنیم تا خودش به‌صورت خودکار کم شود (بدون ادیت هر ثانیه)
-  const unix = Math.floor(at.endsAt / 1000);
   return new EmbedBuilder()
-    .setTitle('⏳ تایمر تنظیم شد')
-    .setColor(0x5865f2)
-    .addFields(
-      { name: 'پایان', value: `<t:${unix}:R>`, inline: true },
-      { name: 'دلیل', value: at.reason ?? '—', inline: true },
-    );
+    .setDescription(`${formatHMS(Math.max(at.endsAt - Date.now(), 0))}`);
+}
+
+export function buildCountdownEmbed(at: ActiveTimer): EmbedBuilder {
+  const remaining = Math.max(at.endsAt - Date.now(), 0);
+  return new EmbedBuilder()
+    .setDescription(`${formatHMS(remaining)}`);
+}
+
+export async function startCountdown(client: Client, at: ActiveTimer): Promise<void> {
+  try {
+    const ch = await client.channels.fetch(at.channelId);
+    if (!ch || !ch.isTextBased()) return;
+    const c = ch as GuildTextBasedChannel;
+    if (!at.messageId) return;
+    const msg = await c.messages.fetch(at.messageId).catch(() => null);
+    if (!msg) return;
+    await msg.edit({ embeds: [buildCountdownEmbed(at)] });
+    at.interval = setInterval(async () => {
+      try {
+        const now = Date.now();
+        if (now >= at.endsAt) {
+          clearInterval(at.interval!);
+          at.interval = null;
+          return;
+        }
+        await msg.edit({ embeds: [buildCountdownEmbed(at)] });
+      } catch {
+        if (at.interval) clearInterval(at.interval);
+        at.interval = null;
+      }
+    }, 1000);
+  } catch {}
+}
+
+function formatHMS(msNum: number): string {
+  let s = Math.floor(msNum / 1000);
+  const hrs = Math.floor(s / 3600); s -= hrs * 3600;
+  const mins = Math.floor(s / 60); s -= mins * 60;
+  const sec = s;
+  const hh = hrs > 0 ? String(hrs).padStart(2, '0') + ':' : '';
+  const mm = String(mins).padStart(2, '0');
+  const ss = String(sec).padStart(2, '0');
+  return `${hh}${mm}:${ss}`;
 }
