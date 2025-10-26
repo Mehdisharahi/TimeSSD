@@ -78,7 +78,13 @@ export class TimerManager {
         const channel = await this.client.channels.fetch(t.channelId);
         if (channel && channel.isTextBased()) {
           const c = channel as GuildTextBasedChannel;
-          await c.send({ embeds: [makeFinalEmbed(t.reason ?? null)] });
+          const reasonText = t.reason ?? '';
+          const users = reasonText ? extractMentionUserIds(reasonText) : [];
+          await c.send({
+            content: reasonText || undefined,
+            allowedMentions: users.length ? { users, parse: [] } : { parse: [] },
+            embeds: [makeFinalEmbed()],
+          });
           if (t.messageId) {
             const m = await c.messages.fetch(t.messageId).catch(() => null);
             if (m) {
@@ -146,7 +152,13 @@ export class TimerManager {
         const channel = await this.client.channels.fetch(opts.channelId);
         if (channel && channel.isTextBased()) {
           const c = channel as GuildTextBasedChannel;
-          await c.send({ embeds: [makeFinalEmbed(opts.reason ?? null)] });
+          const reasonText = opts.reason ?? '';
+          const users = reasonText ? extractMentionUserIds(reasonText) : [];
+          await c.send({
+            content: reasonText || undefined,
+            allowedMentions: users.length ? { users, parse: [] } : { parse: [] },
+            embeds: [makeFinalEmbed()],
+          });
           // Edit the start message to a fixed minimal text to avoid 'ago'
           const g = this.timers.get(opts.guildId);
           const t = g?.get(id);
@@ -319,12 +331,18 @@ export function makeTimerSetEmbed(at: ActiveTimer): EmbedBuilder {
 
 // No live countdown; we rely on Discord relative time. Formatter below remains for other uses.
 
-function makeFinalEmbed(reason?: string | null): EmbedBuilder {
-  const eb = new EmbedBuilder().setDescription('⏰ پایان زمان');
-  if (reason && reason.trim().length > 0) {
-    eb.setFooter({ text: reason });
+function makeFinalEmbed(): EmbedBuilder {
+  return new EmbedBuilder().setDescription('⏰ پایان زمان');
+}
+
+function extractMentionUserIds(text: string): string[] {
+  const ids: string[] = [];
+  const regex = /<@!?([0-9]+)>/g;
+  let m: RegExpExecArray | null;
+  while ((m = regex.exec(text)) !== null) {
+    ids.push(m[1]);
   }
-  return eb;
+  return Array.from(new Set(ids));
 }
 
 
