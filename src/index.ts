@@ -94,7 +94,7 @@ async function addDuration(guildId: string, a: string, b: string, deltaMs: numbe
   const bMap = getMap(gMap, b, () => new Map());
   aMap.set(b, (aMap.get(b) || 0) + deltaMs);
   bMap.set(a, (bMap.get(a) || 0) + deltaMs);
-  // persist to SQLite/Postgres
+  // persist to SQLite
   await store.addDuration(guildId, a, b, deltaMs);
 }
 
