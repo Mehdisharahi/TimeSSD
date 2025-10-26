@@ -70,6 +70,7 @@ export class TimerManager {
     const t = candidates[0];
     if (!t) return null;
     t.endsAt += Math.max(0, deltaMs);
+
     // reschedule timeout
     clearTimeout(t.timeout);
     const remaining = Math.max(t.endsAt - Date.now(), 0);
@@ -78,11 +79,17 @@ export class TimerManager {
         const channel = await this.client.channels.fetch(t.channelId);
         if (channel && channel.isTextBased()) {
           const c = channel as GuildTextBasedChannel;
-          await c.send({ embeds: [makeFinalEmbed(t.reason ?? null)] });
+          const reasonText = t.reason ?? '';
+          const users = reasonText ? extractMentionUserIds(reasonText) : [];
+          await c.send({
+            content: reasonText || undefined,
+            allowedMentions: users.length ? { users, parse: [] } : { parse: [] },
+            embeds: [makeFinalEmbed()],
+          });
           if (t.messageId) {
             const m = await c.messages.fetch(t.messageId).catch(() => null);
             if (m) {
-              await m.edit({ embeds: [new EmbedBuilder().setDescription('پایان')] }).catch(() => {});
+              await m.edit({ embeds: [new EmbedBuilder().setTitle('پایان')] }).catch(() => {});
             }
           }
         }
@@ -105,7 +112,7 @@ export class TimerManager {
           const m = await c.messages.fetch(t.messageId).catch(() => null);
           if (m) {
             const unix = Math.floor(t.endsAt / 1000);
-            await m.edit({ embeds: [new EmbedBuilder().setDescription(`<t:${unix}:R>`)] });
+            await m.edit({ embeds: [new EmbedBuilder().setTitle(`<t:${unix}:R>`)] });
           }
         }
       } catch {}
@@ -146,14 +153,20 @@ export class TimerManager {
         const channel = await this.client.channels.fetch(opts.channelId);
         if (channel && channel.isTextBased()) {
           const c = channel as GuildTextBasedChannel;
-          await c.send({ embeds: [makeFinalEmbed(opts.reason ?? null)] });
+          const reasonText = opts.reason ?? '';
+          const users = reasonText ? extractMentionUserIds(reasonText) : [];
+          await c.send({
+            content: reasonText || undefined,
+            allowedMentions: users.length ? { users, parse: [] } : { parse: [] },
+            embeds: [makeFinalEmbed()],
+          });
           // Edit the start message to a fixed minimal text to avoid 'ago'
           const g = this.timers.get(opts.guildId);
           const t = g?.get(id);
           if (t?.messageId) {
             const m = await c.messages.fetch(t.messageId).catch(() => null);
             if (m) {
-              await m.edit({ embeds: [new EmbedBuilder().setDescription('پایان')] }).catch(() => {});
+              await m.edit({ embeds: [new EmbedBuilder().setTitle('پایان')] }).catch(() => {});
             }
           }
         }
@@ -185,15 +198,16 @@ export class TimerManager {
     return at;
   }
 
+  // Legacy extend by id (kept for compatibility if used somewhere)
   public extend(guildId: string, id: string, deltaMs: number): ActiveTimer | null {
     const g = this.timers.get(guildId);
     if (!g) return null;
     const t = g.get(id);
     if (!t) return null;
-    // Clamp to max 30s per extend
     const clamped = Math.max(0, Math.min(deltaMs, 30_000));
     if (clamped <= 0) return null;
     t.endsAt += clamped;
+
     // Reschedule timeout
     clearTimeout(t.timeout);
     const remaining = Math.max(t.endsAt - Date.now(), 0);
@@ -202,11 +216,17 @@ export class TimerManager {
         const channel = await this.client.channels.fetch(t.channelId);
         if (channel && channel.isTextBased()) {
           const c = channel as GuildTextBasedChannel;
-          await c.send({ embeds: [makeFinalEmbed()] });
+          const reasonText = t.reason ?? '';
+          const users = reasonText ? extractMentionUserIds(reasonText) : [];
+          await c.send({
+            content: reasonText || undefined,
+            allowedMentions: users.length ? { users, parse: [] } : { parse: [] },
+            embeds: [makeFinalEmbed()],
+          });
           if (t.messageId) {
             const m = await c.messages.fetch(t.messageId).catch(() => null);
             if (m) {
-              await m.edit({ embeds: [new EmbedBuilder().setDescription('پایان')] }).catch(() => {});
+              await m.edit({ embeds: [new EmbedBuilder().setTitle('پایان')] }).catch(() => {});
             }
           }
         }
@@ -314,19 +334,10 @@ export function parseDuration(input: string): number | null {
 
 export function makeTimerSetEmbed(at: ActiveTimer): EmbedBuilder {
   const unix = Math.floor(at.endsAt / 1000);
-  return new EmbedBuilder().setDescription(`<t:${unix}:R>`);
+  return new EmbedBuilder().setTitle(`<t:${unix}:R>`);
 }
 
 // No live countdown; we rely on Discord relative time. Formatter below remains for other uses.
-
-function makeFinalEmbed(reason?: string | null): EmbedBuilder {
-  const eb = new EmbedBuilder().setDescription('⏰ پایان زمان');
-  if (reason && reason.trim().length > 0) {
-    eb.setFooter({ text: reason });
-  }
-  return eb;
-}
-
 
 function formatHMS(msNum: number): string {
   let s = Math.floor(msNum / 1000);
@@ -337,4 +348,18 @@ function formatHMS(msNum: number): string {
   const mm = String(mins).padStart(2, '0');
   const ss = String(sec).padStart(2, '0');
   return `${hh}${mm}:${ss}`;
+}
+
+function makeFinalEmbed(): EmbedBuilder {
+  return new EmbedBuilder().setTitle('⏰ پایان زمان');
+}
+
+function extractMentionUserIds(text: string): string[] {
+  const ids: string[] = [];
+  const regex = /<@!?([0-9]+)>/g;
+  let m: RegExpExecArray | null;
+  while ((m = regex.exec(text)) !== null) {
+    ids.push(m[1]);
+  }
+  return Array.from(new Set(ids));
 }
