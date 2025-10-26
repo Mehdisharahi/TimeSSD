@@ -18,6 +18,7 @@ let loveFontFamily = 'DejaVu Sans';
   try {
     // Common font locations on Linux/Windows
     const candidates = [
+      path.join(__dirname, '../assets/fonts/DejaVuSans.ttf'),
       '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
       '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
       '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
