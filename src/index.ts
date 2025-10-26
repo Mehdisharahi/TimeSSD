@@ -1,6 +1,6 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, AttachmentBuilder } from 'discord.js';
-import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas';
+import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, AttachmentBuilder, PermissionsBitField } from 'discord.js';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
 import { PgFriendStore } from './storage/pgFriendStore';
@@ -12,30 +12,7 @@ if (!token) {
   process.exit(1);
 }
 
-// Register a font so text renders on minimal Linux images
-let loveFontFamily = 'DejaVu Sans';
-(function registerLoveFont() {
-  try {
-    // Common font locations on Linux/Windows
-    const candidates = [
-      path.join(__dirname, '../assets/fonts/DejaVuSans.ttf'),
-      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-      '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-      '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
-      'C:/Windows/Fonts/arial.ttf',
-      'C:/Windows/Fonts/segoeui.ttf',
-    ];
-    for (const p of candidates) {
-      try {
-        if (fs.existsSync(p)) {
-          GlobalFonts.registerFromPath(p, 'LoveSans');
-          loveFontFamily = 'LoveSans';
-          break;
-        }
-      } catch {}
-    }
-  } catch {}
-})();
+//
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
@@ -60,6 +37,35 @@ const pairStarts: Map<string, Map<string, number>> = new Map();
 // partnerTotals[guildId][userId][partnerId] -> totalMs
 const partnerTotals: Map<string, Map<string, Map<string, number>>> = new Map();
 
+const loveOverrides: Map<string, Map<string, number>> = new Map();
+const loveFile = path.join(process.cwd(), 'data', 'love-overrides.json');
+function loveKey(a: string, b: string): string {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+function loadLoveOverrides() {
+  try {
+    fs.mkdirSync(path.dirname(loveFile), { recursive: true });
+    const raw = fs.existsSync(loveFile) ? fs.readFileSync(loveFile, 'utf8') : '';
+    if (raw) {
+      const obj = JSON.parse(raw) as Record<string, Record<string, number>>;
+      loveOverrides.clear();
+      for (const [g, pairs] of Object.entries(obj)) {
+        const m = new Map<string, number>();
+        for (const [k, v] of Object.entries(pairs)) m.set(k, v);
+        loveOverrides.set(g, m);
+      }
+    }
+  } catch {}
+}
+function saveLoveOverrides() {
+  try {
+    fs.mkdirSync(path.dirname(loveFile), { recursive: true });
+    const obj: Record<string, Record<string, number>> = {};
+    for (const [g, m] of loveOverrides) obj[g] = Object.fromEntries(m.entries());
+    fs.writeFileSync(loveFile, JSON.stringify(obj, null, 2), 'utf8');
+  } catch {}
+}
+
 function getMap<K, V>(map: Map<K, V>, key: K, mk: () => V): V {
   let v = map.get(key);
   if (!v) { v = mk(); map.set(key, v); }
@@ -70,18 +76,7 @@ function pairKey(a: string, b: string, channelId: string): string {
   return (a < b ? `${a}:${b}:${channelId}` : `${b}:${a}:${channelId}`);
 }
 
-// Stable love score for a user pair (0..100) based on IDs
-function loveScoreForPair(aId: string, bId: string): number {
-  const key = aId < bId ? `${aId}:${bId}` : `${bId}:${aId}`;
-  // djb2 hash
-  let hash = 5381;
-  for (let i = 0; i < key.length; i++) {
-    hash = ((hash << 5) + hash) + key.charCodeAt(i); // hash * 33 + c
-    hash |= 0;
-  }
-  const val = Math.abs(hash) % 101; // 0..100
-  return val;
-}
+//
 
 // Try to fetch all guild members but give up after a timeout (ms)
 async function fetchMembersWithTimeout(g: any, timeoutMs: number) {
@@ -140,6 +135,8 @@ if (pgUrl) {
     loadGuild: async (g) => sqlite.loadGuild(g),
   };
 }
+
+loadLoveOverrides();
 
 async function addDuration(guildId: string, a: string, b: string, deltaMs: number) {
   if (deltaMs <= 0) return;
@@ -387,6 +384,78 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  // .llset @user1 @user2 <0-100> — admin only: set fixed love percent for a pair
+  if (content.startsWith('.llset')) {
+    const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
+    if (!isAdmin) {
+      await msg.reply({ content: 'فقط مدیران می‌توانند از این دستور استفاده کنند.' });
+      return;
+    }
+    const arg = content.slice(6).trim();
+    const parts = arg.split(/\s+/).filter(Boolean);
+    if (parts.length < 3 && msg.mentions.users.size < 2) {
+      await msg.reply({ content: 'استفاده: `.llset @user1 @user2 89` یا با آیدی دو کاربر و عدد بین 0 تا 100.' });
+      return;
+    }
+    let u1 = msg.mentions.users.at(0) || null;
+    let u2 = msg.mentions.users.at(1) || null;
+    const pStr = parts[parts.length - 1];
+    if (!u1 || !u2) {
+      const a = parts[0];
+      const b = parts[1];
+      if (!u1 && a && /^\d+$/.test(a)) { try { u1 = await msg.client.users.fetch(a); } catch {} }
+      if (!u2 && b && /^\d+$/.test(b)) { try { u2 = await msg.client.users.fetch(b); } catch {} }
+    }
+    const p = Number(pStr);
+    if (!u1 || !u2 || !Number.isInteger(p) || p < 0 || p > 100) {
+      await msg.reply({ content: 'ورودی نامعتبر. عدد باید بین 0 تا 100 باشد و دو کاربر مشخص شوند.' });
+      return;
+    }
+    const gId = msg.guildId!;
+    const m = loveOverrides.get(gId) || new Map<string, number>();
+    m.set(loveKey(u1.id, u2.id), p);
+    loveOverrides.set(gId, m);
+    saveLoveOverrides();
+    await msg.reply({ content: `درصد عشق بین <@${u1.id}> و <@${u2.id}> روی ${p}% تنظیم شد.` });
+    return;
+  }
+
+  // .llunset @user1 @user2 — admin only: remove fixed love percent
+  if (content.startsWith('.llunset')) {
+    const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
+    if (!isAdmin) {
+      await msg.reply({ content: 'فقط مدیران می‌توانند از این دستور استفاده کنند.' });
+      return;
+    }
+    const arg = content.slice(8).trim();
+    const parts = arg.split(/\s+/).filter(Boolean);
+    if (parts.length < 2 && msg.mentions.users.size < 2) {
+      await msg.reply({ content: 'استفاده: `.llunset @user1 @user2` یا با آیدی دو کاربر.' });
+      return;
+    }
+    let u1 = msg.mentions.users.at(0) || null;
+    let u2 = msg.mentions.users.at(1) || null;
+    if (!u1 || !u2) {
+      const a = parts[0];
+      const b = parts[1];
+      if (!u1 && a && /^\d+$/.test(a)) { try { u1 = await msg.client.users.fetch(a); } catch {} }
+      if (!u2 && b && /^\d+$/.test(b)) { try { u2 = await msg.client.users.fetch(b); } catch {} }
+    }
+    if (!u1 || !u2) {
+      await msg.reply({ content: 'دو کاربر را مشخص کنید.' });
+      return;
+    }
+    const gId = msg.guildId!;
+    const m = loveOverrides.get(gId);
+    if (m) {
+      m.delete(loveKey(u1.id, u2.id));
+      if (m.size === 0) loveOverrides.delete(gId); else loveOverrides.set(gId, m);
+      saveLoveOverrides();
+    }
+    await msg.reply({ content: `تنظیم ثابت بین <@${u1.id}> و <@${u2.id}> حذف شد.` });
+    return;
+  }
+
   // .ll command
   if (content.startsWith('.ll')) {
     if (llInFlight.has(msg.id)) return;
@@ -455,7 +524,12 @@ client.on('messageCreate', async (msg: Message) => {
       ctx.drawImage(bImg, rightX, y, box, box);
 
       // Heart and percentage (centered)
-      const love = loveScoreForPair(userA.id, targetB.id);
+      let love = Math.floor(Math.random() * 101);
+      try {
+        const m = loveOverrides.get(msg.guildId!);
+        const v = m?.get(loveKey(userA.id, targetB.id));
+        if (typeof v === 'number') love = v;
+      } catch {}
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const cx = Math.floor(size.w / 2);
@@ -490,7 +564,7 @@ client.on('messageCreate', async (msg: Message) => {
       ctx.restore();
 
       // Percentage text inside heart (outlined for visibility)
-      ctx.font = `bold 40px "${loveFontFamily}", "DejaVu Sans", "Liberation Sans", sans-serif`;
+      ctx.font = 'bold 40px sans-serif';
       ctx.lineWidth = 6;
       ctx.strokeStyle = 'rgba(0,0,0,0.7)';
       ctx.strokeText(`${love}%`, cx, cy);
