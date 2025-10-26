@@ -79,7 +79,7 @@ async function addDuration(guildId: string, a: string, b: string, deltaMs: numbe
   const bMap = getMap(gMap, b, () => new Map());
   aMap.set(b, (aMap.get(b) || 0) + deltaMs);
   bMap.set(a, (bMap.get(a) || 0) + deltaMs);
-  // persist to SQLite
+  // persist to SQLite/Postgres
   await store.addDuration(guildId, a, b, deltaMs);
 }
 
@@ -327,7 +327,7 @@ client.on('messageCreate', async (msg: Message) => {
         return;
       }
 
-      const size = { w: 800, h: 400 };
+      const size = { w: 640, h: 300 };
       const canvas = createCanvas(size.w, size.h);
       const ctx = canvas.getContext('2d');
 
@@ -340,30 +340,26 @@ client.on('messageCreate', async (msg: Message) => {
       const bUrl = userB.displayAvatarURL({ extension: 'png', size: 256 });
       const [aImg, bImg] = await Promise.all([loadImage(aUrl), loadImage(bUrl)]);
 
-      // Draw circular avatars
-      function drawCircleImage(img: any, cx: number, cy: number, r: number) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.closePath();
-        ctx.clip();
-        ctx.drawImage(img, cx - r, cy - r, r * 2, r * 2);
-        ctx.restore();
-      }
-      const centerY = size.h / 2;
-      drawCircleImage(aImg, size.w * 0.25, centerY, 120);
-      drawCircleImage(bImg, size.w * 0.75, centerY, 120);
+      // Draw square avatars (no border)
+      const box = 180;
+      const y = Math.floor((size.h - box) / 2);
+      const leftX = 40;
+      const rightX = size.w - 40 - box;
+      ctx.drawImage(aImg, leftX, y, box, box);
+      ctx.drawImage(bImg, rightX, y, box, box);
 
-      // Heart and percentage
+      // Heart and percentage (centered)
       const love = Math.floor(Math.random() * 101); // 0..100
-      ctx.font = 'bold 72px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      const cx = Math.floor(size.w / 2);
+      const cy = Math.floor(size.h / 2);
+      ctx.font = 'bold 68px sans-serif';
       ctx.fillStyle = '#ff4d6d';
-      ctx.fillText('❤', size.w / 2, centerY - 10);
+      ctx.fillText('❤', cx, cy);
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 42px sans-serif';
-      ctx.fillText(`${love}%`, size.w / 2, centerY + 60);
+      ctx.font = 'bold 34px sans-serif';
+      ctx.fillText(`${love}%`, cx, cy);
 
       // Names
       const aMember = await msg.guild?.members.fetch(userA.id).catch(() => null);
@@ -371,9 +367,9 @@ client.on('messageCreate', async (msg: Message) => {
       const aName = aMember?.displayName ?? userA.username;
       const bName = bMember?.displayName ?? userB.username;
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 28px sans-serif';
-      ctx.fillText(aName, size.w * 0.25, centerY + 160);
-      ctx.fillText(bName, size.w * 0.75, centerY + 160);
+      ctx.font = 'bold 22px sans-serif';
+      ctx.fillText(aName, leftX + box / 2, y + box + 20);
+      ctx.fillText(bName, rightX + box / 2, y + box + 20);
 
       const buffer = canvas.toBuffer('image/png');
       const attachment = new AttachmentBuilder(buffer, { name: 'love.png' });
