@@ -16,13 +16,17 @@ if (!token) {
 let ssdFontAvailable = false;
 let ssdFontFamily = 'Sarbaz';
 try {
+  const envFont = process.env.FONT_PATH && path.isAbsolute(process.env.FONT_PATH) ? process.env.FONT_PATH : null;
+  const localAsset = path.join(process.cwd(), 'assets', 'fonts', 'Sarbaz.ttf');
   const candidates = [
+    envFont,
+    localAsset,
     'C:/Windows/Fonts/Sarbaz.ttf',
     'C:/Windows/Fonts/arial.ttf',
     'C:/Windows/Fonts/segoeui.ttf',
     '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
     '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-  ];
+  ].filter(Boolean) as string[];
   for (const p of candidates) {
     try {
       if (fs.existsSync(p)) {
@@ -32,6 +36,9 @@ try {
         break;
       }
     } catch {}
+  }
+  if (!ssdFontAvailable) {
+    console.warn('[canvas] No custom font registered, will fallback to Arial');
   }
 } catch {}
 
@@ -197,7 +204,7 @@ function computeTotalsUpToNow(guildId: string, userId: string): Map<string, numb
   return out.size ? out : null;
 }
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`TimeSSD is online as ${client.user?.tag}`);
   // Initialize current voice channel membership and start sessions for existing pairs
   try {
