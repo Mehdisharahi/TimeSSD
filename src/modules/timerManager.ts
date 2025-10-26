@@ -111,7 +111,7 @@ export class TimerManager {
           const m = await c.messages.fetch(t.messageId).catch(() => null);
           if (m) {
             const unix = Math.floor(t.endsAt / 1000);
-            await m.edit({ embeds: [new EmbedBuilder().setDescription(`<t:${unix}:R>`)] });
+            await m.edit({ embeds: [new EmbedBuilder().setTitle(`<t:${unix}:R>`)] });
           }
         }
       } catch {}
@@ -326,7 +326,7 @@ export function parseDuration(input: string): number | null {
 
 export function makeTimerSetEmbed(at: ActiveTimer): EmbedBuilder {
   const unix = Math.floor(at.endsAt / 1000);
-  return new EmbedBuilder().setDescription(`<t:${unix}:R>`);
+  return new EmbedBuilder().setTitle(`<t:${unix}:R>`);
 }
 
 // No live countdown; we rely on Discord relative time. Formatter below remains for other uses.
