@@ -23,6 +23,8 @@ export const timerManager = new TimerManager(client);
 
 // simple per-process duplicate guard for messageCreate
 const processedMessages = new Set<string>();
+// additional guard to avoid double .ll replies per message
+const llInFlight = new Set<string>();
 
 // ===== Voice co-presence tracking (for .friend) =====
 // channelMembers[guildId][channelId] -> Set<userId>
@@ -40,6 +42,19 @@ function getMap<K, V>(map: Map<K, V>, key: K, mk: () => V): V {
 
 function pairKey(a: string, b: string, channelId: string): string {
   return (a < b ? `${a}:${b}:${channelId}` : `${b}:${a}:${channelId}`);
+}
+
+// Stable love score for a user pair (0..100) based on IDs
+function loveScoreForPair(aId: string, bId: string): number {
+  const key = aId < bId ? `${aId}:${bId}` : `${bId}:${aId}`;
+  // djb2 hash
+  let hash = 5381;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) + hash) + key.charCodeAt(i); // hash * 33 + c
+    hash |= 0;
+  }
+  const val = Math.abs(hash) % 101; // 0..100
+  return val;
 }
 
 type Store = {
@@ -79,7 +94,7 @@ async function addDuration(guildId: string, a: string, b: string, deltaMs: numbe
   const bMap = getMap(gMap, b, () => new Map());
   aMap.set(b, (aMap.get(b) || 0) + deltaMs);
   bMap.set(a, (bMap.get(a) || 0) + deltaMs);
-  // persist to SQLite
+  // persist to SQLite/Postgres
   await store.addDuration(guildId, a, b, deltaMs);
 }
 
@@ -296,6 +311,8 @@ client.on('messageCreate', async (msg: Message) => {
 
   // .ll command
   if (content.startsWith('.ll')) {
+    if (llInFlight.has(msg.id)) return;
+    llInFlight.add(msg.id);
     try {
       const arg = content.slice(3).trim();
       let userA = msg.author;
@@ -347,7 +364,7 @@ client.on('messageCreate', async (msg: Message) => {
       ctx.drawImage(bImg, rightX, y, box, box);
 
       // Heart and percentage (centered)
-      const love = Math.floor(Math.random() * 101); // 0..100
+      const love = loveScoreForPair(userA.id, userB.id);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const cx = Math.floor(size.w / 2);
@@ -404,6 +421,8 @@ client.on('messageCreate', async (msg: Message) => {
       console.error('Error in .ll command:', err);
       await msg.reply({ content: 'خطا در ساخت تصویر عشق. لطفاً کمی بعد دوباره تلاش کنید.' });
       return;
+    } finally {
+      llInFlight.delete(msg.id);
     }
   }
 
