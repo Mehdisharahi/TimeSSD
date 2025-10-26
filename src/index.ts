@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Interaction, Message } from 'discord.js';
+import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder } from 'discord.js';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
 
 const token = process.env.BOT_TOKEN;
@@ -29,11 +29,36 @@ client.on('interactionCreate', async (interaction: Interaction) => {
   }
 });
 
-// Dot-prefix command: .t <duration> [reason] and .e <seconds>
+// Dot-prefix command: .t <duration> [reason]
 client.on('messageCreate', async (msg: Message) => {
   if (!msg.inGuild()) return;
   if (msg.author.bot) return;
   const content = msg.content.trim();
+
+  // .av [@user|userId] — send avatar of mentioned user or the author
+  if (content.startsWith('.av')) {
+    const arg = content.slice(3).trim();
+    let user = msg.mentions.users.first() || null;
+    if (!user && arg) {
+      let id: string | null = null;
+      const m = arg.match(/^<@!?(\d+)>$/);
+      if (m) id = m[1];
+      else if (/^\d+$/.test(arg)) id = arg;
+      if (id) {
+        try {
+          user = await msg.client.users.fetch(id);
+        } catch {}
+      }
+    }
+    if (!user) user = msg.author;
+    const url = user.displayAvatarURL({ size: 1024, extension: 'png' });
+    const embed = new EmbedBuilder()
+      .setTitle(`Avatar: ${user.tag}`)
+      .setImage(url)
+      .setURL(url);
+    await msg.reply({ embeds: [embed] });
+    return;
+  }
 
   // .e <seconds> — extend last timer of this user (silent)
   if (content.startsWith('.e')) {
