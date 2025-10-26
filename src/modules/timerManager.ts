@@ -70,7 +70,6 @@ export class TimerManager {
     const t = candidates[0];
     if (!t) return null;
     t.endsAt += Math.max(0, deltaMs);
-
     // reschedule timeout
     clearTimeout(t.timeout);
     const remaining = Math.max(t.endsAt - Date.now(), 0);
@@ -198,7 +197,7 @@ export class TimerManager {
     return at;
   }
 
-  // Legacy extend by id (kept for compatibility if used somewhere)
+  // Legacy extend by id
   public extend(guildId: string, id: string, deltaMs: number): ActiveTimer | null {
     const g = this.timers.get(guildId);
     if (!g) return null;
