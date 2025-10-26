@@ -285,6 +285,8 @@ client.on('messageCreate', async (msg: Message) => {
       .setImage(banner)
       .setURL(banner);
     await msg.reply({ embeds: [embed] });
+    return;
+  }
 
   // .ll [@user|userId] — love calculator: compose two avatars with heart and random percentage
   if (content.startsWith('.ll')) {
@@ -381,7 +383,7 @@ client.on('messageCreate', async (msg: Message) => {
   // .e <seconds> — extend last timer of this user (silent)
   if (content.startsWith('.e')) {
     const arg = content.slice(2).trim();
-    // ... (rest of the code remains the same)
+    if (!arg || !/^\d+$/.test(arg)) {
       await msg.reply({ content: 'استفاده: `.e 30` (افزودن ثانیه به آخرین تایمر شما)' });
       return;
     }
