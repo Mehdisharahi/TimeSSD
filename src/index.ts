@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, AttachmentBuilder, PermissionsBitField } from 'discord.js';
-import { createCanvas, loadImage } from '@napi-rs/canvas';
+import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
 import { PgFriendStore } from './storage/pgFriendStore';
@@ -11,6 +11,24 @@ if (!token) {
   console.error('Missing BOT_TOKEN in .env');
   process.exit(1);
 }
+
+// Ensure a font is registered so text (numbers) renders on all environments
+try {
+  const candidates = [
+    'C:/Windows/Fonts/arial.ttf',
+    'C:/Windows/Fonts/segoeui.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        GlobalFonts.registerFromPath(p, 'SSD_Sans');
+        break;
+      }
+    } catch {}
+  }
+} catch {}
 
 //
 
@@ -564,7 +582,7 @@ client.on('messageCreate', async (msg: Message) => {
       ctx.restore();
 
       // Percentage text inside heart (outlined for visibility)
-      ctx.font = 'bold 40px sans-serif';
+      ctx.font = 'bold 40px "SSD_Sans", sans-serif';
       ctx.lineWidth = 6;
       ctx.strokeStyle = 'rgba(0,0,0,0.7)';
       ctx.strokeText(`${love}%`, cx, cy);
@@ -575,7 +593,7 @@ client.on('messageCreate', async (msg: Message) => {
       const aMember = await msg.guild?.members.fetch(userA.id).catch(() => null);
       const bMember = await msg.guild?.members.fetch(targetB.id).catch(() => null);
       const aName = aMember?.displayName ?? userA.username;
-      const bName = bMember?.displayName ?? userB.username;
+      const bName = bMember?.displayName ?? targetB.username;
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 20px sans-serif';
       ctx.fillText(aName, leftX + box / 2, box + 18);
