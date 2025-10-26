@@ -285,99 +285,103 @@ client.on('messageCreate', async (msg: Message) => {
       .setImage(banner)
       .setURL(banner);
     await msg.reply({ embeds: [embed] });
-    return;
-  }
 
   // .ll [@user|userId] — love calculator: compose two avatars with heart and random percentage
   if (content.startsWith('.ll')) {
-    const arg = content.slice(3).trim();
-    let userA = msg.author;
-    let userB = msg.mentions.users.first() || null;
-    if (!userB && arg) {
-      let id: string | null = null;
-      const m = arg.match(/^<@!?(\d+)>$/);
-      if (m) id = m[1];
-      else if (/^\d+$/.test(arg)) id = arg;
-      if (id) {
-        try { userB = await msg.client.users.fetch(id); } catch {}
+    try {
+      const arg = content.slice(3).trim();
+      let userA = msg.author;
+      let userB = msg.mentions.users.first() || null;
+      if (!userB && arg) {
+        let id: string | null = null;
+        const m = arg.match(/^<@!?(\d+)>$/);
+        if (m) id = m[1];
+        else if (/^\d+$/.test(arg)) id = arg;
+        if (id) {
+          try { userB = await msg.client.users.fetch(id); } catch {}
+        }
       }
-    }
-    if (!userB) {
-      // Pick a random non-bot guild member different from author. Try fetching members; fall back to cache.
-      let members = msg.guild?.members.cache.filter(m => !m.user.bot && m.id !== userA.id);
-      try {
-        const fetched = await msg.guild?.members.fetch();
-        if (fetched) members = fetched.filter(m => !m.user.bot && m.id !== userA.id);
-      } catch {}
-      const arr = members ? Array.from(members.values()) : [];
-      if (arr.length > 0) {
-        const pick = arr[Math.floor(Math.random() * arr.length)];
-        userB = pick.user;
+      if (!userB) {
+        // Pick a random non-bot guild member different from author. Try fetching members; fall back to cache.
+        let members = msg.guild?.members.cache.filter(m => !m.user.bot && m.id !== userA.id);
+        try {
+          const fetched = await msg.guild?.members.fetch();
+          if (fetched) members = fetched.filter(m => !m.user.bot && m.id !== userA.id);
+        } catch {}
+        const arr = members ? Array.from(members.values()) : [];
+        if (arr.length > 0) {
+          const pick = arr[Math.floor(Math.random() * arr.length)];
+          userB = pick.user;
+        }
       }
-    }
-    if (!userB) {
-      await msg.reply({ content: 'کاربری برای مقایسه پیدا نشد. لطفاً یک نفر را منشن کنید.' });
+      if (!userB) {
+        await msg.reply({ content: 'کاربری برای مقایسه پیدا نشد. لطفاً یک نفر را منشن کنید.' });
+        return;
+      }
+
+      const size = { w: 800, h: 400 };
+      const canvas = createCanvas(size.w, size.h);
+      const ctx = canvas.getContext('2d');
+
+      // Background
+      ctx.fillStyle = '#2f3136';
+      ctx.fillRect(0, 0, size.w, size.h);
+
+      // Load avatars
+      const aUrl = userA.displayAvatarURL({ extension: 'png', size: 256 });
+      const bUrl = userB.displayAvatarURL({ extension: 'png', size: 256 });
+      const [aImg, bImg] = await Promise.all([loadImage(aUrl), loadImage(bUrl)]);
+
+      // Draw circular avatars
+      function drawCircleImage(img: any, cx: number, cy: number, r: number) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+        ctx.drawImage(img, cx - r, cy - r, r * 2, r * 2);
+        ctx.restore();
+      }
+      const centerY = size.h / 2;
+      drawCircleImage(aImg, size.w * 0.25, centerY, 120);
+      drawCircleImage(bImg, size.w * 0.75, centerY, 120);
+
+      // Heart and percentage
+      const love = Math.floor(Math.random() * 101); // 0..100
+      ctx.font = 'bold 72px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ff4d6d';
+      ctx.fillText('❤', size.w / 2, centerY - 10);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 42px sans-serif';
+      ctx.fillText(`${love}%`, size.w / 2, centerY + 60);
+
+      // Names
+      const aMember = await msg.guild?.members.fetch(userA.id).catch(() => null);
+      const bMember = await msg.guild?.members.fetch(userB.id).catch(() => null);
+      const aName = aMember?.displayName ?? userA.username;
+      const bName = bMember?.displayName ?? userB.username;
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 28px sans-serif';
+      ctx.fillText(aName, size.w * 0.25, centerY + 160);
+      ctx.fillText(bName, size.w * 0.75, centerY + 160);
+
+      const buffer = canvas.toBuffer('image/png');
+      const attachment = new AttachmentBuilder(buffer, { name: 'love.png' });
+      await msg.reply({ files: [attachment] });
+      return;
+    } catch (err) {
+      console.error('Error in .ll command:', err);
+      await msg.reply({ content: 'خطا در ساخت تصویر عشق. لطفاً کمی بعد دوباره تلاش کنید.' });
       return;
     }
-
-    const size = { w: 800, h: 400 };
-    const canvas = createCanvas(size.w, size.h);
-    const ctx = canvas.getContext('2d');
-
-    // Background
-    ctx.fillStyle = '#2f3136';
-    ctx.fillRect(0, 0, size.w, size.h);
-
-    // Load avatars
-    const aUrl = userA.displayAvatarURL({ extension: 'png', size: 256 });
-    const bUrl = userB.displayAvatarURL({ extension: 'png', size: 256 });
-    const [aImg, bImg] = await Promise.all([loadImage(aUrl), loadImage(bUrl)]);
-
-    // Draw circular avatars
-    function drawCircleImage(img: any, cx: number, cy: number, r: number) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.closePath();
-      ctx.clip();
-      ctx.drawImage(img, cx - r, cy - r, r * 2, r * 2);
-      ctx.restore();
-    }
-    const centerY = size.h / 2;
-    drawCircleImage(aImg, size.w * 0.25, centerY, 120);
-    drawCircleImage(bImg, size.w * 0.75, centerY, 120);
-
-    // Heart and percentage
-    const love = Math.floor(Math.random() * 101); // 0..100
-    ctx.font = 'bold 72px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#ff4d6d';
-    ctx.fillText('❤', size.w / 2, centerY - 10);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 42px sans-serif';
-    ctx.fillText(`${love}%`, size.w / 2, centerY + 60);
-
-    // Names
-    const aMember = await msg.guild?.members.fetch(userA.id).catch(() => null);
-    const bMember = await msg.guild?.members.fetch(userB.id).catch(() => null);
-    const aName = aMember?.displayName ?? userA.username;
-    const bName = bMember?.displayName ?? userB.username;
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 28px sans-serif';
-    ctx.fillText(aName, size.w * 0.25, centerY + 160);
-    ctx.fillText(bName, size.w * 0.75, centerY + 160);
-
-    const buffer = canvas.toBuffer('image/png');
-    const attachment = new AttachmentBuilder(buffer, { name: 'love.png' });
-    await msg.reply({ files: [attachment] });
-    return;
   }
 
   // .e <seconds> — extend last timer of this user (silent)
   if (content.startsWith('.e')) {
     const arg = content.slice(2).trim();
-    if (!arg || !/^\d+$/.test(arg)) {
+    // ... (rest of the code remains the same)
       await msg.reply({ content: 'استفاده: `.e 30` (افزودن ثانیه به آخرین تایمر شما)' });
       return;
     }
