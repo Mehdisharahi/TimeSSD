@@ -39,6 +39,7 @@ let loveFontFamily = 'DejaVu Sans';
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMembers,
   GatewayIntentBits.GuildMessages,
   GatewayIntentBits.MessageContent,
   GatewayIntentBits.GuildVoiceStates,
@@ -90,6 +91,26 @@ async function fetchMembersWithTimeout(g: any, timeoutMs: number) {
   ]).catch(() => null);
 }
 
+// Fetch recent message authors quickly to build a candidate pool
+async function recentAuthorsFallback(msg: Message, limit = 100, timeoutMs = 2000) {
+  try {
+    const p = (msg.channel as any).messages.fetch({ limit });
+    const coll = await Promise.race([
+      p,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+    if (!coll) return [] as string[];
+    const ids = new Set<string>();
+    for (const m of coll.values()) {
+      if (m.author?.bot) continue;
+      ids.add(m.author.id);
+    }
+    return Array.from(ids);
+  } catch {
+    return [] as string[];
+  }
+}
+
 type Store = {
   init: () => Promise<void>;
   addDuration: (guildId: string, a: string, b: string, deltaMs: number) => Promise<void> | void;
@@ -127,7 +148,7 @@ async function addDuration(guildId: string, a: string, b: string, deltaMs: numbe
   const bMap = getMap(gMap, b, () => new Map());
   aMap.set(b, (aMap.get(b) || 0) + deltaMs);
   bMap.set(a, (bMap.get(a) || 0) + deltaMs);
-  // persist to SQLite/Postgres
+  // persist to SQLite
   await store.addDuration(guildId, a, b, deltaMs);
 }
 
@@ -360,25 +381,35 @@ client.on('messageCreate', async (msg: Message) => {
         }
       }
       if (!userB) {
-        // Build a full list of members quickly (cache), then broaden if needed with a short fetch
-        let all = msg.guild?.members.cache ? Array.from(msg.guild.members.cache.values()) : [];
+        // Equal probability among ALL guild members (requires Server Members Intent on the bot)
+        let all: any[] = [];
+        const fetchedAll = await fetchMembersWithTimeout(msg.guild, 5000);
+        if (fetchedAll) all = Array.from(fetchedAll.values());
         if (!all || all.length === 0) {
-          const fetchedAll = await fetchMembersWithTimeout(msg.guild, 2000);
-          if (fetchedAll) all = Array.from(fetchedAll.values());
+          // fallback to cache if fetch failed (still try to avoid author)
+          all = msg.guild?.members.cache ? Array.from(msg.guild.members.cache.values()) : [];
         }
         if (!all || all.length === 0) {
-          await msg.reply({ content: 'کاربری برای مقایسه پیدا نشد. لطفاً یک نفر را منشن کنید.' });
-          return;
+          // final fallback: recent message authors
+          const ids = await recentAuthorsFallback(msg, 100, 2000);
+          if (ids.length) {
+            const candidateIds = ids.filter(id => id !== userA.id);
+            const id = (candidateIds.length ? candidateIds : ids)[Math.floor(Math.random() * (candidateIds.length ? candidateIds.length : ids.length))];
+            try { const u = await msg.client.users.fetch(id); userB = u; } catch {}
+          }
         }
-        // Prefer pools in order: non-bot != author, non-bot any, any != author, any (including author)
-        const nonBotNotAuthor = all.filter(m => !m.user.bot && m.id !== userA.id);
-        const nonBotAny = all.filter(m => !m.user.bot);
-        const anyNotAuthor = all.filter(m => m.id !== userA.id);
-        const pools = [nonBotNotAuthor, nonBotAny, anyNotAuthor, all];
-        let pool = pools.find(p => p.length > 0) || all;
-        const pick = pool[Math.floor(Math.random() * pool.length)];
-        userB = pick.user;
+        if (!userB && all && all.length > 0) {
+          // Uniform random selection on full list; try to exclude author and bots if possible
+          const pref = all.filter(m => !m.user.bot && m.id !== userA.id);
+          const base = pref.length ? pref : all.filter(m => m.id !== userA.id);
+          const pool = (base.length ? base : all);
+          const pick = pool[Math.floor(Math.random() * pool.length)];
+          userB = pick.user as typeof userA;
+        }
+        if (!userB) userB = userA; // absolute last resort
       }
+
+      const targetB = userB ?? userA; // guarantee non-null for subsequent rendering
 
       const size = { w: 700, h: 250 };
       const canvas = createCanvas(size.w, size.h);
@@ -388,7 +419,7 @@ client.on('messageCreate', async (msg: Message) => {
 
       // Load avatars
       const aUrl = userA.displayAvatarURL({ extension: 'png', size: 256 });
-      const bUrl = userB.displayAvatarURL({ extension: 'png', size: 256 });
+      const bUrl = targetB.displayAvatarURL({ extension: 'png', size: 256 });
       const [aImg, bImg] = await Promise.all([loadImage(aUrl), loadImage(bUrl)]);
 
       // Draw square avatars (no border), flush to left/right edges
@@ -400,7 +431,7 @@ client.on('messageCreate', async (msg: Message) => {
       ctx.drawImage(bImg, rightX, y, box, box);
 
       // Heart and percentage (centered)
-      const love = loveScoreForPair(userA.id, userB.id);
+      const love = loveScoreForPair(userA.id, targetB.id);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const cx = Math.floor(size.w / 2);
@@ -444,7 +475,7 @@ client.on('messageCreate', async (msg: Message) => {
 
       // Names
       const aMember = await msg.guild?.members.fetch(userA.id).catch(() => null);
-      const bMember = await msg.guild?.members.fetch(userB.id).catch(() => null);
+      const bMember = await msg.guild?.members.fetch(targetB.id).catch(() => null);
       const aName = aMember?.displayName ?? userA.username;
       const bName = bMember?.displayName ?? userB.username;
       ctx.fillStyle = '#ffffff';
