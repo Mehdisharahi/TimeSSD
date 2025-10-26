@@ -23,6 +23,8 @@ export const timerManager = new TimerManager(client);
 
 // simple per-process duplicate guard for messageCreate
 const processedMessages = new Set<string>();
+// additional guard to avoid double .ll replies per message
+const llInFlight = new Set<string>();
 
 // ===== Voice co-presence tracking (for .friend) =====
 // channelMembers[guildId][channelId] -> Set<userId>
@@ -40,6 +42,19 @@ function getMap<K, V>(map: Map<K, V>, key: K, mk: () => V): V {
 
 function pairKey(a: string, b: string, channelId: string): string {
   return (a < b ? `${a}:${b}:${channelId}` : `${b}:${a}:${channelId}`);
+}
+
+// Stable love score for a user pair (0..100) based on IDs
+function loveScoreForPair(aId: string, bId: string): number {
+  const key = aId < bId ? `${aId}:${bId}` : `${bId}:${aId}`;
+  // djb2 hash
+  let hash = 5381;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) + hash) + key.charCodeAt(i); // hash * 33 + c
+    hash |= 0;
+  }
+  const val = Math.abs(hash) % 101; // 0..100
+  return val;
 }
 
 type Store = {
@@ -79,7 +94,7 @@ async function addDuration(guildId: string, a: string, b: string, deltaMs: numbe
   const bMap = getMap(gMap, b, () => new Map());
   aMap.set(b, (aMap.get(b) || 0) + deltaMs);
   bMap.set(a, (bMap.get(a) || 0) + deltaMs);
-  // persist to SQLite
+  // persist to SQLite/Postgres
   await store.addDuration(guildId, a, b, deltaMs);
 }
 
@@ -296,6 +311,8 @@ client.on('messageCreate', async (msg: Message) => {
 
   // .ll command
   if (content.startsWith('.ll')) {
+    if (llInFlight.has(msg.id)) return;
+    llInFlight.add(msg.id);
     try {
       const arg = content.slice(3).trim();
       let userA = msg.author;
@@ -310,12 +327,8 @@ client.on('messageCreate', async (msg: Message) => {
         }
       }
       if (!userB) {
-        // Pick a random non-bot guild member different from author. Try fetching members; fall back to cache.
-        let members = msg.guild?.members.cache.filter(m => !m.user.bot && m.id !== userA.id);
-        try {
-          const fetched = await msg.guild?.members.fetch();
-          if (fetched) members = fetched.filter(m => !m.user.bot && m.id !== userA.id);
-        } catch {}
+        // Fast path: use cache only (no full fetch) to keep response under ~1-2s
+        const members = msg.guild?.members.cache.filter(m => !m.user.bot && m.id !== userA.id);
         const arr = members ? Array.from(members.values()) : [];
         if (arr.length > 0) {
           const pick = arr[Math.floor(Math.random() * arr.length)];
@@ -327,38 +340,66 @@ client.on('messageCreate', async (msg: Message) => {
         return;
       }
 
-      const size = { w: 640, h: 300 };
+      const size = { w: 700, h: 250 };
       const canvas = createCanvas(size.w, size.h);
       const ctx = canvas.getContext('2d');
 
-      // Background
-      ctx.fillStyle = '#2f3136';
-      ctx.fillRect(0, 0, size.w, size.h);
+      // Transparent background (do not paint any backdrop)
 
       // Load avatars
       const aUrl = userA.displayAvatarURL({ extension: 'png', size: 256 });
       const bUrl = userB.displayAvatarURL({ extension: 'png', size: 256 });
       const [aImg, bImg] = await Promise.all([loadImage(aUrl), loadImage(bUrl)]);
 
-      // Draw square avatars (no border)
-      const box = 180;
-      const y = Math.floor((size.h - box) / 2);
-      const leftX = 40;
-      const rightX = size.w - 40 - box;
+      // Draw square avatars (no border), flush to left/right edges
+      const box = size.h; // full height square
+      const y = 0;
+      const leftX = 0;
+      const rightX = size.w - box;
       ctx.drawImage(aImg, leftX, y, box, box);
       ctx.drawImage(bImg, rightX, y, box, box);
 
       // Heart and percentage (centered)
-      const love = Math.floor(Math.random() * 101); // 0..100
+      const love = loveScoreForPair(userA.id, userB.id);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const cx = Math.floor(size.w / 2);
       const cy = Math.floor(size.h / 2);
-      ctx.font = 'bold 68px sans-serif';
-      ctx.fillStyle = '#ff4d6d';
-      ctx.fillText('❤', cx, cy);
+
+      // Draw a glossy heart path with gradient
+      const heartW = 230;
+      const heartH = 210;
+      const hw = heartW / 2;
+      const hh = heartH / 2;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.beginPath();
+      // Parametric heart using Bezier curves
+      ctx.moveTo(0, hh * 0.2);
+      ctx.bezierCurveTo(hw, -hh * 0.6, hw * 1.2, hh * 0.8, 0, hh);
+      ctx.bezierCurveTo(-hw * 1.2, hh * 0.8, -hw, -hh * 0.6, 0, hh * 0.2);
+      const grad = ctx.createRadialGradient(-hw * 0.2, -hh * 0.4, hw * 0.1, 0, 0, Math.max(hw, hh));
+      grad.addColorStop(0, '#ff88a3');
+      grad.addColorStop(0.4, '#ff5e7a');
+      grad.addColorStop(1, '#d61e41');
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // subtle highlight
+      ctx.globalAlpha = 0.25;
+      ctx.beginPath();
+      ctx.ellipse(-hw * 0.25, -hh * 0.35, hw * 0.45, hh * 0.25, 0, 0, Math.PI * 2);
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 34px sans-serif';
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.restore();
+
+      // Percentage text inside heart (outlined for visibility)
+      ctx.font = 'bold 40px sans-serif';
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+      ctx.strokeText(`${love}%`, cx, cy);
+      ctx.fillStyle = '#ffffff';
       ctx.fillText(`${love}%`, cx, cy);
 
       // Names
@@ -367,9 +408,9 @@ client.on('messageCreate', async (msg: Message) => {
       const aName = aMember?.displayName ?? userA.username;
       const bName = bMember?.displayName ?? userB.username;
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 22px sans-serif';
-      ctx.fillText(aName, leftX + box / 2, y + box + 20);
-      ctx.fillText(bName, rightX + box / 2, y + box + 20);
+      ctx.font = 'bold 20px sans-serif';
+      ctx.fillText(aName, leftX + box / 2, box + 18);
+      ctx.fillText(bName, rightX + box / 2, box + 18);
 
       const buffer = canvas.toBuffer('image/png');
       const attachment = new AttachmentBuilder(buffer, { name: 'love.png' });
@@ -379,6 +420,8 @@ client.on('messageCreate', async (msg: Message) => {
       console.error('Error in .ll command:', err);
       await msg.reply({ content: 'خطا در ساخت تصویر عشق. لطفاً کمی بعد دوباره تلاش کنید.' });
       return;
+    } finally {
+      llInFlight.delete(msg.id);
     }
   }
 
