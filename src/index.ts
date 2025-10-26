@@ -82,6 +82,14 @@ function loveScoreForPair(aId: string, bId: string): number {
   return val;
 }
 
+// Try to fetch all guild members but give up after a timeout (ms)
+async function fetchMembersWithTimeout(g: any, timeoutMs: number) {
+  return Promise.race([
+    g.members.fetch(),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+  ]).catch(() => null);
+}
+
 type Store = {
   init: () => Promise<void>;
   addDuration: (guildId: string, a: string, b: string, deltaMs: number) => Promise<void> | void;
@@ -352,10 +360,18 @@ client.on('messageCreate', async (msg: Message) => {
         }
       }
       if (!userB) {
-        // Fast path: use cache only (no full fetch) to keep response under ~1-2s
-        const members = msg.guild?.members.cache.filter(m => !m.user.bot && m.id !== userA.id);
-        const arr = members ? Array.from(members.values()) : [];
-        if (arr.length > 0) {
+        // 1) Try cache quickly
+        let members = msg.guild?.members.cache.filter(m => !m.user.bot && m.id !== userA.id);
+        let arr = members ? Array.from(members.values()) : [];
+        // 2) If cache is small/empty, try full fetch but cap to ~2s for responsiveness
+        if (!arr || arr.length < 2) {
+          const fetched = await fetchMembersWithTimeout(msg.guild, 2000);
+          if (fetched) {
+            members = fetched.filter((m: any) => !m.user.bot && m.id !== userA.id);
+            arr = Array.from(members.values());
+          }
+        }
+        if (arr && arr.length > 0) {
           const pick = arr[Math.floor(Math.random() * arr.length)];
           userB = pick.user;
         }
