@@ -21,6 +21,9 @@ const client = new Client({ intents: [
 
 export const timerManager = new TimerManager(client);
 
+// simple per-process duplicate guard for messageCreate
+const processedMessages = new Set<string>();
+
 // ===== Voice co-presence tracking (for .friend) =====
 // channelMembers[guildId][channelId] -> Set<userId>
 const channelMembers: Map<string, Map<string, Set<string>>> = new Map();
@@ -178,6 +181,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
 client.on('messageCreate', async (msg: Message) => {
   if (!msg.inGuild()) return;
   if (msg.author.bot) return;
+  if (processedMessages.has(msg.id)) return;
+  processedMessages.add(msg.id);
+  setTimeout(() => processedMessages.delete(msg.id), 60_000);
   const content = msg.content.trim();
 
   // .friend [@user|userId] — list top 10 voice partners by co-presence time
@@ -288,7 +294,7 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .ll [@user|userId] — love calculator: compose two avatars with heart and random percentage
+  // .ll command
   if (content.startsWith('.ll')) {
     try {
       const arg = content.slice(3).trim();
@@ -380,7 +386,7 @@ client.on('messageCreate', async (msg: Message) => {
     }
   }
 
-  // .e <seconds> — extend last timer of this user (silent)
+  // .e command
   if (content.startsWith('.e')) {
     const arg = content.slice(2).trim();
     if (!arg || !/^\d+$/.test(arg)) {
