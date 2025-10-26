@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection } from 'discord.js';
 import fs from 'fs';
 import path from 'path';
-import { FriendStore } from './storage/friendStore';
+import { PgFriendStore } from './storage/pgFriendStore';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
 
 const token = process.env.BOT_TOKEN;
@@ -38,12 +38,37 @@ function pairKey(a: string, b: string, channelId: string): string {
   return (a < b ? `${a}:${b}:${channelId}` : `${b}:${a}:${channelId}`);
 }
 
-const dbPath = process.env.FRIENDS_DB_PATH || path.join(process.cwd(), 'data', 'friends.db');
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-const friendStore = new FriendStore(dbPath);
-friendStore.init();
+type Store = {
+  init: () => Promise<void>;
+  addDuration: (guildId: string, a: string, b: string, deltaMs: number) => Promise<void> | void;
+  loadGuild: (guildId: string) => Promise<Map<string, Map<string, number>>>;
+};
 
-function addDuration(guildId: string, a: string, b: string, deltaMs: number) {
+let store: Store;
+const pgUrl = process.env.DATABASE_URL;
+if (pgUrl) {
+  const pg = new PgFriendStore(pgUrl);
+  store = {
+    init: () => pg.init(),
+    addDuration: (g, a, b, ms) => pg.addDuration(g, a, b, ms),
+    loadGuild: (g) => pg.loadGuild(g),
+  };
+} else {
+  const dbPath = process.env.FRIENDS_DB_PATH || path.join(process.cwd(), 'data', 'friends.db');
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  // Dynamic require to avoid loading better-sqlite3 when not needed
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { FriendStore } = require('./storage/friendStore');
+  const sqlite = new FriendStore(dbPath);
+  // Adapter to async interface
+  store = {
+    init: async () => { sqlite.init(); },
+    addDuration: async (g, a, b, ms) => { sqlite.addDuration(g, a, b, ms); },
+    loadGuild: async (g) => sqlite.loadGuild(g),
+  };
+}
+
+async function addDuration(guildId: string, a: string, b: string, deltaMs: number) {
   if (deltaMs <= 0) return;
   const gMap = getMap(partnerTotals, guildId, () => new Map());
   const aMap = getMap(gMap, a, () => new Map());
@@ -51,18 +76,19 @@ function addDuration(guildId: string, a: string, b: string, deltaMs: number) {
   aMap.set(b, (aMap.get(b) || 0) + deltaMs);
   bMap.set(a, (bMap.get(a) || 0) + deltaMs);
   // persist to SQLite
-  friendStore.addDuration(guildId, a, b, deltaMs);
+  await store.addDuration(guildId, a, b, deltaMs);
 }
 
 client.once('ready', async () => {
   console.log(`TimeSSD is online as ${client.user?.tag}`);
   // Initialize current voice channel membership and start sessions for existing pairs
   try {
+    await store.init();
     for (const g of client.guilds.cache.values()) {
       const gId = g.id;
       // Load persisted totals for this guild
       try {
-        const loaded = friendStore.loadGuild(gId);
+        const loaded = await store.loadGuild(gId);
         if (loaded && loaded.size) {
           partnerTotals.set(gId, loaded);
         }
