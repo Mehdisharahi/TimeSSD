@@ -13,8 +13,11 @@ if (!token) {
 }
 
 // Ensure a font is registered so text (numbers) renders on all environments
+let ssdFontAvailable = false;
+let ssdFontFamily = 'Sarbaz';
 try {
   const candidates = [
+    'C:/Windows/Fonts/Sarbaz.ttf',
     'C:/Windows/Fonts/arial.ttf',
     'C:/Windows/Fonts/segoeui.ttf',
     '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
@@ -23,7 +26,9 @@ try {
   for (const p of candidates) {
     try {
       if (fs.existsSync(p)) {
-        GlobalFonts.registerFromPath(p, 'SSD_Sans');
+        GlobalFonts.registerFromPath(p, ssdFontFamily);
+        ssdFontAvailable = true;
+        console.log(`[canvas] Registered font from: ${p} as ${ssdFontFamily}`);
         break;
       }
     } catch {}
@@ -526,7 +531,9 @@ client.on('messageCreate', async (msg: Message) => {
       const canvas = createCanvas(size.w, size.h);
       const ctx = canvas.getContext('2d');
 
-      // Transparent background (do not paint any backdrop)
+      // Solid background to guarantee contrast
+      ctx.fillStyle = '#2f3136';
+      ctx.fillRect(0, 0, size.w, size.h);
 
       // Load avatars
       const aUrl = userA.displayAvatarURL({ extension: 'png', size: 256 });
@@ -548,6 +555,7 @@ client.on('messageCreate', async (msg: Message) => {
         const v = m?.get(loveKey(userA.id, targetB.id));
         if (typeof v === 'number') love = v;
       } catch {}
+      console.log(`[.ll] rendering with love=%s, fontAvailable=%s`, love, ssdFontAvailable);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const cx = Math.floor(size.w / 2);
@@ -582,7 +590,7 @@ client.on('messageCreate', async (msg: Message) => {
       ctx.restore();
 
       // Percentage text inside heart (outlined for visibility)
-      ctx.font = 'bold 40px "SSD_Sans", sans-serif';
+      ctx.font = ssdFontAvailable ? `bold 40px "${ssdFontFamily}"` : 'bold 40px Arial';
       ctx.lineWidth = 6;
       ctx.strokeStyle = 'rgba(0,0,0,0.7)';
       ctx.strokeText(`${love}%`, cx, cy);
