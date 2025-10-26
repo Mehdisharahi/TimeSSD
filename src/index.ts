@@ -127,7 +127,7 @@ async function addDuration(guildId: string, a: string, b: string, deltaMs: numbe
   const bMap = getMap(gMap, b, () => new Map());
   aMap.set(b, (aMap.get(b) || 0) + deltaMs);
   bMap.set(a, (bMap.get(a) || 0) + deltaMs);
-  // persist to SQLite
+  // persist to SQLite/Postgres
   await store.addDuration(guildId, a, b, deltaMs);
 }
 
@@ -360,25 +360,24 @@ client.on('messageCreate', async (msg: Message) => {
         }
       }
       if (!userB) {
-        // 1) Try cache quickly
-        let members = msg.guild?.members.cache.filter(m => !m.user.bot && m.id !== userA.id);
-        let arr = members ? Array.from(members.values()) : [];
-        // 2) If cache is small/empty, try full fetch but cap to ~2s for responsiveness
-        if (!arr || arr.length < 2) {
-          const fetched = await fetchMembersWithTimeout(msg.guild, 2000);
-          if (fetched) {
-            members = fetched.filter((m: any) => !m.user.bot && m.id !== userA.id);
-            arr = Array.from(members.values());
-          }
+        // Build a full list of members quickly (cache), then broaden if needed with a short fetch
+        let all = msg.guild?.members.cache ? Array.from(msg.guild.members.cache.values()) : [];
+        if (!all || all.length === 0) {
+          const fetchedAll = await fetchMembersWithTimeout(msg.guild, 2000);
+          if (fetchedAll) all = Array.from(fetchedAll.values());
         }
-        if (arr && arr.length > 0) {
-          const pick = arr[Math.floor(Math.random() * arr.length)];
-          userB = pick.user;
+        if (!all || all.length === 0) {
+          await msg.reply({ content: 'کاربری برای مقایسه پیدا نشد. لطفاً یک نفر را منشن کنید.' });
+          return;
         }
-      }
-      if (!userB) {
-        await msg.reply({ content: 'کاربری برای مقایسه پیدا نشد. لطفاً یک نفر را منشن کنید.' });
-        return;
+        // Prefer pools in order: non-bot != author, non-bot any, any != author, any (including author)
+        const nonBotNotAuthor = all.filter(m => !m.user.bot && m.id !== userA.id);
+        const nonBotAny = all.filter(m => !m.user.bot);
+        const anyNotAuthor = all.filter(m => m.id !== userA.id);
+        const pools = [nonBotNotAuthor, nonBotAny, anyNotAuthor, all];
+        let pool = pools.find(p => p.length > 0) || all;
+        const pick = pool[Math.floor(Math.random() * pool.length)];
+        userB = pick.user;
       }
 
       const size = { w: 700, h: 250 };
