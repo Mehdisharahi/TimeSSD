@@ -21,6 +21,7 @@ client.once('ready', () => {
 });
 
 client.on('interactionCreate', async (interaction: Interaction) => {
+  // Slash
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === 'timer') {
       await handleTimerInteraction(interaction, timerManager);
@@ -29,13 +30,11 @@ client.on('interactionCreate', async (interaction: Interaction) => {
   }
 });
 
-// Dot-prefix command: .t <duration> [reason] and .e <seconds>
+// Dot-prefix command: .t <duration> [reason]
 client.on('messageCreate', async (msg: Message) => {
   if (!msg.inGuild()) return;
   if (msg.author.bot) return;
   const content = msg.content.trim();
-
-  // .e <seconds> — extend last timer of this user
   if (content.startsWith('.e')) {
     const arg = content.slice(2).trim();
     if (!arg || !/^\d+$/.test(arg)) {
@@ -52,7 +51,6 @@ client.on('messageCreate', async (msg: Message) => {
       await msg.reply({ content: 'تایمر فعالی برای شما یافت نشد.' });
       return;
     }
-    await msg.reply({ content: `✅ ${sec} ثانیه اضافه شد.` });
     return;
   }
 
@@ -68,7 +66,7 @@ client.on('messageCreate', async (msg: Message) => {
   const reason = rest.join(' ').trim() || null;
   const durationMs = parseDuration(first);
   if (!durationMs || durationMs < 1000) {
-    await msg.reply({ content: 'مدت زمان نامعتبر. نمونه: 10m یا 2h یا 1d یا فقط عدد (ثانیه): 45' });
+    await msg.reply({ content: 'مدت زمان نامعتبر. نمونه: 10m یا 2h یا 60 (ثانیه)' });
     return;
   }
 
