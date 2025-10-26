@@ -253,6 +253,40 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  if (content.startsWith('.ba')) {
+    const arg = content.slice(3).trim();
+    let user = msg.mentions.users.first() || null;
+    if (!user && arg) {
+      let id: string | null = null;
+      const m = arg.match(/^<@!?(\d+)>$/);
+      if (m) id = m[1];
+      else if (/^\d+$/.test(arg)) id = arg;
+      if (id) {
+        try {
+          user = await msg.client.users.fetch(id);
+        } catch {}
+      }
+    }
+    if (!user) user = msg.author;
+    try { user = await user.fetch(); } catch {}
+    const banner = user.bannerURL({ size: 1024, extension: 'png' });
+    if (!banner) {
+      await msg.reply({ content: 'این کاربر بنری تنظیم نکرده است.' });
+      return;
+    }
+    let display = user.username;
+    try {
+      const member = await msg.guild?.members.fetch(user.id).catch(() => null);
+      display = member?.displayName ?? user.username;
+    } catch {}
+    const embed = new EmbedBuilder()
+      .setTitle(`Banner: ${display}`)
+      .setImage(banner)
+      .setURL(banner);
+    await msg.reply({ embeds: [embed] });
+    return;
+  }
+
   // .e <seconds> — extend last timer of this user (silent)
   if (content.startsWith('.e')) {
     const arg = content.slice(2).trim();
