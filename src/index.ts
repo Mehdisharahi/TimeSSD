@@ -12,6 +12,33 @@ if (!token) {
   process.exit(1);
 }
 
+// Sticky random love values per guild so results stay consistent unless overridden
+const loveRandoms: Map<string, Map<string, number>> = new Map();
+const loveRandomFile = path.join(process.cwd(), 'data', 'love-randoms.json');
+function loadLoveRandoms() {
+  try {
+    fs.mkdirSync(path.dirname(loveRandomFile), { recursive: true });
+    const raw = fs.existsSync(loveRandomFile) ? fs.readFileSync(loveRandomFile, 'utf8') : '';
+    if (raw) {
+      const obj = JSON.parse(raw) as Record<string, Record<string, number>>;
+      loveRandoms.clear();
+      for (const [g, pairs] of Object.entries(obj)) {
+        const m = new Map<string, number>();
+        for (const [k, v] of Object.entries(pairs)) m.set(k, v);
+        loveRandoms.set(g, m);
+      }
+    }
+  } catch {}
+}
+function saveLoveRandoms() {
+  try {
+    fs.mkdirSync(path.dirname(loveRandomFile), { recursive: true });
+    const obj: Record<string, Record<string, number>> = {};
+    for (const [g, m] of loveRandoms) obj[g] = Object.fromEntries(m.entries());
+    fs.writeFileSync(loveRandomFile, JSON.stringify(obj, null, 2), 'utf8');
+  } catch {}
+}
+
 // Ensure a font is registered so text (numbers) renders on all environments
 let ssdFontAvailable = false;
 let ssdFontFamily = 'Sarbaz';
@@ -167,6 +194,7 @@ if (pgUrl) {
 }
 
 loadLoveOverrides();
+loadLoveRandoms();
 
 async function addDuration(guildId: string, a: string, b: string, deltaMs: number) {
   if (deltaMs <= 0) return;
@@ -307,7 +335,7 @@ client.on('messageCreate', async (msg: Message) => {
   setTimeout(() => processedMessages.delete(msg.id), 60_000);
   const content = msg.content.trim();
 
-  // .friend [@user|userId] — list top 10 voice partners by co-presence time
+  // .friend [@user|userId]
   if (content.startsWith('.friend')) {
     const arg = content.slice(7).trim();
     let target = msg.mentions.users.first() || null;
@@ -350,7 +378,7 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .av [@user|userId] — send avatar of mentioned user or the author
+  // .av [@user|userId]
   if (content.startsWith('.av')) {
     const arg = content.slice(3).trim();
     let user = msg.mentions.users.first() || null;
@@ -414,7 +442,7 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .llset @user1 @user2 <0-100> — admin only: set fixed love percent for a pair
+  // .llset — admin only
   if (content.startsWith('.llset')) {
     const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
     if (!isAdmin) {
@@ -450,7 +478,7 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .llunset @user1 @user2 — admin only: remove fixed love percent
+  // .llunset — admin only
   if (content.startsWith('.llunset')) {
     const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
     if (!isAdmin) {
@@ -556,12 +584,32 @@ client.on('messageCreate', async (msg: Message) => {
       ctx.drawImage(bImg, rightX, y, box, box);
 
       // Heart and percentage (centered)
-      let love = Math.floor(Math.random() * 101);
+      let love: number;
+      const gIdForLove = msg.guildId!;
+      const pair = loveKey(userA.id, targetB.id);
       try {
-        const m = loveOverrides.get(msg.guildId!);
-        const v = m?.get(loveKey(userA.id, targetB.id));
-        if (typeof v === 'number') love = v;
-      } catch {}
+        // 1) Admin override wins
+        const mOverride = loveOverrides.get(gIdForLove);
+        const vOverride = mOverride?.get(pair);
+        if (typeof vOverride === 'number') {
+          love = vOverride;
+        } else {
+          // 2) Sticky random: reuse if exists, otherwise create and persist
+          let mRand = loveRandoms.get(gIdForLove);
+          if (!mRand) { mRand = new Map<string, number>(); loveRandoms.set(gIdForLove, mRand); }
+          const vRand = mRand.get(pair);
+          if (typeof vRand === 'number') {
+            love = vRand;
+          } else {
+            love = Math.floor(Math.random() * 101);
+            mRand.set(pair, love);
+            saveLoveRandoms();
+          }
+        }
+      } catch {
+        // Fallback if anything goes wrong
+        love = Math.floor(Math.random() * 101);
+      }
       console.log(`[.ll] rendering with love=%s, fontAvailable=%s`, love, ssdFontAvailable);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
