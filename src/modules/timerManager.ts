@@ -78,14 +78,13 @@ export class TimerManager {
         const channel = await this.client.channels.fetch(t.channelId);
         if (channel && channel.isTextBased()) {
           const c = channel as GuildTextBasedChannel;
-          const mention = userMention(t.userId);
-          const reasonText = t.reason ? `Reason: ${t.reason}` : '';
-          await c.send(`⏰ ${mention} زمان تموم شد! ${reasonText}`.trim());
+          const reasonText = t.reason ? `${t.reason}` : '';
+          await c.send(`⏰ زمان تموم شد! ${reasonText}`.trim());
           if (t.messageId) {
-            try {
-              const m = await c.messages.fetch(t.messageId).catch(() => null);
-              if (m) await m.delete().catch(() => {});
-            } catch {}
+            const m = await c.messages.fetch(t.messageId).catch(() => null);
+            if (m) {
+              await m.edit({ embeds: [new EmbedBuilder().setDescription('پایان')] }).catch(() => {});
+            }
           }
         }
       } catch {}
@@ -148,17 +147,16 @@ export class TimerManager {
         const channel = await this.client.channels.fetch(opts.channelId);
         if (channel && channel.isTextBased()) {
           const c = channel as GuildTextBasedChannel;
-          const mention = userMention(opts.userId);
-          const reasonText = opts.reason ? `Reason: ${opts.reason}` : '';
-          await c.send(`⏰ ${mention} زمان تموم شد! ${reasonText}`.trim());
-          // Remove the start embed to avoid showing 'ago'
+          const reasonText = opts.reason ? `${opts.reason}` : '';
+          await c.send(`⏰ زمان تموم شد! ${reasonText}`.trim());
+          // Edit the start message to a fixed minimal text to avoid 'ago'
           const g = this.timers.get(opts.guildId);
           const t = g?.get(id);
           if (t?.messageId) {
-            try {
-              const m = await c.messages.fetch(t.messageId).catch(() => null);
-              if (m) await m.delete().catch(() => {});
-            } catch {}
+            const m = await c.messages.fetch(t.messageId).catch(() => null);
+            if (m) {
+              await m.edit({ embeds: [new EmbedBuilder().setDescription('پایان')] }).catch(() => {});
+            }
           }
         }
       } catch {}
@@ -194,7 +192,7 @@ export class TimerManager {
     if (!g) return null;
     const t = g.get(id);
     if (!t) return null;
-    // Clamp to max 30s per extend
+    // Clamp to max 30s per extend (legacy; not used by .e)
     const clamped = Math.max(0, Math.min(deltaMs, 30_000));
     if (clamped <= 0) return null;
     t.endsAt += clamped;
@@ -206,14 +204,13 @@ export class TimerManager {
         const channel = await this.client.channels.fetch(t.channelId);
         if (channel && channel.isTextBased()) {
           const c = channel as GuildTextBasedChannel;
-          const mention = userMention(t.userId);
-          const reasonText = t.reason ? `Reason: ${t.reason}` : '';
-          await c.send(`⏰ ${mention} زمان تموم شد! ${reasonText}`.trim());
+          const reasonText = t.reason ? `${t.reason}` : '';
+          await c.send(`⏰ زمان تموم شد! ${reasonText}`.trim());
           if (t.messageId) {
-            try {
-              const m = await c.messages.fetch(t.messageId).catch(() => null);
-              if (m) await m.delete().catch(() => {});
-            } catch {}
+            const m = await c.messages.fetch(t.messageId).catch(() => null);
+            if (m) {
+              await m.edit({ embeds: [new EmbedBuilder().setDescription('پایان')] }).catch(() => {});
+            }
           }
         }
       } catch {}
@@ -324,7 +321,6 @@ export function makeTimerSetEmbed(at: ActiveTimer): EmbedBuilder {
 }
 
 // No live countdown; we rely on Discord relative time. Formatter below remains for other uses.
-
 
 function formatHMS(msNum: number): string {
   let s = Math.floor(msNum / 1000);
