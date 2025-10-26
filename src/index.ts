@@ -211,12 +211,12 @@ client.on('messageCreate', async (msg: Message) => {
       return `${s}s`;
     };
     const lines: string[] = [];
-    for (const [pid, ms] of top) {
+    top.forEach(([pid, ms], i) => {
       const mention = `<@${pid}>`;
-      lines.push(`• ${mention} — ${fmt(ms)}`);
-    }
+      lines.push(`${i + 1}. ${mention} — ${fmt(ms)}`);
+    });
     const embed = new EmbedBuilder()
-      .setTitle(`هم‌صحبت‌های برتر ${target.tag}`)
+      .setTitle('friends')
       .setDescription(lines.join('\n'))
       .setColor(0x2f3136);
     await msg.reply({ embeds: [embed] });
@@ -240,8 +240,13 @@ client.on('messageCreate', async (msg: Message) => {
     }
     if (!user) user = msg.author;
     const url = user.displayAvatarURL({ size: 1024, extension: 'png' });
+    let display = user.username;
+    try {
+      const member = await msg.guild?.members.fetch(user.id).catch(() => null);
+      display = member?.displayName ?? user.username;
+    } catch {}
     const embed = new EmbedBuilder()
-      .setTitle(`Avatar: ${user.tag}`)
+      .setTitle(`Avatar: ${display}`)
       .setImage(url)
       .setURL(url);
     await msg.reply({ embeds: [embed] });
