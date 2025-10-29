@@ -23,6 +23,7 @@ interface Card { s: Suit; r: number }
 interface HokmSession {
   channelId: string;
   guildId: string;
+  ownerId?: string;
   team1: string[]; // userIds
   team2: string[];
   order: string[]; // play order: [t1[0], t2[0], t1[1], t2[1]]
@@ -583,7 +584,7 @@ client.on('messageCreate', async (msg: Message) => {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     // reset session
-    s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'waiting';
+    s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'waiting'; s.ownerId = msg.author.id;
     const embed = new EmbedBuilder().setTitle('Hokm — اتاق جدید')
       .setDescription('با دکمه‌ها تیم خود را انتخاب کنید. هر تیم ۲ نفر. سپس `.hokm start` را بزنید.')
       .setColor(0x2f3136);
@@ -593,6 +594,84 @@ client.on('messageCreate', async (msg: Message) => {
     );
     const sent = await msg.reply({ embeds: [embed], components: [row] });
     s.controlMsgId = sent.id;
+    return;
+  }
+
+  // .a1 @user — owner assigns user to Team 1
+  if (content.startsWith('.a1')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
+    if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را اضافه کند.'); return; }
+    const user = msg.mentions.users.first();
+    let uid: string | null = user?.id ?? null;
+    if (!uid) {
+      const raw = content.replace('.a1', '').trim();
+      if (/^\d+$/.test(raw)) uid = raw;
+    }
+    if (!uid) { await msg.reply('استفاده: `.a1 @user` یا آیدی کاربر'); return; }
+    try {
+      const u = await msg.client.users.fetch(uid);
+      if (u.bot) { await msg.reply('نمی‌توان بات را به بازی اضافه کرد.'); return; }
+    } catch {}
+    s.team1 = s.team1.filter(x=>x!==uid);
+    s.team2 = s.team2.filter(x=>x!==uid);
+    if (s.team1.includes(uid)) { await msg.reply('این کاربر در تیم 1 است.'); return; }
+    if (s.team1.length >= 2) { await msg.reply('تیم 1 پر است.'); return; }
+    s.team1.push(uid);
+    const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
+      .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
+      .setColor(0x2f3136);
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+    );
+    try {
+      if (s.controlMsgId) {
+        const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null);
+        if (m) await m.edit({ embeds: [embed], components: [row] });
+      }
+    } catch {}
+    await msg.reply(`کاربر <@${uid}> به تیم 1 اضافه شد.`);
+    return;
+  }
+
+  // .a2 @user — owner assigns user to Team 2
+  if (content.startsWith('.a2')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
+    if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را اضافه کند.'); return; }
+    const user = msg.mentions.users.first();
+    let uid: string | null = user?.id ?? null;
+    if (!uid) {
+      const raw = content.replace('.a2', '').trim();
+      if (/^\d+$/.test(raw)) uid = raw;
+    }
+    if (!uid) { await msg.reply('استفاده: `.a2 @user` یا آیدی کاربر'); return; }
+    try {
+      const u = await msg.client.users.fetch(uid);
+      if (u.bot) { await msg.reply('نمی‌توان بات را به بازی اضافه کرد.'); return; }
+    } catch {}
+    s.team1 = s.team1.filter(x=>x!==uid);
+    s.team2 = s.team2.filter(x=>x!==uid);
+    if (s.team2.includes(uid)) { await msg.reply('این کاربر در تیم 2 است.'); return; }
+    if (s.team2.length >= 2) { await msg.reply('تیم 2 پر است.'); return; }
+    s.team2.push(uid);
+    const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
+      .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
+      .setColor(0x2f3136);
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+    );
+    try {
+      if (s.controlMsgId) {
+        const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null);
+        if (m) await m.edit({ embeds: [embed], components: [row] });
+      }
+    } catch {}
+    await msg.reply(`کاربر <@${uid}> به تیم 2 اضافه شد.`);
     return;
   }
 
