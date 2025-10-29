@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, AttachmentBuilder, PermissionsBitField, StickerFormatType } from 'discord.js';
+import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, AttachmentBuilder, PermissionsBitField } from 'discord.js';
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
@@ -577,53 +577,6 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .gif — reply to a sticker message to get it as GIF if supported; otherwise PNG (as attachment)
-  if (content.startsWith('.gif')) {
-    // simple per-user rate limit (5s)
-    const rlKey = `gif:${msg.author.id}`;
-    const nowTs = Date.now();
-    const last = (global as any).__gif_rl?.get?.(rlKey) ?? 0;
-    if (!(global as any).__gif_rl) (global as any).__gif_rl = new Map<string, number>();
-    if (nowTs - last < 5000) {
-      await msg.reply({ content: 'لطفاً چند ثانیه صبر کنید و دوباره تلاش کنید.' });
-      return;
-    }
-
-    const ref = await msg.fetchReference().catch(() => null);
-    if (!ref) {
-      await msg.reply({ content: 'لطفاً این دستور را به‌صورت ریپلای روی یک استیکر بفرستید.' });
-      return;
-    }
-    const stItem = (ref as any).stickers?.first ? (ref as any).stickers.first() : null;
-    if (!stItem) {
-      await msg.reply({ content: 'پیام ریپلای‌شده استیکر ندارد. لطفاً روی یک استیکر ریپلای کنید.' });
-      return;
-    }
-    const id: string = stItem.id;
-    const fmt: number | undefined = stItem.format as number | undefined;
-
-    let url: string;
-    let filename: string;
-    if (fmt === (StickerFormatType as any).GIF || fmt === 4) {
-      url = `https://cdn.discordapp.com/stickers/${id}.gif`;
-      filename = `sticker-${id}.gif`;
-    } else {
-      // For PNG/APNG/LOTTIE, send PNG preview to ensure it opens
-      url = `https://cdn.discordapp.com/stickers/${id}.png`;
-      filename = `sticker-${id}.png`;
-    }
-
-    try {
-      const buf = await fetchBuffer(url);
-      const att = new AttachmentBuilder(buf, { name: filename });
-      await msg.reply({ files: [att] });
-      (global as any).__gif_rl.set(rlKey, nowTs);
-    } catch (e) {
-      console.error('sticker download error:', e);
-      await msg.reply({ content: 'خطا در دریافت فایل استیکر.' });
-    }
-    return;
-  }
 
   // .llset — admin only
   if (content.startsWith('.llset')) {
