@@ -603,13 +603,16 @@ client.on('messageCreate', async (msg: Message) => {
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را اضافه کند.'); return; }
-    const user = msg.mentions.users.first();
-    let uid: string | null = user?.id ?? null;
+    let uid: string | null = msg.mentions.users.first()?.id ?? null;
+    if (!uid) {
+      const ref = await msg.fetchReference().catch(()=>null);
+      if (ref?.author?.id) uid = ref.author.id;
+    }
     if (!uid) {
       const raw = content.replace('.a1', '').trim();
       if (/^\d+$/.test(raw)) uid = raw;
     }
-    if (!uid) { await msg.reply('استفاده: `.a1 @user` یا آیدی کاربر'); return; }
+    if (!uid) { await msg.reply('استفاده: `.a1 @user` یا ریپلای به پیام کاربر یا آیدی کاربر'); return; }
     try {
       const u = await msg.client.users.fetch(uid);
       if (u.bot) { await msg.reply('نمی‌توان بات را به بازی اضافه کرد.'); return; }
@@ -642,13 +645,16 @@ client.on('messageCreate', async (msg: Message) => {
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را اضافه کند.'); return; }
-    const user = msg.mentions.users.first();
-    let uid: string | null = user?.id ?? null;
+    let uid: string | null = msg.mentions.users.first()?.id ?? null;
+    if (!uid) {
+      const ref = await msg.fetchReference().catch(()=>null);
+      if (ref?.author?.id) uid = ref.author.id;
+    }
     if (!uid) {
       const raw = content.replace('.a2', '').trim();
       if (/^\d+$/.test(raw)) uid = raw;
     }
-    if (!uid) { await msg.reply('استفاده: `.a2 @user` یا آیدی کاربر'); return; }
+    if (!uid) { await msg.reply('استفاده: `.a2 @user` یا ریپلای به پیام کاربر یا آیدی کاربر'); return; }
     try {
       const u = await msg.client.users.fetch(uid);
       if (u.bot) { await msg.reply('نمی‌توان بات را به بازی اضافه کرد.'); return; }
@@ -672,6 +678,43 @@ client.on('messageCreate', async (msg: Message) => {
       }
     } catch {}
     await msg.reply(`کاربر <@${uid}> به تیم 2 اضافه شد.`);
+    return;
+  }
+
+  // .r — owner removes a user from teams
+  if (content.startsWith('.r')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
+    if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را حذف کند.'); return; }
+    let uid: string | null = msg.mentions.users.first()?.id ?? null;
+    if (!uid) {
+      const ref = await msg.fetchReference().catch(()=>null);
+      if (ref?.author?.id) uid = ref.author.id;
+    }
+    if (!uid) {
+      const raw = content.replace('.r', '').trim();
+      if (/^\d+$/.test(raw)) uid = raw;
+    }
+    if (!uid) { await msg.reply('استفاده: `.r @user` یا ریپلای به پیام کاربر یا آیدی کاربر'); return; }
+    const before1 = s.team1.length, before2 = s.team2.length;
+    s.team1 = s.team1.filter(x=>x!==uid);
+    s.team2 = s.team2.filter(x=>x!==uid);
+    if (before1===s.team1.length && before2===s.team2.length) { await msg.reply('این کاربر در هیچ تیمی نیست.'); return; }
+    const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
+      .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
+      .setColor(0x2f3136);
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+    );
+    try {
+      if (s.controlMsgId) {
+        const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null);
+        if (m) await m.edit({ embeds: [embed], components: [row] });
+      }
+    } catch {}
+    await msg.reply(`کاربر <@${uid}> از تیم‌ها حذف شد.`);
     return;
   }
 
