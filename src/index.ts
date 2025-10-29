@@ -183,7 +183,8 @@ async function getMemberVisual(guildId: string, userId: string): Promise<{ tag: 
     const g = await client.guilds.fetch(guildId).catch(()=>null);
     if (!g) return { tag: userId, img: null };
     const m = await g.members.fetch(userId).catch(()=>null as any);
-    const tag = m?.displayName || m?.user?.username || userId;
+    // prefer stable username to avoid font tofu for fancy display names
+    const tag = m?.user?.username || m?.displayName || userId;
     const now = Date.now();
     const cached = avatarCache.get(userId);
     if (cached && now - cached.at < AVATAR_TTL_MS) {
@@ -289,7 +290,8 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     }
     // label background
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    ctx.fillRect(seat.x-140, seat.y-28, 280, 36);
+    const boxX = seat.x-140, boxY = seat.y-28, boxW = 280, boxH = 36;
+    ctx.fillRect(boxX, boxY, boxW, boxH);
     // avatar circle
     if (avatar) {
       ctx.save();
@@ -304,21 +306,41 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     ctx.font = nameFont;
     const tag = name || (uid ? uid : '—');
     ctx.textAlign = 'left';
-    ctx.fillText(tag, seat.x-100, seat.y-10);
+    // clip to label box to avoid overflow
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(boxX+6, boxY+4, boxW-12, boxH-8);
+    ctx.clip();
+    // ellipsis if needed
+    const maxNameWidth = boxW - 80; // leave space for avatar and badge
+    let drawName = tag;
+    let w = ctx.measureText(drawName).width;
+    if (w > maxNameWidth) {
+      const ell = '…';
+      while (drawName.length > 1 && w > maxNameWidth) {
+        drawName = drawName.slice(0, -1);
+        w = ctx.measureText(drawName + ell).width;
+      }
+      drawName = drawName + ell;
+    }
+    ctx.fillText(drawName, seat.x-100, seat.y-10);
+    ctx.restore();
     // remaining card badge
     if (typeof remainCount === 'number') {
-      ctx.textAlign = 'right';
-      ctx.font = `${ssdFontAvailable? '18px '+ssdFontFamily : '18px Arial'}`;
-      ctx.fillStyle = 'rgba(255,255,255,0.85)';
-      const bx = seat.x+132, by = seat.y-10;
+      // place badge just after name within the box, but not too far
+      const nameWidth = Math.min(ctx.measureText(drawName).width, maxNameWidth);
+      const badgeLeft = Math.min(boxX + 12 + 28 + nameWidth + 12, boxX + boxW - 40);
+      const bx = badgeLeft + 20; // center x
+      const by = seat.y-10;
       ctx.save();
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.beginPath();
-      ctx.roundRect(bx-34, by-12, 28, 20, 8);
+      ctx.roundRect(bx-16, by-12, 24, 20, 8);
       ctx.fill();
       ctx.fillStyle = '#f9fafb';
       ctx.textAlign = 'center';
-      ctx.fillText(String(remainCount), bx-20, by+1);
+      ctx.font = `${ssdFontAvailable? '16px '+ssdFontFamily : '16px Arial'}`;
+      ctx.fillText(String(remainCount), bx, by+1);
       ctx.restore();
     }
     ctx.textAlign = 'center';
