@@ -174,40 +174,99 @@ async function refreshPlayerChannelHand(ctx: { channel: any }, s: HokmSession, u
   s.playerDMMsgIds.set(userId, msg.id);
 }
 
-async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
-  // textual graphical embed instead of image
-  const names = s.order.map(uid => `<@${uid}>`);
-  const turn = s.turnIndex!=null ? s.order[s.turnIndex] : undefined;
-  const played: Record<string, string> = {};
-  if (s.table && s.table.length) {
-    for (const p of s.table) played[p.userId] = cardStr(p.card);
+function renderTableImage(s: HokmSession): Buffer {
+  const width = 960, height = 600;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  // background felt
+  ctx.fillStyle = '#0f5132';
+  ctx.fillRect(0, 0, width, height);
+  // border frame
+  ctx.strokeStyle = '#e5e7eb';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(10, 10, width-20, height-20);
+  // title bar
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.fillRect(10, 10, width-20, 50);
+  ctx.font = `${ssdFontAvailable? '28px '+ssdFontFamily : '28px Arial'}`;
+  ctx.fillStyle = '#ffffff';
+  const turnUid = s.turnIndex!=null ? s.order[s.turnIndex] : undefined;
+  const topText = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:'—'}   |   نوبت: ${turnUid?`@${turnUid}`:'—'}   |   تیم1: ${s.tricksTeam1??0}  تیم2: ${s.tricksTeam2??0}`;
+  ctx.fillText(topText, 28, 45);
+
+  // positions for seats and cards
+  const seats = [
+    { x: width/2, y: 110 },            // N
+    { x: width-120, y: height/2 },     // E
+    { x: width/2, y: height-110 },     // S
+    { x: 120, y: height/2 },           // W
+  ];
+  const nameFont = `${ssdFontAvailable? '20px '+ssdFontFamily : '20px Arial'}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  function drawSeatLabel(i: number, uid?: string) {
+    const seat = seats[i];
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fillRect(seat.x-120, seat.y-22, 240, 30);
+    ctx.fillStyle = '#f9fafb';
+    ctx.font = nameFont;
+    const tag = uid ? `<@${uid}>` : '—';
+    ctx.fillText(tag, seat.x, seat.y-7);
   }
-  // positions: N,E,S,W = 0,1,2,3
-  const n = `${names[0] || '—'}${played[s.order[0]]?` — ${played[s.order[0]]}`:''}`;
-  const e = `${names[1] || '—'}${played[s.order[1]]?` — ${played[s.order[1]]}`:''}`;
-  const sSeat = `${names[2] || '—'}${played[s.order[2]]?` — ${played[s.order[2]]}`:''}`;
-  const w = `${names[3] || '—'}${played[s.order[3]]?` — ${played[s.order[3]]}`:''}`;
-  const sep = '────────────────────────';
-  const desc = [
-    `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:'—'}    |    نوبت: ${turn?`<@${turn}>`:'—'}`,
-    `برد دست‌ها — تیم1: ${s.tricksTeam1??0} | تیم2: ${s.tricksTeam2??0}`,
-    sep,
-    `           [ N ]  ${n}`,
-    ``,
-    `[ W ] ${w}           [ E ] ${e}`,
-    ``,
-    `           [ S ]  ${sSeat}`,
-    sep,
-  ].join('\n');
-  const embed = new EmbedBuilder().setTitle('Hokm — میز بازی').setDescription(desc).setColor(0x2f3136);
+  function drawCard(x: number, y: number, c: Card) {
+    const w = 90, h = 130, r = 10;
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.roundRect(x+4, y+6, w, h, r);
+    ctx.fill();
+    // body
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+    ctx.fill();
+    ctx.strokeStyle = '#e5e7eb';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // rank + suit
+    const red = (c.s === 'H' || c.s === 'D');
+    ctx.fillStyle = red ? '#dc2626' : '#111827';
+    ctx.font = `${ssdFontAvailable? '28px '+ssdFontFamily : '28px Arial'}`;
+    const rtxt = rankStr(c.r);
+    ctx.fillText(rtxt, x + 22, y + 28);
+    ctx.font = `${ssdFontAvailable? '30px '+ssdFontFamily : '30px Arial'}`;
+    ctx.fillText(SUIT_EMOJI[c.s], x + w/2, y + h/2);
+  }
+  // draw seats and played cards
+  for (let i=0;i<4;i++) {
+    const uid = s.order[i];
+    if (!uid) continue;
+    drawSeatLabel(i, uid);
+    const play = (s.table||[]).find(t=>t.userId===uid);
+    if (play) {
+      // offset from seat for card placement
+      const off = [{dx:0,dy:20},{dx:-100,dy:0},{dx:0,dy:-20},{dx:20,dy:0}][i];
+      drawCard(seats[i].x + (off.dx||0) - 45, seats[i].y + (off.dy||0) - 40, play.card);
+    }
+  }
+  return canvas.toBuffer('image/png');
+}
+
+async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
+  const img = renderTableImage(s);
+  const attachment = new AttachmentBuilder(img, { name: 'table.png' });
+  const embed = new EmbedBuilder()
+    .setTitle('Hokm — میز بازی')
+    .setColor(0x2f3136)
+    .setImage('attachment://table.png');
   const openRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`hokm-open-hand-${s.guildId}-${s.channelId}`).setLabel('دست من').setStyle(ButtonStyle.Secondary)
   );
   if (s.tableMsgId) {
     const m = await ctx.channel.messages.fetch(s.tableMsgId).catch(()=>null);
-    if (m) { await m.edit({ embeds: [embed], components: [openRow] }); return; }
+    if (m) { await m.edit({ embeds: [embed], components: [openRow], files: [attachment] }); return; }
   }
-  const sent = await ctx.channel.send({ embeds: [embed], components: [openRow] });
+  const sent = await ctx.channel.send({ embeds: [embed], components: [openRow], files: [attachment] });
   s.tableMsgId = sent.id;
 }
 
