@@ -178,33 +178,36 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
   // textual graphical embed instead of image
   const names = s.order.map(uid => `<@${uid}>`);
   const turn = s.turnIndex!=null ? s.order[s.turnIndex] : undefined;
-  const tableLines: string[] = [];
   const played: Record<string, string> = {};
   if (s.table && s.table.length) {
     for (const p of s.table) played[p.userId] = cardStr(p.card);
   }
   // positions: N,E,S,W = 0,1,2,3
-  const lines = [
-    `N: ${names[0] || '—'} ${played[s.order[0]]?`— ${played[s.order[0]]}`:''}`,
-    `E: ${names[1] || '—'} ${played[s.order[1]]?`— ${played[s.order[1]]}`:''}`,
-    `S: ${names[2] || '—'} ${played[s.order[2]]?`— ${played[s.order[2]]}`:''}`,
-    `W: ${names[3] || '—'} ${played[s.order[3]]?`— ${played[s.order[3]]}`:''}`,
-  ];
+  const n = `${names[0] || '—'}${played[s.order[0]]?` — ${played[s.order[0]]}`:''}`;
+  const e = `${names[1] || '—'}${played[s.order[1]]?` — ${played[s.order[1]]}`:''}`;
+  const sSeat = `${names[2] || '—'}${played[s.order[2]]?` — ${played[s.order[2]]}`:''}`;
+  const w = `${names[3] || '—'}${played[s.order[3]]?` — ${played[s.order[3]]}`:''}`;
+  const sep = '────────────────────────';
   const desc = [
-    `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:'—'}`,
-    `نوبت: ${turn?`» <@${turn}>`:'—'}`,
+    `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:'—'}    |    نوبت: ${turn?`<@${turn}>`:'—'}`,
     `برد دست‌ها — تیم1: ${s.tricksTeam1??0} | تیم2: ${s.tricksTeam2??0}`,
-    '',
-    lines[0],
-    `${lines[3]}              ${lines[1]}`,
-    lines[2],
+    sep,
+    `           [ N ]  ${n}`,
+    ``,
+    `[ W ] ${w}           [ E ] ${e}`,
+    ``,
+    `           [ S ]  ${sSeat}`,
+    sep,
   ].join('\n');
   const embed = new EmbedBuilder().setTitle('Hokm — میز بازی').setDescription(desc).setColor(0x2f3136);
+  const openRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`hokm-open-hand-${s.guildId}-${s.channelId}`).setLabel('دست من').setStyle(ButtonStyle.Secondary)
+  );
   if (s.tableMsgId) {
     const m = await ctx.channel.messages.fetch(s.tableMsgId).catch(()=>null);
-    if (m) { await m.edit({ embeds: [embed], components: [] }); return; }
+    if (m) { await m.edit({ embeds: [embed], components: [openRow] }); return; }
   }
-  const sent = await ctx.channel.send({ embeds: [embed] });
+  const sent = await ctx.channel.send({ embeds: [embed], components: [openRow] });
   s.tableMsgId = sent.id;
 }
 
@@ -718,20 +721,34 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
       // update or create table message
       const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
-        .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>)\nتیم1 دست‌ها: 0 | تیم2 دست‌ها: 0`);
+        .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>`);
       try {
         if (s.tableMsgId) {
           const m = await (interaction.channel as any).messages.fetch(s.tableMsgId).catch(()=>null);
-          if (m) await m.edit({ embeds: [tableEmbed], components: [] });
+          if (m) await m.edit({ embeds: [tableEmbed] });
         }
       } catch {}
       await refreshTableEmbed({ channel: interaction.channel }, s);
-      // send per-player hand messages in channel with buttons
-      s.playerDMMsgIds = s.playerDMMsgIds || new Map<string,string>();
-      for (const uid of s.order) {
-        await refreshPlayerChannelHand({ channel: interaction.channel }, s, uid);
-      }
-      await interaction.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]}. بازی شروع شد.`, ephemeral: true });
+      // no per-player channel hand messages; users open hand ephemerally via table button
+      await interaction.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]}. بازی شروع شد. برای دیدن دست خود، روی دکمه "دست من" زیر میز بزن.`, ephemeral: true });
+      return;
+    }
+
+    // Open Hand button (ephemeral per-user hand in channel)
+    if (id.startsWith('hokm-open-hand-')) {
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
+      const parts = id.split('-'); // hokm-open-hand-gId-cId
+      const gId = parts[3]; const cId = parts[4];
+      const s = ensureSession(gId, cId);
+      const uid = interaction.user.id;
+      const stateKey = `__hokm_dm_state_${gId}:${cId}:${uid}`;
+      const prev = (global as any)[stateKey] as { filter?: string; page?: number } | undefined;
+      const filter = (prev?.filter as any) || 'ALL';
+      const page = prev?.page || 0;
+      const { rows, meta } = buildHandButtons(s, uid, { filter: filter as any, page });
+      (global as any)[stateKey] = { filter: meta.filter, page: meta.page };
+      const content = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:''} — ${uid===s.order[s.turnIndex??0]?'نوبت شماست.':'منتظر نوبت بمانید.'}\nدست شما:\n${handToString(s.hands.get(uid) || [])}`;
+      await interaction.reply({ content, components: rows, ephemeral: true });
       return;
     }
 
@@ -743,8 +760,15 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const key = `__hokm_dm_state_${gId}:${cId}:${uid}`;
       (global as any)[key] = { filter: fl, page: 0 };
       const s = ensureSession(gId, cId);
-      await refreshPlayerDM({ client: interaction.client as Client }, s, uid);
-      await interaction.deferUpdate();
+      if (interaction.guild) {
+        const { rows, meta } = buildHandButtons(s, uid, { filter: fl, page: 0 });
+        (global as any)[key] = { filter: meta.filter, page: meta.page };
+        const content = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:''} — ${uid===s.order[s.turnIndex??0]?'نوبت شماست.':'منتظر نوبت بمانید.'}\nدست شما:\n${handToString(s.hands.get(uid) || [])}`;
+        await interaction.update({ content, components: rows });
+      } else {
+        await refreshPlayerDM({ client: interaction.client as Client }, s, uid);
+        await interaction.deferUpdate();
+      }
       return;
     }
     // DM hand pagination buttons
@@ -756,8 +780,15 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const prev = (global as any)[key] || { filter: 'ALL', page: 0 };
       (global as any)[key] = { filter: prev.filter || 'ALL', page };
       const s = ensureSession(gId, cId);
-      await refreshPlayerDM({ client: interaction.client as Client }, s, uid);
-      await interaction.deferUpdate();
+      if (interaction.guild) {
+        const { rows, meta } = buildHandButtons(s, uid, { filter: (prev.filter||'ALL') as any, page });
+        (global as any)[key] = { filter: meta.filter, page: meta.page };
+        const content = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:''} — ${uid===s.order[s.turnIndex??0]?'نوبت شماست.':'منتظر نوبت بمانید.'}\nدست شما:\n${handToString(s.hands.get(uid) || [])}`;
+        await interaction.update({ content, components: rows });
+      } else {
+        await refreshPlayerDM({ client: interaction.client as Client }, s, uid);
+        await interaction.deferUpdate();
+      }
       return;
     }
 
@@ -800,10 +831,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       s.table = s.table || []; s.table.push({ userId: uid, card });
       s.turnIndex = (s.turnIndex + 1) % s.order.length;
       await interaction.reply({ content: `کارت ${cardStr(card)} بازی شد.`, ephemeral: true });
-      // update player's channel hand message
+      // update table only (hands are private via ephemeral)
       try {
         const ch = await interaction.client.channels.fetch(cId).catch(()=>null) as any;
-        if (ch) await refreshPlayerChannelHand({ channel: ch }, s, uid);
         if (ch) await refreshTableEmbed({ channel: ch }, s);
       } catch {}
       
@@ -1008,6 +1038,8 @@ client.on('messageCreate', async (msg: Message) => {
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
     );
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ embeds: [embed], components: [row] }); } } catch {}
     await msg.reply({ content: `افزوده شد: ${added.join(' , ') || '—'}\nنادیده: ${skipped.join(' , ') || '—'}` });
