@@ -250,7 +250,7 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
 
 function handToString(hand: Card[]){ const bySuit: Record<Suit, Card[]> = {S:[],H:[],D:[],C:[]}; hand.forEach(c=>bySuit[c.s].push(c)); (Object.keys(bySuit) as Suit[]).forEach(s=>bySuit[s].sort((a,b)=>b.r-a.r));
   const parts: string[] = [];
-  (['S','H','D','C'] as Suit[]).forEach(s=>{ if(bySuit[s].length){ parts.push(`${SUIT_EMOJI[s]} ${bySuit[s].map(cardStr).join(' ')}`); }});
+  (['S','H','D','C'] as Suit[]).forEach(s=>{ if(bySuit[s].length){ parts.push(`${SUIT_EMOJI[s]} ${bySuit[s].map(c=>rankStr(c.r)).join(' ')}`); }});
   return parts.join('\n');
 }
 function parseSuit(input: string): Suit | null {
@@ -741,13 +741,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const gId = parts[3]; const cId = parts[4];
       const s = ensureSession(gId, cId);
       const uid = interaction.user.id;
-      const stateKey = `__hokm_dm_state_${gId}:${cId}:${uid}`;
-      const prev = (global as any)[stateKey] as { filter?: string; page?: number } | undefined;
-      const filter = (prev?.filter as any) || 'ALL';
-      const page = prev?.page || 0;
-      const { rows, meta } = buildHandButtons(s, uid, { filter: filter as any, page });
-      (global as any)[stateKey] = { filter: meta.filter, page: meta.page };
-      const content = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:''} — ${uid===s.order[s.turnIndex??0]?'نوبت شماست.':'منتظر نوبت بمانید.'}\nدست شما:\n${handToString(s.hands.get(uid) || [])}`;
+      const hand = s.hands.get(uid) || [];
+      const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId);
+      const content = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:''} — ${uid===s.order[s.turnIndex??0]?'نوبت شماست.':'منتظر نوبت بمانید.'}`;
       await interaction.reply({ content, components: rows, ephemeral: true });
       return;
     }
@@ -1068,6 +1064,8 @@ client.on('messageCreate', async (msg: Message) => {
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
     );
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ embeds: [embed], components: [row] }); } } catch {}
     await msg.reply({ content: `افزوده شد: ${added.join(' , ') || '—'}\nنادیده: ${skipped.join(' , ') || '—'}` });
@@ -1095,6 +1093,8 @@ client.on('messageCreate', async (msg: Message) => {
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
     );
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ embeds: [embed], components: [row] }); } } catch {}
     await msg.reply({ content: `حذف شد: ${removed.join(' , ') || '—'}\nناموجود: ${notIn.join(' , ') || '—'}` });
