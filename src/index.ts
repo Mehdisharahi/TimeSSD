@@ -264,7 +264,7 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     const mv = await getMemberVisual(s.guildId, turnUid);
     ctx.fillText(mv.tag, 220, 45);
   }
-  ctx.fillText(`| تیم1: ${s.tricksTeam1??0}  تیم2: ${s.tricksTeam2??0}`, 420, 45);
+  ctx.fillText(`| تیم یک: ${s.tricksTeam1??0}  تیم دو: ${s.tricksTeam2??0}`, 420, 45);
 
   // positions for seats and cards
   const seats = [
@@ -278,41 +278,46 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   ctx.textBaseline = 'middle';
   function drawSeatLabel(i: number, uid?: string, name?: string, avatar?: any, isTurn?: boolean, remainCount?: number) {
     const seat = seats[i];
-    // highlight glow for turn
-    if (isTurn) {
-      ctx.save();
-      ctx.shadowColor = 'rgba(245, 158, 11, 0.9)'; // amber glow
-      ctx.shadowBlur = 18;
-      ctx.strokeStyle = '#f59e0b';
-      ctx.lineWidth = 3;
-      ctx.strokeRect(seat.x-142, seat.y-30, 284, 40);
-      ctx.restore();
-    }
-    // label background
+    // label background (wider height to host avatar + name)
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    const boxX = seat.x-140, boxY = seat.y-28, boxW = 280, boxH = 36;
+    const boxX = seat.x-140, boxY = seat.y-36, boxW = 280, boxH = 64;
     ctx.fillRect(boxX, boxY, boxW, boxH);
-    // avatar circle
+    // avatar circle (bigger and centered)
+    const avR = 18; // radius 18 => 36px
+    const avX = seat.x;
+    const avY = boxY + 18 + avR; // top padding 18
     if (avatar) {
       ctx.save();
       ctx.beginPath();
-      ctx.arc(seat.x-120, seat.y-10, 14, 0, Math.PI*2);
+      ctx.arc(avX, avY, avR, 0, Math.PI*2);
       ctx.closePath();
       ctx.clip();
-      ctx.drawImage(avatar, seat.x-134, seat.y-24, 28, 28);
+      ctx.drawImage(avatar, avX-avR, avY-avR, avR*2, avR*2);
+      ctx.restore();
+    }
+    // highlight glow around avatar if it's the player's turn
+    if (isTurn) {
+      ctx.save();
+      ctx.shadowColor = 'rgba(245, 158, 11, 0.9)';
+      ctx.shadowBlur = 18;
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(avX, avY, avR+6, 0, Math.PI*2);
+      ctx.stroke();
       ctx.restore();
     }
     ctx.fillStyle = '#f9fafb';
     ctx.font = nameFont;
     const tag = name || (uid ? uid : '—');
-    ctx.textAlign = 'left';
+    ctx.textAlign = 'center';
     // clip to label box to avoid overflow
     ctx.save();
     ctx.beginPath();
     ctx.rect(boxX+6, boxY+4, boxW-12, boxH-8);
     ctx.clip();
-    // ellipsis if needed
-    const maxNameWidth = boxW - 80; // leave space for avatar and badge
+    // ellipsis if needed (centered)
+    const maxNameWidth = boxW - 40; // margins
     let drawName = tag;
     let w = ctx.measureText(drawName).width;
     if (w > maxNameWidth) {
@@ -322,25 +327,26 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
         w = ctx.measureText(drawName + ell).width;
       }
       drawName = drawName + ell;
+      w = ctx.measureText(drawName).width;
     }
-    ctx.fillText(drawName, seat.x-100, seat.y-10);
+    const nameY = avY + avR + 10; // below avatar
+    ctx.fillText(drawName, seat.x, nameY);
     ctx.restore();
     // remaining card badge
     if (typeof remainCount === 'number') {
-      // place badge just after name within the box, but not too far
+      // place badge next to name on the right, but keep inside box
       const nameWidth = Math.min(ctx.measureText(drawName).width, maxNameWidth);
-      const badgeLeft = Math.min(boxX + 12 + 28 + nameWidth + 12, boxX + boxW - 40);
-      const bx = badgeLeft + 20; // center x
-      const by = seat.y-10;
+      const bx = Math.min(seat.x + nameWidth/2 + 16, boxX + boxW - 20);
+      const by = nameY - 2;
       ctx.save();
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.beginPath();
-      ctx.roundRect(bx-16, by-12, 24, 20, 8);
+      ctx.roundRect(bx-14, by-12, 22, 20, 8);
       ctx.fill();
       ctx.fillStyle = '#f9fafb';
       ctx.textAlign = 'center';
-      ctx.font = `${ssdFontAvailable? '16px '+ssdFontFamily : '16px Arial'}`;
-      ctx.fillText(String(remainCount), bx, by+1);
+      ctx.font = `${ssdFontAvailable? '15px '+ssdFontFamily : '15px Arial'}`;
+      ctx.fillText(String(remainCount), bx-3, by+1);
       ctx.restore();
     }
     ctx.textAlign = 'center';
@@ -382,7 +388,7 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     if (play) {
       // offset from seat for card placement
       const cardPos = [
-        {x: seats[i].x - 45, y: seats[i].y + 20},   // N: زیر برچسب
+        {x: seats[i].x - 45, y: seats[i].y + 30},   // N: کمی پایین‌تر تا با آواتار تداخل نداشته باشد
         {x: seats[i].x - 140, y: seats[i].y - 65},  // E: چپ برچسب
         {x: seats[i].x - 45, y: seats[i].y - 150},  // S: بالای برچسب
         {x: seats[i].x + 50, y: seats[i].y - 65},   // W: راست برچسب
