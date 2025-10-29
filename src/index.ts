@@ -145,8 +145,7 @@ async function refreshAllDMs(ctx: { client: Client }, s: HokmSession) {
   for (const uid of s.order) await refreshPlayerDM(ctx, s, uid);
 }
 
-function buildHandRowsSimple(hand: Card[], userId: string): ActionRowBuilder<ButtonBuilder>[] {
-  // show all cards across up to 3 rows (5 buttons per row)
+function buildHandRowsSimple(hand: Card[], userId: string, gId: string, cId: string): ActionRowBuilder<ButtonBuilder>[] {
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
   const items = [...hand].sort((a,b)=> a.s===b.s ? b.r-a.r : ['S','H','D','C'].indexOf(a.s)-['S','H','D','C'].indexOf(b.s));
   for (let r=0; r<3; r++) {
@@ -154,7 +153,7 @@ function buildHandRowsSimple(hand: Card[], userId: string): ActionRowBuilder<But
     if (!slice.length) break;
     const row = new ActionRowBuilder<ButtonBuilder>();
     for (const c of slice) {
-      row.addComponents(new ButtonBuilder().setCustomId(`hokm-play-${userId}-${c.s}-${c.r}`).setLabel(cardStr(c)).setStyle(ButtonStyle.Secondary));
+      row.addComponents(new ButtonBuilder().setCustomId(`hokm-play-${gId}-${cId}-${userId}-${c.s}-${c.r}`).setLabel(cardStr(c)).setStyle(ButtonStyle.Secondary));
     }
     rows.push(row);
   }
@@ -163,7 +162,7 @@ function buildHandRowsSimple(hand: Card[], userId: string): ActionRowBuilder<But
 
 async function refreshPlayerChannelHand(ctx: { channel: any }, s: HokmSession, userId: string) {
   const hand = s.hands.get(userId) || [];
-  const rows = buildHandRowsSimple(hand, userId);
+  const rows = buildHandRowsSimple(hand, userId, s.guildId, s.channelId);
   const content = `<@${userId}> — ${userId===s.order[s.turnIndex??0] ? 'نوبت شماست.' : 'منتظر نوبت بمانید.'}`;
   s.playerDMMsgIds = s.playerDMMsgIds || new Map<string,string>();
   const prevId = s.playerDMMsgIds.get(userId);
@@ -714,18 +713,6 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         give(uid, need);
       }
       // init phase2
-      s.state = 'playing';
-      s.leaderIndex = s.order.indexOf(s.hakim); if (s.leaderIndex<0) s.leaderIndex=0;
-      s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
-      // update table message
-      const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
-        .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>\nتیم1 دست‌ها: 0 | تیم2 دست‌ها: 0`)
-      try { if (s.tableMsgId) { const m = await (interaction.channel as any).messages.fetch(s.tableMsgId).catch(()=>null); if (m) await m.edit({ embeds: [tableEmbed], components: [] }); } } catch {}
-      // send per-player hand messages in channel with buttons
-      s.playerDMMsgIds = s.playerDMMsgIds || new Map<string,string>();
-      for (const uid of s.order) {
-        await refreshPlayerChannelHand({ channel: interaction.channel }, s, uid);
-      }
       await interaction.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]}. بازی شروع شد.`, ephemeral: true });
       return;
     }
@@ -769,6 +756,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       } else {
         // hokm-play-uid-suit-rank (clicked in channel)
         uid = parts[2]; suit = parts[3] as Suit; rank = parseInt(parts[4], 10);
+        const chAny = interaction.channel as any;
+        if (chAny?.isThread && chAny.parentId) { cId = chAny.parentId; }
+        if (!gId && chAny?.guildId) { gId = chAny.guildId; }
       }
       if (!gId || !cId) { await interaction.reply({ content: 'خطای کانال بازی.', ephemeral: true }); return; }
       const s = ensureSession(gId, cId);
