@@ -555,8 +555,18 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .gif — reply to a sticker message to get it as GIF if supported; otherwise PNG
+  // .gif — reply to a sticker message to get it as GIF if supported; otherwise PNG (as attachment)
   if (content.startsWith('.gif')) {
+    // simple per-user rate limit (5s)
+    const rlKey = `gif:${msg.author.id}`;
+    const nowTs = Date.now();
+    const last = (global as any).__gif_rl?.get?.(rlKey) ?? 0;
+    if (!(global as any).__gif_rl) (global as any).__gif_rl = new Map<string, number>();
+    if (nowTs - last < 5000) {
+      await msg.reply({ content: 'لطفاً چند ثانیه صبر کنید و دوباره تلاش کنید.' });
+      return;
+    }
+
     const ref = await msg.fetchReference().catch(() => null);
     if (!ref) {
       await msg.reply({ content: 'لطفاً این دستور را به‌صورت ریپلای روی یک استیکر بفرستید.' });
@@ -570,14 +580,28 @@ client.on('messageCreate', async (msg: Message) => {
     const id: string = stItem.id;
     const fmt: number | undefined = stItem.format as number | undefined;
 
-    // Only send GIF when sticker actually has GIF format; otherwise send PNG to ensure it opens
-    let fileUrl: string;
+    let url: string;
+    let filename: string;
     if (fmt === (StickerFormatType as any).GIF || fmt === 4) {
-      fileUrl = `https://cdn.discordapp.com/stickers/${id}.gif`;
+      url = `https://cdn.discordapp.com/stickers/${id}.gif`;
+      filename = `sticker-${id}.gif`;
     } else {
-      fileUrl = `https://cdn.discordapp.com/stickers/${id}.png`;
+      // For PNG/APNG/LOTTIE, send PNG preview to ensure it opens
+      url = `https://cdn.discordapp.com/stickers/${id}.png`;
+      filename = `sticker-${id}.png`;
     }
-    await msg.reply({ files: [fileUrl] });
+
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`cdn ${res.status}`);
+      const ab = await res.arrayBuffer();
+      const buf = Buffer.from(ab);
+      const att = new AttachmentBuilder(buf, { name: filename });
+      await msg.reply({ files: [att] });
+      (global as any).__gif_rl.set(rlKey, nowTs);
+    } catch (e) {
+      await msg.reply({ content: 'خطا در دریافت فایل استیکر.' });
+    }
     return;
   }
 
