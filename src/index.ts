@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, AttachmentBuilder, PermissionsBitField } from 'discord.js';
+import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, AttachmentBuilder, PermissionsBitField, StickerFormatType } from 'discord.js';
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
@@ -555,37 +555,29 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .gif — reply to a sticker message to get it as GIF (fallback PNG)
+  // .gif — reply to a sticker message to get it as GIF if supported; otherwise PNG
   if (content.startsWith('.gif')) {
     const ref = await msg.fetchReference().catch(() => null);
     if (!ref) {
       await msg.reply({ content: 'لطفاً این دستور را به‌صورت ریپلای روی یک استیکر بفرستید.' });
       return;
     }
-    const anyRef: any = ref as any;
-    const stColl = anyRef.stickers;
-    const st = stColl?.first ? stColl.first() : (Array.isArray(stColl) ? stColl[0] : null);
-    if (!st) {
+    const stItem = (ref as any).stickers?.first ? (ref as any).stickers.first() : null;
+    if (!stItem) {
       await msg.reply({ content: 'پیام ریپلای‌شده استیکر ندارد. لطفاً روی یک استیکر ریپلای کنید.' });
       return;
     }
-    const id: string = st.id;
-    const fmt = (st.format ?? st.formatType ?? st.format_type) as number | undefined;
-    const pngUrl = `https://cdn.discordapp.com/stickers/${id}.png`;
-    const gifUrl = `https://cdn.discordapp.com/stickers/${id}.gif`;
+    const id: string = stItem.id;
+    const fmt: number | undefined = stItem.format as number | undefined;
 
-    // If clearly static PNG, send PNG directly
-    if (fmt === 1 /* PNG */) {
-      await msg.reply({ files: [pngUrl] });
-      return;
+    // Only send GIF when sticker actually has GIF format; otherwise send PNG to ensure it opens
+    let fileUrl: string;
+    if (fmt === (StickerFormatType as any).GIF || fmt === 4) {
+      fileUrl = `https://cdn.discordapp.com/stickers/${id}.gif`;
+    } else {
+      fileUrl = `https://cdn.discordapp.com/stickers/${id}.png`;
     }
-
-    // Try GIF first (for APNG/LOTTIE), fallback to PNG on failure
-    try {
-      await msg.reply({ files: [gifUrl] });
-    } catch {
-      await msg.reply({ files: [pngUrl] });
-    }
+    await msg.reply({ files: [fileUrl] });
     return;
   }
 
