@@ -232,6 +232,28 @@ function computeTotalsUpToNow(guildId: string, userId: string): Map<string, numb
   return out.size ? out : null;
 }
 
+// Minimal HTTPS downloader for environments without global fetch
+async function fetchBuffer(url: string): Promise<Buffer> {
+  return await new Promise<Buffer>((resolve, reject) => {
+    try {
+      const https = require('https');
+      const req = https.get(url, (res: any) => {
+        if (res.statusCode !== 200) {
+          const code = res.statusCode;
+          res.resume();
+          return reject(new Error(`HTTP ${code}`));
+        }
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+      });
+      req.on('error', (err: any) => reject(err));
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
 client.once('ready', async () => {
   console.log(`TimeSSD is online as ${client.user?.tag}`);
   // Initialize current voice channel membership and start sessions for existing pairs
@@ -592,14 +614,12 @@ client.on('messageCreate', async (msg: Message) => {
     }
 
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`cdn ${res.status}`);
-      const ab = await res.arrayBuffer();
-      const buf = Buffer.from(ab);
+      const buf = await fetchBuffer(url);
       const att = new AttachmentBuilder(buf, { name: filename });
       await msg.reply({ files: [att] });
       (global as any).__gif_rl.set(rlKey, nowTs);
     } catch (e) {
+      console.error('sticker download error:', e);
       await msg.reply({ content: 'خطا در دریافت فایل استیکر.' });
     }
     return;
