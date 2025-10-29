@@ -43,6 +43,7 @@ interface HokmSession {
   leadSuit?: Suit | null;
   tricksTeam1?: number;
   tricksTeam2?: number;
+  tricksByPlayer?: Map<string, number>;
 }
 const hokmSessions = new Map<string, HokmSession>(); // key: guildId:channelId
 function keyGC(g: string, c: string){ return `${g}:${c}`; }
@@ -240,7 +241,8 @@ function drawSuit(ctx: any, s: Suit, x: number, y: number, size: number) {
 }
 
 async function renderTableImage(s: HokmSession): Promise<Buffer> {
-  const width = 960, height = 600;
+  // square canvas to avoid layout overlap on edges
+  const width = 1000, height = 1000;
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
   // background felt
@@ -250,9 +252,9 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   ctx.strokeStyle = '#e5e7eb';
   ctx.lineWidth = 6;
   ctx.strokeRect(10, 10, width-20, height-20);
-  // title bar
+  // title bar (top strip)
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
-  ctx.fillRect(10, 10, width-20, 50);
+  ctx.fillRect(10, 10, width-20, 54);
   ctx.font = `${ssdFontAvailable? '28px '+ssdFontFamily : '28px Arial'}`;
   ctx.fillStyle = '#ffffff';
   const turnUid = s.turnIndex!=null ? s.order[s.turnIndex] : undefined;
@@ -266,26 +268,24 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   }
   ctx.fillText(`| تیم یک: ${s.tricksTeam1??0}  تیم دو: ${s.tricksTeam2??0}`, 420, 45);
 
-  // positions for seats and cards
+  // positions for seats and cards (square layout, generous margins)
+  const margin = 180;
   const seats = [
-    { x: width/2, y: 110 },            // N
-    { x: width-120, y: height/2 },     // E
-    { x: width/2, y: height-110 },     // S
-    { x: 120, y: height/2 },           // W
+    { x: width/2, y: margin },                // N
+    { x: width - margin, y: height/2 },       // E
+    { x: width/2, y: height - margin },       // S
+    { x: margin, y: height/2 },               // W
   ];
+  const avatarRadius = 48; // keep in sync with drawSeatLabel
   const nameFont = `${ssdFontAvailable? '20px '+ssdFontFamily : '20px Arial'}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  function drawSeatLabel(i: number, uid?: string, name?: string, avatar?: any, isTurn?: boolean, remainCount?: number) {
+  function drawSeatLabel(i: number, uid?: string, name?: string, avatar?: any, isTurn?: boolean, playerTricks?: number) {
     const seat = seats[i];
-    // label background (wider height to host avatar + name)
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    const boxX = seat.x-140, boxY = seat.y-36, boxW = 280, boxH = 64;
-    ctx.fillRect(boxX, boxY, boxW, boxH);
-    // avatar circle (bigger and centered)
-    const avR = 18; // radius 18 => 36px
+    // avatar only (bigger)
+    const avR = avatarRadius; // radius 48 => 96px (fits 1000x1000)
     const avX = seat.x;
-    const avY = boxY + 18 + avR; // top padding 18
+    const avY = seat.y; // center on seat
     if (avatar) {
       ctx.save();
       ctx.beginPath();
@@ -303,50 +303,23 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
       ctx.strokeStyle = '#f59e0b';
       ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.arc(avX, avY, avR+6, 0, Math.PI*2);
+      ctx.arc(avX, avY, avR+8, 0, Math.PI*2);
       ctx.stroke();
       ctx.restore();
     }
-    ctx.fillStyle = '#f9fafb';
-    ctx.font = nameFont;
-    const tag = name || (uid ? uid : '—');
-    ctx.textAlign = 'center';
-    // clip to label box to avoid overflow
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(boxX+6, boxY+4, boxW-12, boxH-8);
-    ctx.clip();
-    // ellipsis if needed (centered)
-    const maxNameWidth = boxW - 40; // margins
-    let drawName = tag;
-    let w = ctx.measureText(drawName).width;
-    if (w > maxNameWidth) {
-      const ell = '…';
-      while (drawName.length > 1 && w > maxNameWidth) {
-        drawName = drawName.slice(0, -1);
-        w = ctx.measureText(drawName + ell).width;
-      }
-      drawName = drawName + ell;
-      w = ctx.measureText(drawName).width;
-    }
-    const nameY = avY + avR + 10; // below avatar
-    ctx.fillText(drawName, seat.x, nameY);
-    ctx.restore();
-    // remaining card badge
-    if (typeof remainCount === 'number') {
-      // place badge next to name on the right, but keep inside box
-      const nameWidth = Math.min(ctx.measureText(drawName).width, maxNameWidth);
-      const bx = Math.min(seat.x + nameWidth/2 + 16, boxX + boxW - 20);
-      const by = nameY - 2;
+    // tricks badge (square) centered below avatar
+    if (typeof playerTricks === 'number') {
+      const bx = avX; // center x under avatar
+      const by = avY + avR + 22; // below avatar
       ctx.save();
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.beginPath();
-      ctx.roundRect(bx-14, by-12, 22, 20, 8);
+      ctx.roundRect(bx-14, by-12, 28, 24, 6);
       ctx.fill();
       ctx.fillStyle = '#f9fafb';
       ctx.textAlign = 'center';
-      ctx.font = `${ssdFontAvailable? '15px '+ssdFontFamily : '15px Arial'}`;
-      ctx.fillText(String(remainCount), bx-3, by+1);
+      ctx.font = `${ssdFontAvailable? '16px '+ssdFontFamily : '16px Arial'}`;
+      ctx.fillText(String(playerTricks), bx, by+2);
       ctx.restore();
     }
     ctx.textAlign = 'center';
@@ -382,16 +355,16 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     if (!uid) continue;
     const mv = await getMemberVisual(s.guildId, uid);
     const isTurn = s.turnIndex!=null && s.order[s.turnIndex] === uid;
-    const remain = (s.hands.get(uid)?.length) ?? 0;
-    drawSeatLabel(i, uid, mv.tag, mv.img, isTurn, remain);
+    const pTricks = s.tricksByPlayer?.get(uid) ?? 0;
+    drawSeatLabel(i, uid, mv.tag, mv.img, isTurn, pTricks);
     const play = (s.table||[]).find(t=>t.userId===uid);
     if (play) {
       // offset from seat for card placement
       const cardPos = [
-        {x: seats[i].x - 45, y: seats[i].y + 30},   // N: کمی پایین‌تر تا با آواتار تداخل نداشته باشد
-        {x: seats[i].x - 140, y: seats[i].y - 65},  // E: چپ برچسب
-        {x: seats[i].x - 45, y: seats[i].y - 150},  // S: بالای برچسب
-        {x: seats[i].x + 50, y: seats[i].y - 65},   // W: راست برچسب
+        {x: seats[i].x - 45, y: seats[i].y + (avatarRadius + 58)},     // N: پایین آواتار
+        {x: seats[i].x - (avatarRadius + 140), y: seats[i].y - 65},    // E: چپ آواتار
+        {x: seats[i].x - 45, y: seats[i].y - (avatarRadius + 180)},    // S: بالای آواتار
+        {x: seats[i].x + (avatarRadius + 140), y: seats[i].y - 65},    // W: راست آواتار
       ][i];
       drawCard(cardPos.x, cardPos.y, play.card);
     }
@@ -437,6 +410,9 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
   const winnerUserId = s.order[winnerTurnIndex];
   const team = s.team1.includes(winnerUserId) ? 't1' : 't2';
   if (team==='t1') s.tricksTeam1 = (s.tricksTeam1||0)+1; else s.tricksTeam2 = (s.tricksTeam2||0)+1;
+  // per-player trick counter
+  if (!s.tricksByPlayer) s.tricksByPlayer = new Map();
+  s.tricksByPlayer.set(winnerUserId, (s.tricksByPlayer.get(winnerUserId) || 0) + 1);
   // next trick
   s.leaderIndex = winnerTurnIndex; s.turnIndex = winnerTurnIndex; s.table = []; s.leadSuit = null;
   const target = s.targetTricks ?? 7;
@@ -472,7 +448,7 @@ function ensureSession(gId: string, cId: string): HokmSession {
   const k = keyGC(gId, cId);
   let s = hokmSessions.get(k);
   if (!s) {
-    s = { guildId: gId, channelId: cId, team1: [], team2: [], order: [], deck: [], hands: new Map(), state: 'waiting' };
+    s = { guildId: gId, channelId: cId, team1: [], team2: [], order: [], deck: [], hands: new Map(), state: 'waiting', tricksByPlayer: new Map() };
     hokmSessions.set(k, s);
   }
   return s;
@@ -925,6 +901,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       s.state = 'playing';
       s.leaderIndex = s.order.indexOf(s.hakim); if (s.leaderIndex < 0) s.leaderIndex = 0;
       s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
+      s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
       // update or create table message
       const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
         .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>`);
@@ -1443,6 +1420,7 @@ client.on('messageCreate', async (msg: Message) => {
     s.table = [];
     s.leadSuit = null;
     s.tricksTeam1 = 0; s.tricksTeam2 = 0;
+    s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
     // DM all hands
     for (const uid of s.order) {
       try { const user = await msg.client.users.fetch(uid); await user.send({ content: `حکم: ${SUIT_EMOJI[s.hokm]}\nدست شما:\n${handToString(s.hands.get(uid)!)}\nنوبت آغاز با حاکم <@${s.hakim}>` }); } catch {}
