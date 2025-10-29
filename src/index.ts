@@ -215,12 +215,12 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
   if ((s.tricksTeam1||0) >= target || (s.tricksTeam2||0) >= target) {
     s.state = 'finished';
     await refreshTableEmbed({ channel: interaction.channel }, s);
-    await interaction.channel?.send({ content: `بازی تمام شد! تیم ${(s.tricksTeam1||0)>=target?1:2} برنده شد. نتیجه — تیم1: ${s.tricksTeam1} | تیم2: ${s.tricksTeam2}` });
+    await (interaction.channel as any)?.send({ content: `بازی تمام شد! تیم ${(s.tricksTeam1||0)>=target?1:2} برنده شد. نتیجه — تیم1: ${s.tricksTeam1} | تیم2: ${s.tricksTeam2}` });
     return;
   }
   await refreshTableEmbed({ channel: interaction.channel }, s);
   await refreshAllDMs({ client: (interaction.client as Client) }, s);
-  await interaction.channel?.send({ content: `این دست را برد: <@${winnerUserId}> (تیم ${team==='t1'?1:2}). نوبت شروع: <@${s.order[s.leaderIndex!]}>` });
+  await (interaction.channel as any)?.send({ content: `این دست را برد: <@${winnerUserId}> (تیم ${team==='t1'?1:2}). نوبت شروع: <@${s.order[s.leaderIndex!]}>` });
 }
 
 function handToString(hand: Card[]){ const bySuit: Record<Suit, Card[]> = {S:[],H:[],D:[],C:[]}; hand.forEach(c=>bySuit[c.s].push(c)); (Object.keys(bySuit) as Suit[]).forEach(s=>bySuit[s].sort((a,b)=>b.r-a.r));
@@ -258,30 +258,6 @@ async function resolveTargetIds(msg: Message, raw: string, cmd: string): Promise
       if (/^\d+$/.test(tk)) ids.add(tk);
     }
 
-    // Hand filter buttons
-    if (id.startsWith('hokm-hand-filter-')) {
-      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
-      const parts = id.split('-'); const uid = parts[3]; const fl = parts[4] as any;
-      if (interaction.user.id !== uid) { await interaction.reply({ content: 'این دکمه برای دست شما نیست.', ephemeral: true }); return; }
-      const key = `__hokm_dm_state_${interaction.guild.id}:${interaction.channel.id}:${uid}`;
-      const prev = (global as any)[key] || {}; (global as any)[key] = { filter: fl, page: 0 };
-      const s = ensureSession(interaction.guild.id, interaction.channel.id);
-      await refreshPlayerDM({ client: interaction.client as Client }, s, uid);
-      await interaction.deferUpdate();
-      return;
-    }
-    // Hand pagination buttons
-    if (id.startsWith('hokm-hand-page-')) {
-      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
-      const parts = id.split('-'); const uid = parts[3]; const page = parseInt(parts[4], 10) || 0;
-      if (interaction.user.id !== uid) { await interaction.reply({ content: 'این دکمه برای دست شما نیست.', ephemeral: true }); return; }
-      const key = `__hokm_dm_state_${interaction.guild.id}:${interaction.channel.id}:${uid}`;
-      const prev = (global as any)[key] || {}; (global as any)[key] = { filter: prev.filter || 'ALL', page };
-      const s = ensureSession(interaction.guild.id, interaction.channel.id);
-      await refreshPlayerDM({ client: interaction.client as Client }, s, uid);
-      await interaction.deferUpdate();
-      return;
-    }
   }
   return Array.from(ids);
 }
@@ -650,8 +626,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       );
       try {
         if (s.controlMsgId) {
-          const ch = await interaction.channel.fetch();
-          const m = await (ch as any).messages.fetch(s.controlMsgId).catch(()=>null);
+          const m = await (interaction.channel as any).messages.fetch(s.controlMsgId).catch(()=>null);
           if (m) await m.edit({ embeds: [embed], components: [row] });
         }
       } catch {}
@@ -692,7 +667,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         }
       } catch {}
       if (!msgObj) {
-        msgObj = await interaction.channel.send({ embeds: [embed], components: [row] });
+        msgObj = await (interaction.channel as any).send({ embeds: [embed], components: [row] });
         s.tableMsgId = msgObj.id;
       }
       await interaction.reply({ content: 'بازی با موفقیت شروع شد. منتظر انتخاب حکم از حاکم باشید.', ephemeral: true });
