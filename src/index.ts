@@ -873,7 +873,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       if (s.team1.length !== 2 || s.team2.length !== 2) { await interaction.reply({ content: 'هر دو تیم باید ۲ نفر داشته باشند.', ephemeral: true }); return; }
       s.targetTricks = s.targetTricks ?? 7;
       s.order = [s.team1[0], s.team2[0], s.team1[1], s.team2[1]];
-      s.hakim = s.team1[0];
+      s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
       s.deck = shuffle(makeDeck());
       s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
       const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
@@ -1203,7 +1203,7 @@ client.on('messageCreate', async (msg: Message) => {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     // reset session
-    s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'waiting'; s.ownerId = msg.author.id;
+    s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'waiting'; s.ownerId = msg.author.id; s.tableMsgId = undefined;
     const embed = new EmbedBuilder().setTitle('Hokm — اتاق جدید')
       .setDescription('با دکمه‌ها تیم خود را انتخاب کنید. هر تیم ۲ نفر. سپس `.hokm start` (یا `.hokm start 1..7`) را بزنید.')
       .setColor(0x2f3136);
@@ -1328,7 +1328,7 @@ client.on('messageCreate', async (msg: Message) => {
       } catch {}
     }
     // clear session
-    s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'finished'; s.controlMsgId = undefined;
+    s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'finished'; s.controlMsgId = undefined; s.tableMsgId = undefined;
     await msg.reply('اتاق پایان یافت.');
     return;
   }
@@ -1341,12 +1341,12 @@ client.on('messageCreate', async (msg: Message) => {
     if (s.team1.length !== 2 || s.team2.length !== 2) { await msg.reply('برای ریست، هر دو تیم باید ۲ نفر داشته باشند.'); return; }
     // reinitialize game state
     s.order = [s.team1[0], s.team2[0], s.team1[1], s.team2[1]];
-    s.hakim = s.team1[0];
+    s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
     s.deck = shuffle(makeDeck());
     s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
     give(s.hakim, 5);
-    s.hokm = undefined;
+    s.hokm = undefined; s.tableMsgId = undefined;
     s.state = 'choosing_hokm';
     try { const user = await msg.client.users.fetch(s.hakim); await user.send({ content: `بازی ریست شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
     // update control embed if exists
@@ -1383,7 +1383,7 @@ client.on('messageCreate', async (msg: Message) => {
     }
     s.targetTricks = target;
     s.order = [s.team1[0], s.team2[0], s.team1[1], s.team2[1]];
-    s.hakim = s.team1[0];
+    s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
     s.deck = shuffle(makeDeck());
     s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
     // deal 5 to hakim
