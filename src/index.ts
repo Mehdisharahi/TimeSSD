@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember, AttachmentBuilder } from 'discord.js';
-import { createCanvas, GlobalFonts, loadImage } from '@napi-rs/canvas';
+import { GlobalFonts, createCanvas, loadImage } from '[napi-rs/canvas';](cci:4://file://napi-rs/canvas';:0:0-0:0)
 import fs from 'fs';
 import path from 'path';
 import { PgFriendStore } from './storage/pgFriendStore';
@@ -164,7 +164,7 @@ function buildHandRowsSimple(hand: Card[], userId: string): ActionRowBuilder<But
 async function refreshPlayerChannelHand(ctx: { channel: any }, s: HokmSession, userId: string) {
   const hand = s.hands.get(userId) || [];
   const rows = buildHandRowsSimple(hand, userId);
-  const content = `<@${userId}> — ${userId===s.order[s.turnIndex??0] ? 'نوبت شماست.' : 'منتظر نوبت بمانید.'}`;
+  const content = `<[${userId}>](cci:4://file://${userId}>:0:0-0:0) — ${userId===s.order[s.turnIndex??0] ? 'نوبت شماست.' : 'منتظر نوبت بمانید.'}`;
   s.playerDMMsgIds = s.playerDMMsgIds || new Map<string,string>();
   const prevId = s.playerDMMsgIds.get(userId);
   if (prevId) {
@@ -177,7 +177,7 @@ async function refreshPlayerChannelHand(ctx: { channel: any }, s: HokmSession, u
 
 async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
   // textual graphical embed instead of image
-  const names = s.order.map(uid => `<@${uid}>`);
+  const names = s.order.map(uid => `<[${uid}>](cci:4://file://${uid}>:0:0-0:0)`);
   const turn = s.turnIndex!=null ? s.order[s.turnIndex] : undefined;
   const tableLines: string[] = [];
   const played: Record<string, string> = {};
@@ -193,7 +193,7 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
   ];
   const desc = [
     `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:'—'}`,
-    `نوبت: ${turn?`» <@${turn}>`:'—'}`,
+    `نوبت: ${turn?`» <[${turn}>](cci:4://file://${turn}>:0:0-0:0)`:'—'}`,
     `برد دست‌ها — تیم1: ${s.tricksTeam1??0} | تیم2: ${s.tricksTeam2??0}`,
     '',
     lines[0],
@@ -243,7 +243,7 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
   }
   if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
   await refreshAllDMs({ client: (interaction.client as Client) }, s);
-  if (gameChannel) await gameChannel.send({ content: `این دست را برد: <@${winnerUserId}> (تیم ${team==='t1'?1:2}). نوبت شروع: <@${s.order[s.leaderIndex!]}>` });
+  if (gameChannel) await gameChannel.send({ content: `این دست را برد: <[${winnerUserId}>](cci:4://file://${winnerUserId}>:0:0-0:0) (تیم ${team==='t1'?1:2}). نوبت شروع: <[${s.order[s.leaderIndex!]}>](cci:4://file://${s.order[s.leaderIndex!]}>:0:0-0:0)` });
 }
 
 function handToString(hand: Card[]){ const bySuit: Record<Suit, Card[]> = {S:[],H:[],D:[],C:[]}; hand.forEach(c=>bySuit[c.s].push(c)); (Object.keys(bySuit) as Suit[]).forEach(s=>bySuit[s].sort((a,b)=>b.r-a.r));
@@ -459,7 +459,7 @@ if (pgUrl) {
   const dbPath = process.env.FRIENDS_DB_PATH || path.join(process.cwd(), 'data', 'friends.db');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   // Dynamic require to avoid loading better-sqlite3 when not needed
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line [typescript-eslint/no-var-requires](cci:4://file://typescript-eslint/no-var-requires:0:0-0:0)
   const { FriendStore } = require('./storage/friendStore');
   const sqlite = new FriendStore(dbPath);
   // Adapter to async interface
@@ -472,42 +472,6 @@ if (pgUrl) {
 
 loadLoveOverrides();
 loadLoveRandoms();
-
-async function addDuration(guildId: string, a: string, b: string, deltaMs: number) {
-  if (deltaMs <= 0) return;
-  const gMap = getMap(partnerTotals, guildId, () => new Map());
-  const aMap = getMap(gMap, a, () => new Map());
-  const bMap = getMap(gMap, b, () => new Map());
-  aMap.set(b, (aMap.get(b) || 0) + deltaMs);
-  bMap.set(a, (bMap.get(a) || 0) + deltaMs);
-  // persist to SQLite/Postgres
-  await store.addDuration(guildId, a, b, deltaMs);
-}
-
-// Compute live totals for a user: persisted totals + ongoing sessions until now
-function computeTotalsUpToNow(guildId: string, userId: string): Map<string, number> | null {
-  const baseGuild = partnerTotals.get(guildId);
-  const base = baseGuild?.get(userId);
-  const out = new Map<string, number>();
-  if (base) {
-    for (const [pid, ms] of base.entries()) out.set(pid, ms);
-  }
-  const pMap = pairStarts.get(guildId);
-  if (!pMap || pMap.size === 0) return out.size ? out : null;
-  const now = Date.now();
-  for (const [key, start] of pMap.entries()) {
-    // key format: idA:idB:channelId
-    const parts = key.split(':');
-    if (parts.length < 3) continue;
-    const idA = parts[0];
-    const idB = parts[1];
-    const other = userId === idA ? idB : (userId === idB ? idA : null);
-    if (!other) continue;
-    const delta = now - start;
-    if (delta > 0) out.set(other, (out.get(other) || 0) + delta);
-  }
-  return out.size ? out : null;
-}
 
 // Minimal HTTPS downloader for environments without global fetch
 async function fetchBuffer(url: string): Promise<Buffer> {
@@ -633,13 +597,13 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         await interaction.reply({ content: 'از اتاق خارج شدی.', ephemeral: true });
       } else {
         const target = id === 'hokm-join-t1' ? s.team1 : s.team2;
-      if (target.length >= 2) { await interaction.reply({ content: 'این تیم پر است.', ephemeral: true }); return; }
-      target.push(uid);
+        if (target.length >= 2) { await interaction.reply({ content: 'این تیم پر است.', ephemeral: true }); return; }
+        target.push(uid);
         await interaction.reply({ content: `به تیم ${id.endsWith('t1')? '1':'2'} پیوستی.`, ephemeral: true });
       }
       // Update control message embed
       const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
-        .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
+        .setDescription(`تیم 1: ${s.team1.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}`)
         .setColor(0x2f3136);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
@@ -674,7 +638,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       try { const user = await interaction.client.users.fetch(s.hakim); await user.send({ content: `دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
       // create or update table message with suit buttons
       const embed = new EmbedBuilder().setTitle('Hokm — انتخاب حکم')
-        .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')}\nحاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.`)
+        .setDescription(`تیم 1: ${s.team1.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ')}\nتیم 2: ${s.team2.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ')}\nحاکم: <[${s.hakim}>](cci:4://file://${s.hakim}>:0:0-0:0) — لطفاً حکم را انتخاب کن.`)
         .setColor(0x5865F2);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId('hokm-choose-S').setLabel('♠️ پیک').setStyle(ButtonStyle.Primary),
@@ -719,7 +683,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
       // update table message
       const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
-        .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>\nتیم1 دست‌ها: 0 | تیم2 دست‌ها: 0`)
+        .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <[${s.order[s.turnIndex]}>\nتیم1](cci:4://file://${s.order[s.turnIndex]}>\nتیم1:0:0-0:0) دست‌ها: 0 | تیم2 دست‌ها: 0`)
       try { if (s.tableMsgId) { const m = await (interaction.channel as any).messages.fetch(s.tableMsgId).catch(()=>null); if (m) await m.edit({ embeds: [tableEmbed], components: [] }); } } catch {}
       // send per-player hand messages in channel with buttons
       s.playerDMMsgIds = s.playerDMMsgIds || new Map<string,string>();
@@ -824,13 +788,13 @@ client.on('messageCreate', async (msg: Message) => {
   setTimeout(() => processedMessages.delete(msg.id), 60_000);
   const content = msg.content.trim();
 
-  // .friend [@user|userId]
+  // .friend [[user|userId]](cci:4://file://user|userId]:0:0-0:0)
   if (content.startsWith('.friend')) {
     const arg = content.slice(7).trim();
     let target = msg.mentions.users.first() || null;
     if (!target && arg) {
       let id: string | null = null;
-      const m = arg.match(/^<@!?(\d+)>$/);
+      const m = arg.match(/^<[!?(\d+)>$/);](cci:4://file://!?(\d+)>$/);:0:0-0:0)
       if (m) id = m[1];
       else if (/^\d+$/.test(arg)) id = arg;
       if (id) {
@@ -867,7 +831,7 @@ client.on('messageCreate', async (msg: Message) => {
     };
     const lines: string[] = [];
     top.forEach(([pid, ms], i) => {
-      const mention = `<@${pid}>`;
+      const mention = `<[${pid}>](cci:4://file://${pid}>:0:0-0:0)`;
       lines.push(`${i + 1}. ${mention} — ${fmt(ms)}`);
     });
     const embed = new EmbedBuilder()
@@ -942,7 +906,7 @@ client.on('messageCreate', async (msg: Message) => {
       try { if (!m2) m2 = await msg.guild?.members.fetch(p.b).catch(() => null) || null; } catch {}
       if (!m1 || !m2) continue;
       if (m1.user.bot || m2.user.bot) continue;
-      lines.push(`${lines.length + 1}. <@${p.a}> + <@${p.b}> — ${fmt(p.ms)}`);
+      lines.push(`${lines.length + 1}. <[${p.a}>](cci:4://file://${p.a}>:0:0-0:0) + <[${p.b}>](cci:4://file://${p.b}>:0:0-0:0) — ${fmt(p.ms)}`);
     }
 
     if (lines.length === 0) {
@@ -978,24 +942,24 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .a1 @user — owner assigns user to Team 1
+  // .a1 [user](cci:4://file://user:0:0-0:0) — owner assigns user to Team 1
   if (content.startsWith('.a1')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را اضافه کند.'); return; }
     const targets = await resolveTargetIds(msg, content, '.a1');
-    if (targets.length === 0) { await msg.reply('استفاده: `.a1 @user1 @user2` یا ریپلای/آیدی'); return; }
+    if (targets.length === 0) { await msg.reply('استفاده: `.a1 [user1](cci:4://file://user1:0:0-0:0) [user2](cci:4://file://user2:0:0-0:0)` یا ریپلای/آیدی'); return; }
     const added: string[] = []; const skipped: string[] = [];
     for (const uid of targets) {
-      try { const u = await msg.client.users.fetch(uid); if (u.bot) { skipped.push(`<@${uid}> (bot)`); continue; } } catch { skipped.push(`<@${uid}> (نامعتبر)`); continue; }
-      if (s.team1.includes(uid)) { skipped.push(`<@${uid}> (قبلاً تیم 1)`); continue; }
+      try { const u = await msg.client.users.fetch(uid); if (u.bot) { skipped.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0) (bot)`); continue; } } catch { skipped.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0) (نامعتبر)`); continue; }
+      if (s.team1.includes(uid)) { skipped.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0) (قبلاً تیم 1)`); continue; }
       s.team1 = s.team1.filter(x=>x!==uid); s.team2 = s.team2.filter(x=>x!==uid);
-      if (s.team1.length >= 2) { skipped.push(`<@${uid}> (تیم 1 پر است)`); continue; }
-      s.team1.push(uid); added.push(`<@${uid}>`);
+      if (s.team1.length >= 2) { skipped.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0) (تیم 1 پر است)`); continue; }
+      s.team1.push(uid); added.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0)`);
     }
     const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
-      .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
+      .setDescription(`تیم 1: ${s.team1.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}`)
       .setColor(0x2f3136);
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
@@ -1006,24 +970,24 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .a2 @user — owner assigns user to Team 2
+  // .a2 [user](cci:4://file://user:0:0-0:0) — owner assigns user to Team 2
   if (content.startsWith('.a2')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را اضافه کند.'); return; }
     const targets = await resolveTargetIds(msg, content, '.a2');
-    if (targets.length === 0) { await msg.reply('استفاده: `.a2 @user1 @user2` یا ریپلای/آیدی'); return; }
+    if (targets.length === 0) { await msg.reply('استفاده: `.a2 [user1](cci:4://file://user1:0:0-0:0) [user2](cci:4://file://user2:0:0-0:0)` یا ریپلای/آیدی'); return; }
     const added: string[] = []; const skipped: string[] = [];
     for (const uid of targets) {
-      try { const u = await msg.client.users.fetch(uid); if (u.bot) { skipped.push(`<@${uid}> (bot)`); continue; } } catch { skipped.push(`<@${uid}> (نامعتبر)`); continue; }
-      if (s.team2.includes(uid)) { skipped.push(`<@${uid}> (قبلاً تیم 2)`); continue; }
+      try { const u = await msg.client.users.fetch(uid); if (u.bot) { skipped.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0) (bot)`); continue; } } catch { skipped.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0) (نامعتبر)`); continue; }
+      if (s.team2.includes(uid)) { skipped.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0) (قبلاً تیم 2)`); continue; }
       s.team1 = s.team1.filter(x=>x!==uid); s.team2 = s.team2.filter(x=>x!==uid);
-      if (s.team2.length >= 2) { skipped.push(`<@${uid}> (تیم 2 پر است)`); continue; }
-      s.team2.push(uid); added.push(`<@${uid}>`);
+      if (s.team2.length >= 2) { skipped.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0) (تیم 2 پر است)`); continue; }
+      s.team2.push(uid); added.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0)`);
     }
     const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
-      .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
+      .setDescription(`تیم 1: ${s.team1.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}`)
       .setColor(0x2f3136);
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
@@ -1041,16 +1005,16 @@ client.on('messageCreate', async (msg: Message) => {
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را حذف کند.'); return; }
     const targets = await resolveTargetIds(msg, content, '.r');
-    if (targets.length === 0) { await msg.reply('استفاده: `.r @user1 @user2` یا ریپلای/آیدی'); return; }
+    if (targets.length === 0) { await msg.reply('استفاده: `.ر [user1](cci:4://file://user1:0:0-0:0) [user2](cci:4://file://user2:0:0-0:0)` یا ریپلای/آیدی'); return; }
     const removed: string[] = []; const notIn: string[] = [];
     for (const uid of targets) {
       const inAny = s.team1.includes(uid) || s.team2.includes(uid);
       s.team1 = s.team1.filter(x=>x!==uid);
       s.team2 = s.team2.filter(x=>x!==uid);
-      if (inAny) removed.push(`<@${uid}>`); else notIn.push(`<@${uid}>`);
+      if (inAny) removed.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0)`); else notIn.push(`<[${uid}>](cci:4://file://${uid}>:0:0-0:0)`);
     }
     const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
-      .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
+      .setDescription(`تیم 1: ${s.team1.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}`)
       .setColor(0x2f3136);
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
@@ -1087,26 +1051,44 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .reset — owner resets the room and redeals (like fresh start with current teams)
+  // .reset — owner resets the room and redeals (fresh start with current teams, any time)
   if (content.startsWith('.reset')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند ریست کند.'); return; }
     if (s.team1.length !== 2 || s.team2.length !== 2) { await msg.reply('برای ریست، هر دو تیم باید ۲ نفر داشته باشند.'); return; }
-    // reinitialize game state
+
+    // Reset round state completely
     s.order = [s.team1[0], s.team2[0], s.team1[1], s.team2[1]];
     s.hakim = s.team1[0];
     s.deck = shuffle(makeDeck());
-    s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
-    const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
-    give(s.hakim, 5);
+    s.hands.clear(); s.order.forEach(u => s.hands.set(u, []));
     s.hokm = undefined;
+    s.leaderIndex = undefined;   // round not started yet
+    s.turnIndex = undefined;
+    s.table = [];
+    s.leadSuit = null;
+    s.tricksTeam1 = 0;
+    s.tricksTeam2 = 0;
+    s.playerDMMsgIds = new Map<string, string>(); // clear per-player UI refs (channel/DM)
+    // Optional: keep targetTricks if already set; otherwise:
+    // s.targetTricks = s.targetTricks ?? 7;
+
+    // deal 5 to hakim
+    const give = (u: string, n: number) => { const h = s.hands.get(u)!; for (let i = 0; i < n; i++) h.push(s.deck.pop()!); };
+    give(s.hakim, 5);
     s.state = 'choosing_hokm';
-    try { const user = await msg.client.users.fetch(s.hakim); await user.send({ content: `بازی ریست شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
-    // update control embed if exists
+
+    // DM hakim the initial 5 cards
+    try {
+      const user = await msg.client.users.fetch(s.hakim);
+      await user.send({ content: `بازی ریست شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` });
+    } catch {}
+
+    // Update control embed if exists (teams panel)
     if (s.controlMsgId) {
       const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
-        .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
+        .setDescription(`تیم 1: ${s.team1.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}`)
         .setColor(0x2f3136);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
@@ -1114,9 +1096,37 @@ client.on('messageCreate', async (msg: Message) => {
         new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
       );
-      try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ embeds: [embed], components: [row] }); } catch {}
+      try {
+        const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(() => null);
+        if (m) await m.edit({ embeds: [embed], components: [row] });
+      } catch {}
     }
-    await msg.reply({ content: `ریست شد. حاکم: <@${s.hakim}> — لطفاً با ".hokm hokm <خال>" حکم را انتخاب کن.` });
+
+    // Show suit selection panel in channel (like .hokm start) and remember tableMsgId
+    {
+      const embed = new EmbedBuilder().setTitle('Hokm — انتخاب حکم')
+        .setDescription(`تیم 1: ${s.team1.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ')}\nتیم 2: ${s.team2.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ')}\nحاکم: <[${s.hakim}>](cci:4://file://${s.hakim}>:0:0-0:0) — لطفاً حکم را انتخاب کن.`)
+        .setColor(0x5865F2);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('hokm-choose-S').setLabel('♠️ پیک').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-choose-H').setLabel('♥️ دل').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('hokm-choose-D').setLabel('♦️ خشت').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-choose-C').setLabel('♣️ گیشنیز').setStyle(ButtonStyle.Success),
+      );
+      let msgObj: any = null;
+      try {
+        if (s.tableMsgId) {
+          const m = await (msg.channel as any).messages.fetch(s.tableMsgId).catch(() => null);
+          if (m) { await m.edit({ embeds: [embed], components: [row] }); msgObj = m; }
+        }
+      } catch {}
+      if (!msgObj) {
+        msgObj = await (msg.channel as any).send({ embeds: [embed], components: [row] });
+        s.tableMsgId = msgObj.id;
+      }
+    }
+
+    await msg.reply({ content: `بازی از نو شروع شد. حاکم: <[${s.hakim}>](cci:4://file://${s.hakim}>:0:0-0:0) — از دکمه‌های میز برای انتخاب حکم استفاده کن.` });
     return;
   }
 
@@ -1149,7 +1159,7 @@ client.on('messageCreate', async (msg: Message) => {
     // Show suit selection panel in channel
     {
       const embed = new EmbedBuilder().setTitle('Hokm — انتخاب حکم')
-        .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')}\nحاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.`)
+        .setDescription(`تیم 1: ${s.team1.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ')}\nتیم 2: ${s.team2.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ')}\nحاکم: <[${s.hakim}>](cci:4://file://${s.hakim}>:0:0-0:0) — لطفاً حکم را انتخاب کن.`)
         .setColor(0x5865F2);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId('hokm-choose-S').setLabel('♠️ پیک').setStyle(ButtonStyle.Primary),
@@ -1169,7 +1179,7 @@ client.on('messageCreate', async (msg: Message) => {
         s.tableMsgId = msgObj.id;
       }
     }
-    await msg.reply({ content: `بازی آغاز شد. هدف برد دست‌ها: ${s.targetTricks}. حاکم: <@${s.hakim}> — از دکمه‌های میز برای انتخاب حکم استفاده کن.` });
+    await msg.reply({ content: `بازی آغاز شد. هدف برد دست‌ها: ${s.targetTricks}. حاکم: <[${s.hakim}>](cci:4://file://${s.hakim}>:0:0-0:0) — از دکمه‌های میز برای انتخاب حکم استفاده کن.` });
     return;
   }
 
@@ -1199,9 +1209,9 @@ client.on('messageCreate', async (msg: Message) => {
     s.tricksTeam1 = 0; s.tricksTeam2 = 0;
     // DM all hands
     for (const uid of s.order) {
-      try { const user = await msg.client.users.fetch(uid); await user.send({ content: `حکم: ${SUIT_EMOJI[s.hokm]}\nدست شما:\n${handToString(s.hands.get(uid)!)}\nنوبت آغاز با حاکم <@${s.hakim}>` }); } catch {}
+      try { const user = await msg.client.users.fetch(uid); await user.send({ content: `حکم: ${SUIT_EMOJI[s.hokm]}\nدست شما:\n${handToString(s.hands.get(uid)!)}\nنوبت آغاز با حاکم <[${s.hakim}>](cci:4://file://${s.hakim}>:0:0-0:0)` }); } catch {}
     }
-    await msg.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]} — نوبت آغاز با حاکم <@${s.hakim}>. با ".hokm play <کارت>" بازی کنید. مثال: .hokm play A${SUIT_EMOJI['S']}` });
+    await msg.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]} — نوبت آغاز با حاکم <[${s.hakim}>.](cci:4://file://${s.hakim}>.:0:0-0:0) با ".hokm play <کارت>" بازی کنید. مثال: .hokm play A${SUIT_EMOJI['S']}` });
     return;
   }
 
@@ -1223,23 +1233,23 @@ client.on('messageCreate', async (msg: Message) => {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     const parts: string[] = [];
-    parts.push(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}`);
-    parts.push(`تیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`);
-    parts.push(`حاکم: ${s.hakim?`<@${s.hakim}>`:'—'}`);
+    parts.push(`تیم 1: ${s.team1.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}`);
+    parts.push(`تیم 2: ${s.team2.map(u=>`<[${u}>](cci:4://file://${u}>:0:0-0:0)`).join(' , ') || '—'}`);
+    parts.push(`حاکم: ${s.hakim?`<[${s.hakim}>](cci:4://file://${s.hakim}>:0:0-0:0)`:'—'}`);
     parts.push(`حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:'—'}`);
     parts.push(`هدف دست‌ها: ${s.targetTricks ?? 7}`);
     if (s.state === 'playing') {
       parts.push(`برد دست‌ها — تیم1: ${s.tricksTeam1 ?? 0} | تیم2: ${s.tricksTeam2 ?? 0}`);
       const tableLines: string[] = [];
       if (s.table && s.table.length) {
-        for (const p of s.table) tableLines.push(`<@${p.userId}>: ${cardStr(p.card)}`);
+        for (const p of s.table) tableLines.push(`<[${p.userId}>:](cci:4://file://${p.userId}>::0:0-0:0) ${cardStr(p.card)}`);
         parts.push(`میز:
 ${tableLines.join('\n')}`);
       } else {
         parts.push('میز: —');
       }
       const next = s.turnIndex!=null ? s.order[s.turnIndex] : undefined;
-      if (next) parts.push(`نوبت: <@${next}>`);
+      if (next) parts.push(`نوبت: <[${next}>](cci:4://file://${next}>:0:0-0:0)`);
     }
     parts.push(`وضعیت: ${s.state}`);
     const embed = new EmbedBuilder().setTitle('Hokm — وضعیت میز').setDescription(parts.join('\n')).setColor(0x2f3136);
@@ -1252,368 +1262,8 @@ ${tableLines.join('\n')}`);
     const lines: string[] = [
       '• .t <مدت> [دلیل] — تنظیم تایمر. نمونه: `.t 10m` یا `.t 60 [دلیل]`',
       '• .e <ثانیه> — افزودن چند ثانیه به آخرین تایمر خودت. نمونه: `.e 30`',
-      '• .friend [@کاربر|آیدی] — نمایش ۱۰ نفرِ برتر که بیشترین هم‌حضوری ویس با کاربر هدف را داشته‌اند (بدون ربات‌ها).',
+      '• .friend [[کاربر|آیدی]](cci:4://file://کاربر|آیدی]:0:0-0:0) — نمایش ۱۰ نفرِ برتر که بیشترین هم‌حضوری ویس با کاربر هدف را داشته‌اند (بدون ربات‌ها).',
       '• .topfriend — نمایش ۱۰ زوج برتر با بیشترین هم‌حضوری در ویس (بدون ربات‌ها).',
-      '• .ll [@کاربر|آیدی] — محاسبه و ساخت تصویر درصد عشق بین شما و کاربر هدف.',
-      '• .llset @user1 @user2 <0..100> — فقط مدیران: تنظیم درصد ثابت عشق برای دو کاربر.',
-      '• .llunset @user1 @user2 — فقط مدیران: حذف تنظیم ثابت درصد عشق.',
-      '• .av [@کاربر|آیدی] — نمایش آواتار کاربر (با لینک).',
-      '• .ba [@کاربر|آیدی] — نمایش بنر کاربر (اگر داشته باشد).',
-      '• Slash: /timer set|list|cancel — تایمر با اینترفیس اسلش‌کامند (ثبت با `npm run register:commands`).',
-    ];
-    const embed = new EmbedBuilder()
-      .setTitle('راهنمای دستورات')
-      .setDescription(lines.join('\n'))
-      .setColor(0x2f3136);
-    await msg.reply({ embeds: [embed] });
-    return;
-  }
-
-  // .av [@user|userId]
-  if (content.startsWith('.av')) {
-    const arg = content.slice(3).trim();
-    let user = msg.mentions.users.first() || null;
-    if (!user && arg) {
-      let id: string | null = null;
-      const m = arg.match(/^<@!?(\d+)>$/);
-      if (m) id = m[1];
-      else if (/^\d+$/.test(arg)) id = arg;
-      if (id) {
-        try {
-          user = await msg.client.users.fetch(id);
-        } catch {}
-      }
-    }
-    if (!user) user = msg.author;
-    const url = user.displayAvatarURL({ size: 1024, extension: 'png' });
-    let display = user.username;
-    try {
-      const member = await msg.guild?.members.fetch(user.id).catch(() => null);
-      display = member?.displayName ?? user.username;
-    } catch {}
-    const embed = new EmbedBuilder()
-      .setTitle(`Avatar: ${display}`)
-      .setImage(url)
-      .setURL(url);
-    await msg.reply({ embeds: [embed] });
-    return;
-  }
-
-  if (content.startsWith('.ba')) {
-    const arg = content.slice(3).trim();
-    let user = msg.mentions.users.first() || null;
-    if (!user && arg) {
-      let id: string | null = null;
-      const m = arg.match(/^<@!?(\d+)>$/);
-      if (m) id = m[1];
-      else if (/^\d+$/.test(arg)) id = arg;
-      if (id) {
-        try {
-          user = await msg.client.users.fetch(id);
-        } catch {}
-      }
-    }
-    if (!user) user = msg.author;
-    try { user = await user.fetch(); } catch {}
-    const banner = user.bannerURL({ size: 1024, extension: 'png' });
-    if (!banner) {
-      await msg.reply({ content: 'این کاربر بنری تنظیم نکرده است.' });
-      return;
-    }
-    let display = user.username;
-    try {
-      const member = await msg.guild?.members.fetch(user.id).catch(() => null);
-      display = member?.displayName ?? user.username;
-    } catch {}
-    const embed = new EmbedBuilder()
-      .setTitle(`Banner: ${display}`)
-      .setImage(banner)
-      .setURL(banner);
-    await msg.reply({ embeds: [embed] });
-    return;
-  }
-
-
-  // .llset — admin only
-  if (content.startsWith('.llset')) {
-    const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
-    if (!isAdmin) {
-      await msg.reply({ content: 'فقط مدیران می‌توانند از این دستور استفاده کنند.' });
-      return;
-    }
-    const arg = content.slice(6).trim();
-    const parts = arg.split(/\s+/).filter(Boolean);
-    if (parts.length < 3 && msg.mentions.users.size < 2) {
-      await msg.reply({ content: 'استفاده: `.llset @user1 @user2 89` یا با آیدی دو کاربر و عدد بین 0 تا 100.' });
-      return;
-    }
-    let u1 = msg.mentions.users.at(0) || null;
-    let u2 = msg.mentions.users.at(1) || null;
-    const pStr = parts[parts.length - 1];
-    if (!u1 || !u2) {
-      const a = parts[0];
-      const b = parts[1];
-      if (!u1 && a && /^\d+$/.test(a)) { try { u1 = await msg.client.users.fetch(a); } catch {} }
-      if (!u2 && b && /^\d+$/.test(b)) { try { u2 = await msg.client.users.fetch(b); } catch {} }
-    }
-    const p = Number(pStr);
-    if (!u1 || !u2 || !Number.isInteger(p) || p < 0 || p > 100) {
-      await msg.reply({ content: 'ورودی نامعتبر. عدد باید بین 0 تا 100 باشد و دو کاربر مشخص شوند.' });
-      return;
-    }
-    const gId = msg.guildId!;
-    const m = loveOverrides.get(gId) || new Map<string, number>();
-    m.set(loveKey(u1.id, u2.id), p);
-    loveOverrides.set(gId, m);
-    saveLoveOverrides();
-    await msg.reply({ content: `درصد عشق بین <@${u1.id}> و <@${u2.id}> روی ${p}% تنظیم شد.` });
-    return;
-  }
-
-  // .llunset — admin only
-  if (content.startsWith('.llunset')) {
-    const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
-    if (!isAdmin) {
-      await msg.reply({ content: 'فقط مدیران می‌توانند از این دستور استفاده کنند.' });
-      return;
-    }
-    const arg = content.slice(8).trim();
-    const parts = arg.split(/\s+/).filter(Boolean);
-    if (parts.length < 2 && msg.mentions.users.size < 2) {
-      await msg.reply({ content: 'استفاده: `.llunset @user1 @user2` یا با آیدی دو کاربر.' });
-      return;
-    }
-    let u1 = msg.mentions.users.at(0) || null;
-    let u2 = msg.mentions.users.at(1) || null;
-    if (!u1 || !u2) {
-      const a = parts[0];
-      const b = parts[1];
-      if (!u1 && a && /^\d+$/.test(a)) { try { u1 = await msg.client.users.fetch(a); } catch {} }
-      if (!u2 && b && /^\d+$/.test(b)) { try { u2 = await msg.client.users.fetch(b); } catch {} }
-    }
-    if (!u1 || !u2) {
-      await msg.reply({ content: 'دو کاربر را مشخص کنید.' });
-      return;
-    }
-    const gId = msg.guildId!;
-    const m = loveOverrides.get(gId);
-    if (m) {
-      m.delete(loveKey(u1.id, u2.id));
-      if (m.size === 0) loveOverrides.delete(gId); else loveOverrides.set(gId, m);
-      saveLoveOverrides();
-    }
-    await msg.reply({ content: `تنظیم ثابت بین <@${u1.id}> و <@${u2.id}> حذف شد.` });
-    return;
-  }
-
-  // .ll command
-  if (content.startsWith('.ll')) {
-    if (llInFlight.has(msg.id)) return;
-    llInFlight.add(msg.id);
-    try {
-      const arg = content.slice(3).trim();
-      let userA = msg.author;
-      let userB = msg.mentions.users.first() || null;
-      if (!userB && arg) {
-        let id: string | null = null;
-        const m = arg.match(/^<@!?(\d+)>$/);
-        if (m) id = m[1];
-        else if (/^\d+$/.test(arg)) id = arg;
-        if (id) {
-          try { userB = await msg.client.users.fetch(id); } catch {}
-        }
-      }
-      if (!userB) {
-        // Equal probability among ALL guild members (requires Server Members Intent on the bot)
-        let all: any[] = [];
-        const fetchedAll = await fetchMembersWithTimeout(msg.guild, 5000);
-        if (fetchedAll) all = Array.from(fetchedAll.values());
-        if (!all || all.length === 0) {
-          // fallback to cache if fetch failed (still try to avoid author)
-          all = msg.guild?.members.cache ? Array.from(msg.guild.members.cache.values()) : [];
-        }
-        if (!all || all.length === 0) {
-          // final fallback: recent message authors
-          const ids = await recentAuthorsFallback(msg, 100, 2000);
-          if (ids.length) {
-            const candidateIds = ids.filter(id => id !== userA.id);
-            const id = (candidateIds.length ? candidateIds : ids)[Math.floor(Math.random() * (candidateIds.length ? candidateIds.length : ids.length))];
-            try { const u = await msg.client.users.fetch(id); userB = u; } catch {}
-          }
-        }
-        if (!userB && all && all.length > 0) {
-          // Uniform random selection on full list; try to exclude author and bots if possible
-          const pref = all.filter(m => !m.user.bot && m.id !== userA.id);
-          const base = pref.length ? pref : all.filter(m => m.id !== userA.id);
-          const pool = (base.length ? base : all);
-          const pick = pool[Math.floor(Math.random() * pool.length)];
-          userB = pick.user as typeof userA;
-        }
-        if (!userB) userB = userA; // absolute last resort
-      }
-
-      const targetB = userB ?? userA; // guarantee non-null for subsequent rendering
-
-      const size = { w: 700, h: 250 };
-      const canvas = createCanvas(size.w, size.h);
-      const ctx = canvas.getContext('2d');
-
-      // Solid background to guarantee contrast
-      ctx.fillStyle = '#2f3136';
-      ctx.fillRect(0, 0, size.w, size.h);
-
-      // Load avatars
-      const aUrl = userA.displayAvatarURL({ extension: 'png', size: 256 });
-      const bUrl = targetB.displayAvatarURL({ extension: 'png', size: 256 });
-      const [aImg, bImg] = await Promise.all([loadImage(aUrl), loadImage(bUrl)]);
-
-      // Draw square avatars (no border), flush to left/right edges
-      const box = size.h; // full height square
-      const y = 0;
-      const leftX = 0;
-      const rightX = size.w - box;
-      ctx.drawImage(aImg, leftX, y, box, box);
-      ctx.drawImage(bImg, rightX, y, box, box);
-
-      // Heart and percentage (centered)
-      let love: number;
-      const gIdForLove = msg.guildId!;
-      const pair = loveKey(userA.id, targetB.id);
-      try {
-        // 1) Admin override wins
-        const mOverride = loveOverrides.get(gIdForLove);
-        const vOverride = mOverride?.get(pair);
-        if (typeof vOverride === 'number') {
-          love = vOverride;
-        } else {
-          // 2) Sticky random: reuse if exists, otherwise create and persist
-          let mRand = loveRandoms.get(gIdForLove);
-          if (!mRand) { mRand = new Map<string, number>(); loveRandoms.set(gIdForLove, mRand); }
-          const vRand = mRand.get(pair);
-          if (typeof vRand === 'number') {
-            love = vRand;
-          } else {
-            love = Math.floor(Math.random() * 101);
-            mRand.set(pair, love);
-            saveLoveRandoms();
-          }
-        }
-      } catch {
-        // Fallback if anything goes wrong
-        love = Math.floor(Math.random() * 101);
-      }
-      console.log(`[.ll] rendering with love=%s, fontAvailable=%s`, love, ssdFontAvailable);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const cx = Math.floor(size.w / 2);
-      const cy = Math.floor(size.h / 2);
-
-      // Draw a glossy heart path with gradient
-      const heartW = 230;
-      const heartH = 210;
-      const hw = heartW / 2;
-      const hh = heartH / 2;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.beginPath();
-      // Parametric heart using Bezier curves
-      ctx.moveTo(0, hh * 0.2);
-      ctx.bezierCurveTo(hw, -hh * 0.6, hw * 1.2, hh * 0.8, 0, hh);
-      ctx.bezierCurveTo(-hw * 1.2, hh * 0.8, -hw, -hh * 0.6, 0, hh * 0.2);
-      const grad = ctx.createRadialGradient(-hw * 0.2, -hh * 0.4, hw * 0.1, 0, 0, Math.max(hw, hh));
-      grad.addColorStop(0, '#ff88a3');
-      grad.addColorStop(0.4, '#ff5e7a');
-      grad.addColorStop(1, '#d61e41');
-      ctx.fillStyle = grad;
-      ctx.fill();
-
-      // subtle highlight
-      ctx.globalAlpha = 0.25;
-      ctx.beginPath();
-      ctx.ellipse(-hw * 0.25, -hh * 0.35, hw * 0.45, hh * 0.25, 0, 0, Math.PI * 2);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.restore();
-
-      // Percentage text inside heart (outlined for visibility)
-      ctx.font = ssdFontAvailable ? `bold 40px "${ssdFontFamily}"` : 'bold 40px Arial';
-      ctx.lineWidth = 6;
-      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-      ctx.strokeText(`${love}%`, cx, cy);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(`${love}%`, cx, cy);
-
-      // Names
-      const aMember = await msg.guild?.members.fetch(userA.id).catch(() => null);
-      const bMember = await msg.guild?.members.fetch(targetB.id).catch(() => null);
-      const aName = aMember?.displayName ?? userA.username;
-      const bName = bMember?.displayName ?? targetB.username;
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 20px sans-serif';
-      ctx.fillText(aName, leftX + box / 2, box + 18);
-      ctx.fillText(bName, rightX + box / 2, box + 18);
-
-      const buffer = canvas.toBuffer('image/png');
-      const attachment = new AttachmentBuilder(buffer, { name: 'love.png' });
-      await msg.reply({ files: [attachment] });
-      return;
-    } catch (err) {
-      console.error('Error in .ll command:', err);
-      await msg.reply({ content: 'خطا در ساخت تصویر عشق. لطفاً کمی بعد دوباره تلاش کنید.' });
-      return;
-    } finally {
-      llInFlight.delete(msg.id);
-    }
-  }
-
-  // .e command
-  if (content.startsWith('.e')) {
-    const arg = content.slice(2).trim();
-    if (!arg || !/^\d+$/.test(arg)) {
-      await msg.reply({ content: 'استفاده: `.e 30` (افزودن ثانیه به آخرین تایمر شما)' });
-      return;
-    }
-    const sec = Number(arg);
-    if (sec <= 0) {
-      await msg.reply({ content: 'عدد معتبر وارد کنید (بزرگتر از 0).' });
-      return;
-    }
-    const t = await timerManager.extendLast(msg.guildId!, msg.author.id, sec * 1000);
-    if (!t) {
-      await msg.reply({ content: 'تایمر فعالی برای شما یافت نشد.' });
-      return;
-    }
-    return;
-  }
-
-  if (!content.startsWith('.t')) return;
-
-  const args = content.slice(2).trim();
-  if (!args) {
-    await msg.reply({ content: 'استفاده: `.t 10m [دلیل]` یا `.t 60 [دلیل]` (عدد = ثانیه)' });
-    return;
-  }
-
-  const [first, ...rest] = args.split(/\s+/);
-  const reason = rest.join(' ').trim() || null;
-  const durationMs = parseDuration(first);
-  if (!durationMs || durationMs < 1000) {
-    await msg.reply({ content: 'مدت زمان نامعتبر. نمونه: 10m یا 2h یا 60 (ثانیه)' });
-    return;
-  }
-
-  const at = timerManager.setTimer({
-    guildId: msg.guildId!,
-    channelId: msg.channel.id,
-    userId: msg.author.id,
-    durationMs,
-    reason,
-  });
-
-  const embed = makeTimerSetEmbed(at);
-  const sent = await msg.reply({ embeds: [embed] });
-  at.messageId = sent.id;
-});
-
-client.login(token);
+      '• .ll [[کاربر|آیدی]](cci:4://file://کاربر|آیدی]:0:0-0:0) — محاسبه و ساخت تصویر درصد عشق بین شما و کاربر هدف.',
+      '• .llset [user1](cci:4://file://user1:0:0-0:0) [user2](cci:4://file://user2:0:0-0:0) <0..100> — فقط مدیران: تنظیم درصد ثابت عشق برای دو کاربر.',
+      '• .llunset [user1](cci:4://file://user1:0:0-0:0)
