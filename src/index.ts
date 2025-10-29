@@ -389,6 +389,86 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  // .topfriend — list top 10 pairs with most co-voice time (exclude bots)
+  if (content.startsWith('.topfriend')) {
+    const gId = msg.guildId!;
+
+    // Aggregate persisted totals per unordered pair (a<b)
+    const agg = new Map<string, { a: string; b: string; ms: number }>();
+    const baseGuild = partnerTotals.get(gId);
+    if (baseGuild) {
+      for (const [a, mp] of baseGuild) {
+        for (const [b, ms] of mp) {
+          const [x, y] = a < b ? [a, b] : [b, a];
+          const key = `${x}:${y}`;
+          const cur = agg.get(key) || { a: x, b: y, ms: 0 };
+          cur.ms += ms;
+          agg.set(key, cur);
+        }
+      }
+    }
+
+    // Add ongoing sessions from pairStarts (per channel) up to now
+    const pMap = pairStarts.get(gId);
+    if (pMap && pMap.size) {
+      const now = Date.now();
+      for (const [key, start] of pMap) {
+        const parts = key.split(':');
+        if (parts.length < 3) continue;
+        const [a, b] = [parts[0], parts[1]];
+        const [x, y] = a < b ? [a, b] : [b, a];
+        const k2 = `${x}:${y}`;
+        const cur = agg.get(k2) || { a: x, b: y, ms: 0 };
+        const delta = Math.max(0, now - start);
+        cur.ms += delta;
+        agg.set(k2, cur);
+      }
+    }
+
+    // Nothing to report
+    if (agg.size === 0) {
+      await msg.reply({ content: 'هیچ زوجی یافت نشد.' });
+      return;
+    }
+
+    // Sort by ms desc
+    const allPairs = Array.from(agg.values()).sort((p, q) => q.ms - p.ms);
+
+    // Build top 10 non-bot pairs (lazy fetch members)
+    const lines: string[] = [];
+    const fmt = (ms: number) => {
+      let s = Math.floor(ms / 1000);
+      const h = Math.floor(s / 3600); s -= h * 3600;
+      const m = Math.floor(s / 60); s -= m * 60;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    };
+
+    for (const p of allPairs) {
+      if (lines.length >= 10) break;
+      let m1 = msg.guild?.members.cache.get(p.a) || null;
+      let m2 = msg.guild?.members.cache.get(p.b) || null;
+      try { if (!m1) m1 = await msg.guild?.members.fetch(p.a).catch(() => null) || null; } catch {}
+      try { if (!m2) m2 = await msg.guild?.members.fetch(p.b).catch(() => null) || null; } catch {}
+      if (!m1 || !m2) continue;
+      if (m1.user.bot || m2.user.bot) continue;
+      lines.push(`${lines.length + 1}. <@${p.a}> + <@${p.b}> — ${fmt(p.ms)}`);
+    }
+
+    if (lines.length === 0) {
+      await msg.reply({ content: 'هیچ زوج غیر باتی یافت نشد.' });
+      return;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('top friends')
+      .setDescription(lines.join('\n'))
+      .setColor(0x2f3136);
+    await msg.reply({ embeds: [embed] });
+    return;
+  }
+
   // .av [@user|userId]
   if (content.startsWith('.av')) {
     const arg = content.slice(3).trim();
