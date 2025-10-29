@@ -232,7 +232,7 @@ function computeTotalsUpToNow(guildId: string, userId: string): Map<string, numb
   return out.size ? out : null;
 }
 
-client.once('clientReady', async () => {
+client.once('ready', async () => {
   console.log(`TimeSSD is online as ${client.user?.tag}`);
   // Initialize current voice channel membership and start sessions for existing pairs
   try {
@@ -354,7 +354,18 @@ client.on('messageCreate', async (msg: Message) => {
       await msg.reply({ content: 'داده‌ای برای این کاربر یافت نشد.' });
       return;
     }
-    const entries = Array.from(map.entries()).filter(([pid]) => pid !== target!.id);
+    const rawEntries = Array.from(map.entries()).filter(([pid]) => pid !== target!.id);
+    const entries: Array<[string, number]> = [];
+    for (const [pid, ms] of rawEntries) {
+      try {
+        const member = await msg.guild?.members.fetch(pid).catch(() => null);
+        if (member && !member.user.bot) entries.push([pid, ms]);
+      } catch {}
+    }
+    if (entries.length === 0) {
+      await msg.reply({ content: 'هیچ دوست غیر باتی پیدا نشد.' });
+      return;
+    }
     entries.sort((a, b) => b[1] - a[1]);
     const top = entries.slice(0, 10);
     const fmt = (ms: number) => {
