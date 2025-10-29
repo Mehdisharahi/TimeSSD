@@ -469,6 +469,28 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  // .komak — help
+  if (content.startsWith('.komak')) {
+    const lines: string[] = [
+      '• .t <مدت> [دلیل] — تنظیم تایمر. نمونه: `.t 10m` یا `.t 60 [دلیل]`',
+      '• .e <ثانیه> — افزودن چند ثانیه به آخرین تایمر خودت. نمونه: `.e 30`',
+      '• .friend [@کاربر|آیدی] — نمایش ۱۰ نفرِ برتر که بیشترین هم‌حضوری ویس با کاربر هدف را داشته‌اند (بدون ربات‌ها).',
+      '• .topfriend — نمایش ۱۰ زوج برتر با بیشترین هم‌حضوری در ویس (بدون ربات‌ها).',
+      '• .ll [@کاربر|آیدی] — محاسبه و ساخت تصویر درصد عشق بین شما و کاربر هدف.',
+      '• .llset @user1 @user2 <0..100> — فقط مدیران: تنظیم درصد ثابت عشق برای دو کاربر.',
+      '• .llunset @user1 @user2 — فقط مدیران: حذف تنظیم ثابت درصد عشق.',
+      '• .av [@کاربر|آیدی] — نمایش آواتار کاربر (با لینک).',
+      '• .ba [@کاربر|آیدی] — نمایش بنر کاربر (اگر داشته باشد).',
+      '• Slash: /timer set|list|cancel — تایمر با اینترفیس اسلش‌کامند (ثبت با `npm run register:commands`).',
+    ];
+    const embed = new EmbedBuilder()
+      .setTitle('راهنمای دستورات')
+      .setDescription(lines.join('\n'))
+      .setColor(0x2f3136);
+    await msg.reply({ embeds: [embed] });
+    return;
+  }
+
   // .av [@user|userId]
   if (content.startsWith('.av')) {
     const arg = content.slice(3).trim();
