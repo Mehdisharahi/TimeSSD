@@ -174,7 +174,71 @@ async function refreshPlayerChannelHand(ctx: { channel: any }, s: HokmSession, u
   s.playerDMMsgIds.set(userId, msg.id);
 }
 
-function renderTableImage(s: HokmSession): Buffer {
+type AvatarEntry = { img: any; tag: string; at: number };
+const avatarCache: Map<string, AvatarEntry> = new Map();
+const AVATAR_TTL_MS = 10 * 60 * 1000;
+
+async function getMemberVisual(guildId: string, userId: string): Promise<{ tag: string; img: any|null }> {
+  try {
+    const g = await client.guilds.fetch(guildId).catch(()=>null);
+    if (!g) return { tag: userId, img: null };
+    const m = await g.members.fetch(userId).catch(()=>null as any);
+    const tag = m?.displayName || m?.user?.username || userId;
+    const now = Date.now();
+    const cached = avatarCache.get(userId);
+    if (cached && now - cached.at < AVATAR_TTL_MS) {
+      return { tag, img: cached.img };
+    }
+    const url = m?.displayAvatarURL({ extension: 'png', size: 64 }) as string | undefined;
+    if (url) {
+      const img = await loadImage(url).catch(()=>null);
+      if (img) { avatarCache.set(userId, { img, tag, at: now }); return { tag, img }; }
+    }
+    return { tag, img: null };
+  } catch { return { tag: userId, img: null }; }
+}
+
+function drawSuit(ctx: any, s: Suit, x: number, y: number, size: number) {
+  ctx.save();
+  ctx.translate(x, y);
+  const red = (s==='H'||s==='D');
+  ctx.fillStyle = red ? '#dc2626' : '#111827';
+  ctx.beginPath();
+  const r = size;
+  if (s==='H') { // heart
+    ctx.moveTo(0, r*0.6);
+    ctx.bezierCurveTo(-r, -r*0.3, -r*0.6, -r, 0, -r*0.4);
+    ctx.bezierCurveTo(r*0.6, -r, r, -r*0.3, 0, r*0.6);
+  } else if (s==='D') { // diamond
+    ctx.moveTo(0, -r);
+    ctx.lineTo(r*0.8, 0);
+    ctx.lineTo(0, r);
+    ctx.lineTo(-r*0.8, 0);
+    ctx.closePath();
+  } else if (s==='S') { // spade
+    ctx.moveTo(0, -r);
+    ctx.bezierCurveTo(r, -r*0.2, r*0.7, r*0.6, 0, r*0.2);
+    ctx.bezierCurveTo(-r*0.7, r*0.6, -r, -r*0.2, 0, -r);
+    // stem
+    ctx.moveTo(-r*0.25, r*0.4);
+    ctx.lineTo(r*0.25, r*0.4);
+    ctx.lineTo(0, r*0.9);
+    ctx.closePath();
+  } else { // club
+    ctx.arc(-r*0.35, 0, r*0.35, 0, Math.PI*2);
+    ctx.arc(r*0.35, 0, r*0.35, 0, Math.PI*2);
+    ctx.arc(0, -r*0.45, r*0.35, 0, Math.PI*2);
+    // stem
+    ctx.moveTo(-r*0.2, r*0.2);
+    ctx.lineTo(r*0.2, r*0.2);
+    ctx.lineTo(0, r*0.9);
+    ctx.closePath();
+  }
+  ctx.fill();
+  ctx.restore();
+}
+
+async function renderTableImage(s: HokmSession): Promise<Buffer> {
   const width = 960, height = 600;
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
@@ -191,8 +255,15 @@ function renderTableImage(s: HokmSession): Buffer {
   ctx.font = `${ssdFontAvailable? '28px '+ssdFontFamily : '28px Arial'}`;
   ctx.fillStyle = '#ffffff';
   const turnUid = s.turnIndex!=null ? s.order[s.turnIndex] : undefined;
-  const topText = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:'—'}   |   نوبت: ${turnUid?`@${turnUid}`:'—'}   |   تیم1: ${s.tricksTeam1??0}  تیم2: ${s.tricksTeam2??0}`;
+  const topText = `حکم:`;
   ctx.fillText(topText, 28, 45);
+  if (s.hokm) drawSuit(ctx, s.hokm, 110, 37, 16);
+  ctx.fillText(`| نوبت: ${turnUid?'' :'—'}`, 140, 45);
+  if (turnUid) {
+    const mv = await getMemberVisual(s.guildId, turnUid);
+    ctx.fillText(mv.tag, 220, 45);
+  }
+  ctx.fillText(`| تیم1: ${s.tricksTeam1??0}  تیم2: ${s.tricksTeam2??0}`, 420, 45);
 
   // positions for seats and cards
   const seats = [
@@ -204,14 +275,53 @@ function renderTableImage(s: HokmSession): Buffer {
   const nameFont = `${ssdFontAvailable? '20px '+ssdFontFamily : '20px Arial'}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  function drawSeatLabel(i: number, uid?: string) {
+  function drawSeatLabel(i: number, uid?: string, name?: string, avatar?: any, isTurn?: boolean, remainCount?: number) {
     const seat = seats[i];
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    ctx.fillRect(seat.x-120, seat.y-22, 240, 30);
+    // highlight glow for turn
+    if (isTurn) {
+      ctx.save();
+      ctx.shadowColor = 'rgba(245, 158, 11, 0.9)'; // amber glow
+      ctx.shadowBlur = 18;
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(seat.x-142, seat.y-30, 284, 40);
+      ctx.restore();
+    }
+    // label background
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(seat.x-140, seat.y-28, 280, 36);
+    // avatar circle
+    if (avatar) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(seat.x-120, seat.y-10, 14, 0, Math.PI*2);
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(avatar, seat.x-134, seat.y-24, 28, 28);
+      ctx.restore();
+    }
     ctx.fillStyle = '#f9fafb';
     ctx.font = nameFont;
-    const tag = uid ? `<@${uid}>` : '—';
-    ctx.fillText(tag, seat.x, seat.y-7);
+    const tag = name || (uid ? uid : '—');
+    ctx.textAlign = 'left';
+    ctx.fillText(tag, seat.x-100, seat.y-10);
+    // remaining card badge
+    if (typeof remainCount === 'number') {
+      ctx.textAlign = 'right';
+      ctx.font = `${ssdFontAvailable? '18px '+ssdFontFamily : '18px Arial'}`;
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      const bx = seat.x+132, by = seat.y-10;
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.beginPath();
+      ctx.roundRect(bx-34, by-12, 28, 20, 8);
+      ctx.fill();
+      ctx.fillStyle = '#f9fafb';
+      ctx.textAlign = 'center';
+      ctx.fillText(String(remainCount), bx-20, by+1);
+      ctx.restore();
+    }
+    ctx.textAlign = 'center';
   }
   function drawCard(x: number, y: number, c: Card) {
     const w = 90, h = 130, r = 10;
@@ -233,27 +343,36 @@ function renderTableImage(s: HokmSession): Buffer {
     ctx.fillStyle = red ? '#dc2626' : '#111827';
     ctx.font = `${ssdFontAvailable? '28px '+ssdFontFamily : '28px Arial'}`;
     const rtxt = rankStr(c.r);
-    ctx.fillText(rtxt, x + 22, y + 28);
-    ctx.font = `${ssdFontAvailable? '30px '+ssdFontFamily : '30px Arial'}`;
-    ctx.fillText(SUIT_EMOJI[c.s], x + w/2, y + h/2);
+    ctx.textAlign = 'left';
+    ctx.fillText(rtxt, x + 10, y + 28);
+    ctx.textAlign = 'center';
+    drawSuit(ctx, c.s, x + w/2, y + h/2 + 4, 14);
   }
   // draw seats and played cards
   for (let i=0;i<4;i++) {
     const uid = s.order[i];
     if (!uid) continue;
-    drawSeatLabel(i, uid);
+    const mv = await getMemberVisual(s.guildId, uid);
+    const isTurn = s.turnIndex!=null && s.order[s.turnIndex] === uid;
+    const remain = (s.hands.get(uid)?.length) ?? 0;
+    drawSeatLabel(i, uid, mv.tag, mv.img, isTurn, remain);
     const play = (s.table||[]).find(t=>t.userId===uid);
     if (play) {
       // offset from seat for card placement
-      const off = [{dx:0,dy:20},{dx:-100,dy:0},{dx:0,dy:-20},{dx:20,dy:0}][i];
-      drawCard(seats[i].x + (off.dx||0) - 45, seats[i].y + (off.dy||0) - 40, play.card);
+      const cardPos = [
+        {x: seats[i].x - 45, y: seats[i].y + 20},   // N: زیر برچسب
+        {x: seats[i].x - 140, y: seats[i].y - 65},  // E: چپ برچسب
+        {x: seats[i].x - 45, y: seats[i].y - 150},  // S: بالای برچسب
+        {x: seats[i].x + 50, y: seats[i].y - 65},   // W: راست برچسب
+      ][i];
+      drawCard(cardPos.x, cardPos.y, play.card);
     }
   }
   return canvas.toBuffer('image/png');
 }
 
 async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
-  const img = renderTableImage(s);
+  const img = await renderTableImage(s);
   const attachment = new AttachmentBuilder(img, { name: 'table.png' });
   const embed = new EmbedBuilder()
     .setTitle('Hokm — میز بازی')
