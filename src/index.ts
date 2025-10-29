@@ -1,6 +1,6 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, AttachmentBuilder, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember } from 'discord.js';
-import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas';
+import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember, AttachmentBuilder } from 'discord.js';
+import { createCanvas, GlobalFonts, loadImage } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
 import { PgFriendStore } from './storage/pgFriendStore';
@@ -145,47 +145,67 @@ async function refreshAllDMs(ctx: { client: Client }, s: HokmSession) {
   for (const uid of s.order) await refreshPlayerDM(ctx, s, uid);
 }
 
-async function renderTableCanvas(s: HokmSession): Promise<Buffer> {
-  const width = 900, height = 500;
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext('2d');
-  // table bg
-  ctx.fillStyle = '#0a6a3b'; ctx.fillRect(0,0,width,height);
-  // header
-  ctx.fillStyle = '#ffffff'; ctx.font = '28px Sans';
-  const hokmText = s.hokm ? `حکم: ${SUIT_EMOJI[s.hokm]}` : 'حکم: —';
-  const turnUser = s.turnIndex!=null ? s.order[s.turnIndex] : undefined;
-  ctx.fillText(`${hokmText} | نوبت: ${turnUser?`@${turnUser}`:'—'}`, 20, 40);
-  ctx.fillText(`دست‌ها — تیم1: ${s.tricksTeam1??0} | تیم2: ${s.tricksTeam2??0}`, 20, 75);
-  // draw 4 slots around center
-  const cx = width/2, cy = height/2; const cardW=120, cardH=170;
-  const positions = [ {x: cx-cardW/2, y: cy-cardH-30}, {x: cx+cardW+30, y: cy-cardH/2}, {x: cx-cardW/2, y: cy+30}, {x: cx-cardW-30, y: cy-cardH/2} ];
-  // determine order relative to leader
-  const table = s.table || [];
-  for (let i=0;i<table.length;i++) {
-    const p = table[i];
-    const pos = positions[i] || positions[0];
-    ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#222'; ctx.lineWidth = 3;
-    ctx.fillRect(pos.x, pos.y, cardW, cardH); ctx.strokeRect(pos.x, pos.y, cardW, cardH);
-    ctx.fillStyle = '#111'; ctx.font = 'bold 36px Sans';
-    ctx.fillText(rankStr(p.card.r), pos.x+10, pos.y+50);
-    ctx.fillText(SUIT_EMOJI[p.card.s], pos.x+10, pos.y+100);
-    ctx.font = '14px Sans'; ctx.fillStyle = '#333';
-    ctx.fillText(`<@${p.userId}>`, pos.x+10, pos.y+cardH-10);
+function buildHandRowsSimple(hand: Card[], userId: string): ActionRowBuilder<ButtonBuilder>[] {
+  // show all cards across up to 3 rows (5 buttons per row)
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  const items = [...hand].sort((a,b)=> a.s===b.s ? b.r-a.r : ['S','H','D','C'].indexOf(a.s)-['S','H','D','C'].indexOf(b.s));
+  for (let r=0; r<3; r++) {
+    const slice = items.slice(r*5, r*5+5);
+    if (!slice.length) break;
+    const row = new ActionRowBuilder<ButtonBuilder>();
+    for (const c of slice) {
+      row.addComponents(new ButtonBuilder().setCustomId(`hokm-play-${userId}-${c.s}-${c.r}`).setLabel(cardStr(c)).setStyle(ButtonStyle.Secondary));
+    }
+    rows.push(row);
   }
-  return canvas.toBuffer('image/png');
+  return rows;
+}
+
+async function refreshPlayerChannelHand(ctx: { channel: any }, s: HokmSession, userId: string) {
+  const hand = s.hands.get(userId) || [];
+  const rows = buildHandRowsSimple(hand, userId);
+  const content = `<@${userId}> — ${userId===s.order[s.turnIndex??0] ? 'نوبت شماست.' : 'منتظر نوبت بمانید.'}`;
+  s.playerDMMsgIds = s.playerDMMsgIds || new Map<string,string>();
+  const prevId = s.playerDMMsgIds.get(userId);
+  if (prevId) {
+    const m = await ctx.channel.messages.fetch(prevId).catch(()=>null);
+    if (m) { await m.edit({ content, components: rows }); return; }
+  }
+  const msg = await ctx.channel.send({ content, components: rows });
+  s.playerDMMsgIds.set(userId, msg.id);
 }
 
 async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
-  const buf = await renderTableCanvas(s);
-  const att = new AttachmentBuilder(buf, { name: 'table.png' });
-  const desc = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:'—'} — نوبت: ${s.turnIndex!=null?`<@${s.order[s.turnIndex]}>`:'—'}\nتیم1 دست‌ها: ${s.tricksTeam1??0} | تیم2 دست‌ها: ${s.tricksTeam2??0}`;
-  const embed = new EmbedBuilder().setTitle('Hokm — میز بازی').setDescription(desc).setColor(0x2f3136).setImage('attachment://table.png');
+  // textual graphical embed instead of image
+  const names = s.order.map(uid => `<@${uid}>`);
+  const turn = s.turnIndex!=null ? s.order[s.turnIndex] : undefined;
+  const tableLines: string[] = [];
+  const played: Record<string, string> = {};
+  if (s.table && s.table.length) {
+    for (const p of s.table) played[p.userId] = cardStr(p.card);
+  }
+  // positions: N,E,S,W = 0,1,2,3
+  const lines = [
+    `N: ${names[0] || '—'} ${played[s.order[0]]?`— ${played[s.order[0]]}`:''}`,
+    `E: ${names[1] || '—'} ${played[s.order[1]]?`— ${played[s.order[1]]}`:''}`,
+    `S: ${names[2] || '—'} ${played[s.order[2]]?`— ${played[s.order[2]]}`:''}`,
+    `W: ${names[3] || '—'} ${played[s.order[3]]?`— ${played[s.order[3]]}`:''}`,
+  ];
+  const desc = [
+    `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:'—'}`,
+    `نوبت: ${turn?`» <@${turn}>`:'—'}`,
+    `برد دست‌ها — تیم1: ${s.tricksTeam1??0} | تیم2: ${s.tricksTeam2??0}`,
+    '',
+    lines[0],
+    `${lines[3]}              ${lines[1]}`,
+    lines[2],
+  ].join('\n');
+  const embed = new EmbedBuilder().setTitle('Hokm — میز بازی').setDescription(desc).setColor(0x2f3136);
   if (s.tableMsgId) {
     const m = await ctx.channel.messages.fetch(s.tableMsgId).catch(()=>null);
-    if (m) { await m.edit({ embeds: [embed], files: [att] }); return; }
+    if (m) { await m.edit({ embeds: [embed], components: [] }); return; }
   }
-  const sent = await ctx.channel.send({ embeds: [embed], files: [att] });
+  const sent = await ctx.channel.send({ embeds: [embed] });
   s.tableMsgId = sent.id;
 }
 
@@ -701,10 +721,10 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
         .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>\nتیم1 دست‌ها: 0 | تیم2 دست‌ها: 0`)
       try { if (s.tableMsgId) { const m = await (interaction.channel as any).messages.fetch(s.tableMsgId).catch(()=>null); if (m) await m.edit({ embeds: [tableEmbed], components: [] }); } } catch {}
-      // send DM hands with card buttons
+      // send per-player hand messages in channel with buttons
       s.playerDMMsgIds = s.playerDMMsgIds || new Map<string,string>();
       for (const uid of s.order) {
-        await refreshPlayerDM({ client: interaction.client as Client }, s, uid);
+        await refreshPlayerChannelHand({ channel: interaction.channel }, s, uid);
       }
       await interaction.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]}. بازی شروع شد.`, ephemeral: true });
       return;
@@ -736,10 +756,21 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       return;
     }
 
-    // Play card button: hokm-play-<uid>-<S|H|D|C>-<rank>
+    // Play card button: supports both DM (with gId/cId) and channel (short)
     if (id.startsWith('hokm-play-')) {
-      const parts = id.split('-'); // hokm-play-gId-cId-uid-suit-rank
-      const gId = parts[2]; const cId = parts[3]; const uid = parts[4]; const suit = parts[5] as Suit; const rank = parseInt(parts[6], 10);
+      const parts = id.split('-');
+      let gId = interaction.guild?.id || '';
+      let cId = ((interaction.channel as any)?.id as string) || '';
+      let uid = '';
+      let suit: Suit; let rank: number;
+      if (parts.length === 7) {
+        // hokm-play-gId-cId-uid-suit-rank
+        gId = parts[2]; cId = parts[3]; uid = parts[4]; suit = parts[5] as Suit; rank = parseInt(parts[6], 10);
+      } else {
+        // hokm-play-uid-suit-rank (clicked in channel)
+        uid = parts[2]; suit = parts[3] as Suit; rank = parseInt(parts[4], 10);
+      }
+      if (!gId || !cId) { await interaction.reply({ content: 'خطای کانال بازی.', ephemeral: true }); return; }
       const s = ensureSession(gId, cId);
       if (s.state !== 'playing' || s.turnIndex==null) { await interaction.reply({ content: 'بازی در جریان نیست.', ephemeral: true }); return; }
       if (interaction.user.id !== uid) { await interaction.reply({ content: 'این دکمه برای دست شما نیست.', ephemeral: true }); return; }
@@ -761,11 +792,10 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       s.table = s.table || []; s.table.push({ userId: uid, card });
       s.turnIndex = (s.turnIndex + 1) % s.order.length;
       await interaction.reply({ content: `کارت ${cardStr(card)} بازی شد.`, ephemeral: true });
-      // update player DM message for this user
-      await refreshPlayerDM(interaction, s, uid);
-      // update table embed in channel (fetch by id so it works from DM)
+      // update player's channel hand message
       try {
         const ch = await interaction.client.channels.fetch(cId).catch(()=>null) as any;
+        if (ch) await refreshPlayerChannelHand({ channel: ch }, s, uid);
         if (ch) await refreshTableEmbed({ channel: ch }, s);
       } catch {}
       
