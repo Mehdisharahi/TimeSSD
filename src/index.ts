@@ -713,6 +713,24 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         give(uid, need);
       }
       // init phase2
+      s.state = 'playing';
+      s.leaderIndex = s.order.indexOf(s.hakim); if (s.leaderIndex < 0) s.leaderIndex = 0;
+      s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
+      // update or create table message
+      const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
+        .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>)\nتیم1 دست‌ها: 0 | تیم2 دست‌ها: 0`);
+      try {
+        if (s.tableMsgId) {
+          const m = await (interaction.channel as any).messages.fetch(s.tableMsgId).catch(()=>null);
+          if (m) await m.edit({ embeds: [tableEmbed], components: [] });
+        }
+      } catch {}
+      await refreshTableEmbed({ channel: interaction.channel }, s);
+      // send per-player hand messages in channel with buttons
+      s.playerDMMsgIds = s.playerDMMsgIds || new Map<string,string>();
+      for (const uid of s.order) {
+        await refreshPlayerChannelHand({ channel: interaction.channel }, s, uid);
+      }
       await interaction.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]}. بازی شروع شد.`, ephemeral: true });
       return;
     }
