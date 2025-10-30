@@ -1312,16 +1312,14 @@ client.on('messageCreate', async (msg: Message) => {
       if (s.team2.length >= 2) { skipped.push(`<@${uid}> (تیم 2 پر است)`); continue; }
       s.team2.push(uid); added.push(`<@${uid}>`);
     }
-    const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
-      .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
-      .setColor(0x2f3136);
+    const contentText = controlListText(s);
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
     );
-    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ embeds: [embed], components: [row] }); } } catch {}
+    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
     await msg.reply({ content: `افزوده شد: ${added.join(' , ') || '—'}\nنادیده: ${skipped.join(' , ') || '—'}` });
     return;
   }
@@ -1416,8 +1414,20 @@ client.on('messageCreate', async (msg: Message) => {
       const sent = await msg.reply({ content: contentText, components: [row] });
       s.controlMsgId = sent.id;
     } else {
-      try { await refreshTableEmbed({ channel: msg.channel }, s); } catch {}
+      await msg.reply({ content: 'این دستور فقط قبل از شروع بازی قابل استفاده است.' });
     }
+    return;
+  }
+
+  // .miz — re-render the table: delete previous and draw fresh board
+  if (content.startsWith('.miz')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    // delete old table message if exists
+    try { if (s.tableMsgId) { const m = await (msg.channel as any).messages.fetch(s.tableMsgId).catch(()=>null); if (m) await m.delete().catch(()=>{}); } } catch {}
+    s.tableMsgId = undefined;
+    try { await refreshTableEmbed({ channel: msg.channel }, s); } catch {}
+    await msg.reply({ content: 'میز دوباره رندر شد.' });
     return;
   }
 
