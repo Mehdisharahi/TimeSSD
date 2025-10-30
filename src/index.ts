@@ -382,12 +382,23 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     ctx.beginPath();
     ctx.arc(avX, avY, avR + 4, 0, Math.PI * 2);
     ctx.stroke();
-    // yellow outer ring if player's turn
+    // yellow outer ring if player's turn (brighter + glow)
     if (isTurn) {
-      ctx.strokeStyle = '#f59e0b';
-      ctx.lineWidth = 3;
+      // glow
+      ctx.save();
+      ctx.strokeStyle = '#fde047'; // bright yellow
+      ctx.lineWidth = 8;
+      (ctx as any).shadowColor = '#fde047';
+      (ctx as any).shadowBlur = 18;
       ctx.beginPath();
-      ctx.arc(avX, avY, avR + 10, 0, Math.PI * 2);
+      ctx.arc(avX, avY, avR + 12, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      // solid highlight ring
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(avX, avY, avR + 12, 0, Math.PI * 2);
       ctx.stroke();
     }
     ctx.restore();
