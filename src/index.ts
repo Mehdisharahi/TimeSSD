@@ -318,15 +318,32 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   // top bar (dark strip)
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   ctx.fillRect(10, 10, width-20, 54);
-  // center hokm and sets at the top
+  // center hokm and sets at the top (always visible)
   const cx = Math.floor(width/2);
+  const cy = 10 + 27; // vertical center of the top strip
+  ctx.textBaseline = 'middle';
+  const setsTxt = `Sets: ${s.targetSets ?? 1}`;
+  ctx.font = `${ssdFontAvailable? 'bold 22px '+ssdFontFamily : 'bold 22px Arial'}`;
+  const setsWidth = ctx.measureText(setsTxt).width;
+  const gap = 10;
   if (s.hokm) {
-    drawSuit(ctx, s.hokm, cx - 10, 37, 18);
-    const setsTxt = `Sets: ${s.targetSets ?? 1}`;
-    ctx.font = `${ssdFontAvailable? 'bold 22px '+ssdFontFamily : 'bold 22px Arial'}`;
-    ctx.fillStyle = '#ffffff';
+    const suitFill = (s.hokm==='H' || s.hokm==='D') ? '#f87171' : '#ffffff';
+    const totalWidth = 36 + gap + setsWidth; // suit ~36px
+    const startX = cx - totalWidth/2;
+    ctx.fillStyle = suitFill;
+    drawSuit(ctx, s.hokm, startX + 18, cy, 18);
     ctx.textAlign = 'left';
-    ctx.fillText(setsTxt, cx + 10, 43);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(setsTxt, startX + 36 + gap, cy + 1);
+  } else {
+    const hokmTxt = 'حکم؟';
+    ctx.fillStyle = '#ffffff';
+    const hokmWidth = ctx.measureText(hokmTxt).width;
+    const totalWidth = hokmWidth + gap + setsWidth;
+    const startX = cx - totalWidth/2;
+    ctx.textAlign = 'left';
+    ctx.fillText(hokmTxt, startX, cy + 1);
+    ctx.fillText(setsTxt, startX + hokmWidth + gap, cy + 1);
   }
 
   // positions for seats and cards (square layout, generous margins)
@@ -482,11 +499,23 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
   const openRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`hokm-open-hand-${s.guildId}-${s.channelId}`).setLabel('دست من').setStyle(ButtonStyle.Secondary)
   );
+  // add hokm choose buttons when waiting for hakim to pick
+  const rows: any[] = [openRow];
+  if (s.state === 'choosing_hokm' && s.hakim) {
+    const chooseRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId('hokm-choose-S').setLabel('♠️ پیک').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('hokm-choose-H').setLabel('♥️ دل').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('hokm-choose-D').setLabel('♦️ خشت').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('hokm-choose-C').setLabel('♣️ گیشنیز').setStyle(ButtonStyle.Success),
+    );
+    embed.setDescription(`حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.`);
+    rows.push(chooseRow);
+  }
   if (s.tableMsgId) {
     const m = await ctx.channel.messages.fetch(s.tableMsgId).catch(()=>null);
-    if (m) { await m.edit({ embeds: [embed], components: [openRow], files: [attachment] }); return; }
+    if (m) { await m.edit({ embeds: [embed], components: rows, files: [attachment] }); return; }
   }
-  const sent = await ctx.channel.send({ embeds: [embed], components: [openRow], files: [attachment] });
+  const sent = await ctx.channel.send({ embeds: [embed], components: rows, files: [attachment] });
   s.tableMsgId = sent.id;
 }
 
@@ -577,6 +606,7 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     await refreshAllDMs({ client: (interaction.client as Client) }, s);
     return;
   }
+
   if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
   await refreshAllDMs({ client: (interaction.client as Client) }, s);
 }
@@ -1209,6 +1239,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     }
     return;
   }
+
 });
 
 // Dot-prefix command: .t <duration> [reason]
@@ -1585,6 +1616,21 @@ client.on('messageCreate', async (msg: Message) => {
     } else {
       try { await refreshTableEmbed({ channel: msg.channel }, s); } catch {}
     }
+    return;
+  }
+
+  // .miz — پاک‌سازی پیام میز فعلی و نمایش دوباره میز در چنل
+  if (isCmd('miz')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    if (s.tableMsgId) {
+      try {
+        const prev = await (msg.channel as any).messages.fetch(s.tableMsgId).catch(()=>null);
+        if (prev) await prev.delete().catch(()=>{});
+      } catch {}
+      s.tableMsgId = undefined;
+    }
+    try { await refreshTableEmbed({ channel: msg.channel }, s); } catch {}
     return;
   }
 
