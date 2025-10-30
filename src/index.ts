@@ -1187,7 +1187,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     }
     return;
   }
-}
+});
 
 // Dot-prefix command: .t <duration> [reason]
 client.on('messageCreate', async (msg: Message) => {
