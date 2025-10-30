@@ -315,15 +315,19 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   ctx.strokeStyle = '#e5e7eb';
   ctx.lineWidth = 6;
   ctx.strokeRect(10, 10, width-20, height-20);
-  // title bar (top strip)
+  // top bar (dark strip)
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   ctx.fillRect(10, 10, width-20, 54);
-  ctx.font = `${ssdFontAvailable? '28px '+ssdFontFamily : '28px Arial'}`;
-  ctx.fillStyle = '#ffffff';
-  const turnUid = s.turnIndex!=null ? s.order[s.turnIndex] : undefined;
-  const topText = `حکم:`;
-  ctx.fillText(topText, 28, 45);
-  if (s.hokm) drawSuit(ctx, s.hokm, 110, 37, 16);
+  // center hokm and sets at the top
+  const cx = Math.floor(width/2);
+  if (s.hokm) {
+    drawSuit(ctx, s.hokm, cx - 10, 37, 18);
+    const setsTxt = `Sets: ${s.targetSets ?? 1}`;
+    ctx.font = `${ssdFontAvailable? 'bold 22px '+ssdFontFamily : 'bold 22px Arial'}`;
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    ctx.fillText(setsTxt, cx + 10, 43);
+  }
 
   // positions for seats and cards (square layout, generous margins)
   const margin = 220;
@@ -352,6 +356,24 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
       ctx.drawImage(avatar, avX-avR, avY-avR, avR*2, avR*2);
       ctx.restore();
     }
+    // team-colored ring
+    const isT1 = uid ? s.team1.includes(uid) : false;
+    const teamColor = isT1 ? '#3b82f6' : '#ef4444';
+    ctx.save();
+    ctx.strokeStyle = teamColor;
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(avX, avY, avR + 4, 0, Math.PI * 2);
+    ctx.stroke();
+    // yellow outer ring if player's turn
+    if (isTurn) {
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(avX, avY, avR + 10, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
     // tricks badge (square) centered below avatar
     if (typeof playerTricks === 'number') {
       const bx = avX; // center x under avatar
@@ -432,21 +454,21 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     ctx.fillText('Last Trick', width - 24, baseY - 12);
   }
 
-  // Team labels and scores with colors
+  // Team labels and scores with colors (bold, placed below top bar)
   const team1Color = '#3b82f6';
   const team2Color = '#ef4444';
   ctx.textAlign = 'left';
-  ctx.font = `${ssdFontAvailable? '24px '+ssdFontFamily : '24px Arial'}`;
+  ctx.font = `${ssdFontAvailable? 'bold 26px '+ssdFontFamily : 'bold 26px Arial'}`;
   ctx.fillStyle = team1Color;
-  ctx.fillText('Team 1', 28, 40);
-  ctx.font = `${ssdFontAvailable? '22px '+ssdFontFamily : '22px Arial'}`;
-  ctx.fillText(`Tricks: ${s.tricksTeam1??0}  Sets: ${s.setsTeam1??0}`, 28, 70);
+  ctx.fillText('Team 1', 28, 90);
+  ctx.font = `${ssdFontAvailable? 'bold 24px '+ssdFontFamily : 'bold 24px Arial'}`;
+  ctx.fillText(`Tricks: ${s.tricksTeam1??0}  Sets: ${s.setsTeam1??0}`, 28, 124);
   ctx.textAlign = 'right';
   ctx.fillStyle = team2Color;
-  ctx.font = `${ssdFontAvailable? '24px '+ssdFontFamily : '24px Arial'}`;
-  ctx.fillText('Team 2', width-28, 40);
-  ctx.font = `${ssdFontAvailable? '22px '+ssdFontFamily : '22px Arial'}`;
-  ctx.fillText(`Tricks: ${s.tricksTeam2??0}  Sets: ${s.setsTeam2??0}`, width-28, 70);
+  ctx.font = `${ssdFontAvailable? 'bold 26px '+ssdFontFamily : 'bold 26px Arial'}`;
+  ctx.fillText('Team 2', width-28, 90);
+  ctx.font = `${ssdFontAvailable? 'bold 24px '+ssdFontFamily : 'bold 24px Arial'}`;
+  ctx.fillText(`Tricks: ${s.tricksTeam2??0}  Sets: ${s.setsTeam2??0}`, width-28, 124);
   return canvas.toBuffer('image/png');
 }
 
@@ -1457,16 +1479,14 @@ client.on('messageCreate', async (msg: Message) => {
       if (s.team2.length >= 2) { skipped.push(`<@${uid}> (تیم 2 پر است)`); continue; }
       s.team2.push(uid); added.push(`<@${uid}>`);
     }
-    const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
-      .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
-      .setColor(0x2f3136);
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
     );
-    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ embeds: [embed], components: [row] }); } } catch {}
+    const contentText = controlListText(s);
+    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
     await msg.reply({ content: `افزوده شد: ${added.join(' , ') || '—'}\nنادیده: ${skipped.join(' , ') || '—'}` });
     return;
   }
