@@ -539,38 +539,6 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     return;
   }
 
-  // .bazikon — show user's Hokm stats
-  if (content.startsWith('.bazikon')) {
-    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
-    const gId = msg.guildId!;
-    const targetIds = await resolveTargetIds(msg, content, '.bazikon');
-    const targetId = targetIds[0] || msg.author.id;
-    const stMap = hokmStats.get(gId);
-    const st = stMap?.get(targetId) || { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} };
-    // best teammate
-    let bestMate: string | null = null; let bestWins = 0;
-    for (const [uid, w] of Object.entries(st.teammateWins||{})) {
-      if ((w||0) > bestWins) { bestWins = (w||0); bestMate = uid; }
-    }
-    const mateText = bestMate ? `<@${bestMate}> (${bestWins} WIN)` : '—';
-    // favorite hokm picks by hakim
-    const picks = st.hokmPicks || {};
-    const suitOrder: Suit[] = ['C','S','D','H'];
-    const sortedSuits = suitOrder.sort((a,b)=> (picks[b]||0) - (picks[a]||0));
-    const favArray = sortedSuits.filter(su => (picks[su]||0) > 0).map(su => SUIT_EMOJI[su as Suit].replace('️',''));
-    const favText = `[${favArray.join(',')}]`;
-    const lines: string[] = [];
-    lines.push(`✵ <@${targetId}> states:`);
-    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-    lines.push(`▶︎Games : ${st.games||0}`);
-    lines.push(`💫WIN: ${st.wins||0}`);
-    lines.push(`❥︎Best Teamate: ${mateText}`);
-    lines.push(`🂡 Favorite hokm: ${favText}`);
-    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-    const embed = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
-    await msg.reply({ embeds: [embed] });
-    return;
-  }
   if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
   await refreshAllDMs({ client: (interaction.client as Client) }, s);
 }
