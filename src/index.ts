@@ -59,11 +59,55 @@ interface HokmSession {
   tricksTeam1?: number;
   tricksTeam2?: number;
   tricksByPlayer?: Map<string, number>;
+  lastTrick?: { userId: string; card: Card }[];
   // match-level (sets)
   targetSets?: number; // how many won hands (sets) to win the match
   setsTeam1?: number;
   setsTeam2?: number;
 }
+// ===== Hokm Stats =====
+type HokmUserStat = {
+  games: number;
+  wins: number;
+  teammateWins: Record<string, number>;
+  hokmPicks: Partial<Record<Suit, number>>;
+};
+const hokmStats: Map<string, Map<string, HokmUserStat>> = new Map();
+const hokmStatsFile = path.join(process.cwd(), 'data', 'hokm-stats.json');
+function loadHokmStats() {
+  try {
+    fs.mkdirSync(path.dirname(hokmStatsFile), { recursive: true });
+    const raw = fs.existsSync(hokmStatsFile) ? fs.readFileSync(hokmStatsFile, 'utf8') : '';
+    if (!raw) return;
+    const obj = JSON.parse(raw) as Record<string, Record<string, HokmUserStat>>;
+    hokmStats.clear();
+    for (const [g, users] of Object.entries(obj)) {
+      const m = new Map<string, HokmUserStat>();
+      for (const [uid, st] of Object.entries(users)) m.set(uid, st as HokmUserStat);
+      hokmStats.set(g, m);
+    }
+  } catch {}
+}
+function saveHokmStats() {
+  try {
+    fs.mkdirSync(path.dirname(hokmStatsFile), { recursive: true });
+    const obj: Record<string, Record<string, HokmUserStat>> = {};
+    for (const [g, m] of hokmStats) obj[g] = Object.fromEntries(m.entries());
+    fs.writeFileSync(hokmStatsFile, JSON.stringify(obj, null, 2), 'utf8');
+  } catch {}
+}
+function ensureUserStat(gId: string, uid: string): HokmUserStat {
+  let g = hokmStats.get(gId);
+  if (!g) { g = new Map(); hokmStats.set(gId, g); }
+  let st = g.get(uid);
+  if (!st) { st = { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} }; g.set(uid, st); }
+  return st;
+}
+function addHokmPick(gId: string, uid: string, suit: Suit) {
+  const st = ensureUserStat(gId, uid);
+  st.hokmPicks[suit] = (st.hokmPicks[suit] || 0) + 1;
+}
+loadHokmStats();
 const hokmSessions = new Map<string, HokmSession>(); // key: guildId:channelId
 function keyGC(g: string, c: string){ return `${g}:${c}`; }
 function makeDeck(): Card[] { const d: Card[] = []; (['S','H','D','C'] as Suit[]).forEach(s=>RANKS.forEach(r=>d.push({s, r}))); return d; }
@@ -280,32 +324,23 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   const topText = `حکم:`;
   ctx.fillText(topText, 28, 45);
   if (s.hokm) drawSuit(ctx, s.hokm, 110, 37, 16);
-  ctx.fillText(`| نوبت: ${turnUid?'' :'—'}`, 140, 45);
-  if (turnUid) {
-    const mv = await getMemberVisual(s.guildId, turnUid);
-    ctx.fillText(mv.tag, 220, 45);
-  }
-  ctx.fillText(`| دست‌ها: تیم یک ${s.tricksTeam1??0} / تیم دو ${s.tricksTeam2??0}`, 420, 45);
-  // sets row (smaller)
-  ctx.font = `${ssdFontAvailable? '22px '+ssdFontFamily : '22px Arial'}`;
-  ctx.fillText(`ست‌ها: تیم یک ${s.setsTeam1??0} / تیم دو ${s.setsTeam2??0} | هدف ست‌ها: ${s.targetSets??1}`, 28, 80);
 
   // positions for seats and cards (square layout, generous margins)
-  const margin = 180;
+  const margin = 220;
   const seats = [
     { x: width/2, y: margin },                // N
     { x: width - margin, y: height/2 },       // E
     { x: width/2, y: height - margin },       // S
     { x: margin, y: height/2 },               // W
   ];
-  const avatarRadius = 48; // keep in sync with drawSeatLabel
-  const nameFont = `${ssdFontAvailable? '20px '+ssdFontFamily : '20px Arial'}`;
+  const avatarRadius = 64; // bigger avatars
+  const nameFont = `${ssdFontAvailable? '22px '+ssdFontFamily : '22px Arial'}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   function drawSeatLabel(i: number, uid?: string, name?: string, avatar?: any, isTurn?: boolean, playerTricks?: number) {
     const seat = seats[i];
     // avatar only (bigger)
-    const avR = avatarRadius; // radius 48 => 96px (fits 1000x1000)
+    const avR = avatarRadius;
     const avX = seat.x;
     const avY = seat.y; // center on seat
     if (avatar) {
@@ -317,37 +352,25 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
       ctx.drawImage(avatar, avX-avR, avY-avR, avR*2, avR*2);
       ctx.restore();
     }
-    // highlight glow around avatar if it's the player's turn
-    if (isTurn) {
-      ctx.save();
-      ctx.shadowColor = 'rgba(245, 158, 11, 0.9)';
-      ctx.shadowBlur = 18;
-      ctx.strokeStyle = '#f59e0b';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(avX, avY, avR+8, 0, Math.PI*2);
-      ctx.stroke();
-      ctx.restore();
-    }
     // tricks badge (square) centered below avatar
     if (typeof playerTricks === 'number') {
       const bx = avX; // center x under avatar
-      const by = avY + avR + 22; // below avatar
+      const by = avY + avR + 26; // below avatar
       ctx.save();
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.beginPath();
-      ctx.roundRect(bx-14, by-12, 28, 24, 6);
+      ctx.roundRect(bx-18, by-14, 36, 28, 8);
       ctx.fill();
       ctx.fillStyle = '#f9fafb';
       ctx.textAlign = 'center';
-      ctx.font = `${ssdFontAvailable? '16px '+ssdFontFamily : '16px Arial'}`;
-      ctx.fillText(String(playerTricks), bx, by+2);
+      ctx.font = `${ssdFontAvailable? '18px '+ssdFontFamily : '18px Arial'}`;
+      ctx.fillText(String(playerTricks), bx, by+3);
       ctx.restore();
     }
     ctx.textAlign = 'center';
   }
   function drawCard(x: number, y: number, c: Card) {
-    const w = 90, h = 130, r = 10;
+    const w = 110, h = 155, r = 12;
     // shadow
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.beginPath();
@@ -364,12 +387,12 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     // rank + suit
     const red = (c.s === 'H' || c.s === 'D');
     ctx.fillStyle = red ? '#dc2626' : '#111827';
-    ctx.font = `${ssdFontAvailable? '28px '+ssdFontFamily : '28px Arial'}`;
+    ctx.font = `${ssdFontAvailable? '30px '+ssdFontFamily : '30px Arial'}`;
     const rtxt = rankStr(c.r);
     ctx.textAlign = 'left';
     ctx.fillText(rtxt, x + 10, y + 28);
     ctx.textAlign = 'center';
-    drawSuit(ctx, c.s, x + w/2, y + h/2 + 4, 14);
+    drawSuit(ctx, c.s, x + w/2, y + h/2 + 4, 16);
   }
   // draw seats and played cards
   for (let i=0;i<4;i++) {
@@ -383,14 +406,47 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     if (play) {
       // offset from seat for card placement
       const cardPos = [
-        {x: seats[i].x - 45, y: seats[i].y + (avatarRadius + 58)},     // N: پایین آواتار
-        {x: seats[i].x - (avatarRadius + 140), y: seats[i].y - 65},    // E: چپ آواتار
-        {x: seats[i].x - 45, y: seats[i].y - (avatarRadius + 180)},    // S: بالای آواتار
-        {x: seats[i].x + (avatarRadius + 140), y: seats[i].y - 65},    // W: راست آواتار
+        {x: seats[i].x - 55, y: seats[i].y + (avatarRadius + 70)},     // N: پایین آواتار
+        {x: seats[i].x - (avatarRadius + 170), y: seats[i].y - 75},    // E: چپ آواتار
+        {x: seats[i].x - 55, y: seats[i].y - (avatarRadius + 210)},    // S: بالای آواتار
+        {x: seats[i].x + (avatarRadius + 170), y: seats[i].y - 75},    // W: راست آواتار
       ][i];
       drawCard(cardPos.x, cardPos.y, play.card);
     }
   }
+
+  // Show previous trick (lastTrick) bottom-right
+  if (s.lastTrick && s.lastTrick.length === 4) {
+    const baseX = width - 480; const baseY = height - 260;
+    ctx.save();
+    ctx.globalAlpha = 0.95;
+    for (let i=0;i<4;i++) {
+      const dx = baseX + (i%2)*140;
+      const dy = baseY + Math.floor(i/2)*90;
+      drawCard(dx, dy, s.lastTrick[i].card);
+    }
+    ctx.restore();
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.font = `${ssdFontAvailable? '18px '+ssdFontFamily : '18px Arial'}`;
+    ctx.textAlign = 'right';
+    ctx.fillText('Last Trick', width - 24, baseY - 12);
+  }
+
+  // Team labels and scores with colors
+  const team1Color = '#3b82f6';
+  const team2Color = '#ef4444';
+  ctx.textAlign = 'left';
+  ctx.font = `${ssdFontAvailable? '24px '+ssdFontFamily : '24px Arial'}`;
+  ctx.fillStyle = team1Color;
+  ctx.fillText('Team 1', 28, 40);
+  ctx.font = `${ssdFontAvailable? '22px '+ssdFontFamily : '22px Arial'}`;
+  ctx.fillText(`Tricks: ${s.tricksTeam1??0}  Sets: ${s.setsTeam1??0}`, 28, 70);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = team2Color;
+  ctx.font = `${ssdFontAvailable? '24px '+ssdFontFamily : '24px Arial'}`;
+  ctx.fillText('Team 2', width-28, 40);
+  ctx.font = `${ssdFontAvailable? '22px '+ssdFontFamily : '22px Arial'}`;
+  ctx.fillText(`Tricks: ${s.tricksTeam2??0}  Sets: ${s.setsTeam2??0}`, width-28, 70);
   return canvas.toBuffer('image/png');
 }
 
@@ -435,7 +491,8 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
   // per-player trick counter
   if (!s.tricksByPlayer) s.tricksByPlayer = new Map();
   s.tricksByPlayer.set(winnerUserId, (s.tricksByPlayer.get(winnerUserId) || 0) + 1);
-  // next trick
+  // store last trick and set next trick
+  s.lastTrick = (s.table || []).slice(0, 4);
   s.leaderIndex = winnerTurnIndex; s.turnIndex = winnerTurnIndex; s.table = []; s.leadSuit = null;
   const target = s.targetTricks ?? 7;
   // Always operate on the game text channel, not the DM channel
@@ -449,8 +506,38 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     const targetSets = s.targetSets ?? 1;
     if ((s.setsTeam1>=targetSets) || (s.setsTeam2>=targetSets)) {
       s.state = 'finished';
+      // update stats
+      try {
+        const gId = s.guildId;
+        const t1 = s.team1; const t2 = s.team2;
+        const winners = (s.setsTeam1 ?? 0) >= targetSets ? t1 : t2;
+        for (const uid of [...t1, ...t2]) ensureUserStat(gId, uid).games += 1;
+        for (const uid of winners) ensureUserStat(gId, uid).wins += 1;
+        // teammate wins (per team, +1 for both teammates)
+        if (winners.length === 2) {
+          const [a,b] = winners;
+          ensureUserStat(gId, a).teammateWins[b] = (ensureUserStat(gId, a).teammateWins[b] || 0) + 1;
+          ensureUserStat(gId, b).teammateWins[a] = (ensureUserStat(gId, b).teammateWins[a] || 0) + 1;
+        }
+        saveHokmStats();
+      } catch {}
       if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
-      if (gameChannel) await gameChannel.send({ content: `مچ تمام شد! تیم ${s.setsTeam1>=targetSets?1:2} برنده شد. ست‌ها — تیم1: ${s.setsTeam1} | تیم2: ${s.setsTeam2}` });
+      // result embed
+      if (gameChannel) {
+        const t1Set = s.setsTeam1 ?? 0; const t2Set = s.setsTeam2 ?? 0;
+        const starter = s.ownerId ? `<@${s.ownerId}>` : '—';
+        const lines: string[] = [];
+        lines.push(`✹Starter: ${starter}`);
+        lines.push(`✹Sets: [${s.targetSets ?? 1}]`);
+        lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+        lines.push(`✹Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ➤ [${t1Set}]`);
+        lines.push('════════════════════');
+        lines.push(`✹Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ➤ [${t2Set}]`);
+        lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+        lines.push(`✹Winner: Team ${t1Set>t2Set?1:2} ✔`);
+        const emb = new EmbedBuilder().setDescription(lines.join('\n')).setColor(t1Set>t2Set?0x3b82f6:0xef4444);
+        await gameChannel.send({ embeds: [emb] });
+      }
       return;
     }
     // prepare next hand in same match
@@ -470,7 +557,6 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
   }
   if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
   await refreshAllDMs({ client: (interaction.client as Client) }, s);
-  if (gameChannel) await gameChannel.send({ content: `این دست را برد: <@${winnerUserId}> (تیم ${team==='t1'?1:2}). نوبت شروع: <@${s.order[s.leaderIndex!]}>` });
 }
 
 function handToString(hand: Card[]){ const bySuit: Record<Suit, Card[]> = {S:[],H:[],D:[],C:[]}; hand.forEach(c=>bySuit[c.s].push(c)); (Object.keys(bySuit) as Suit[]).forEach(s=>bySuit[s].sort((a,b)=>b.r-a.r));
@@ -939,20 +1025,10 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
       give(s.hakim, 5);
       s.state = 'choosing_hokm';
-      try { const user = await interaction.client.users.fetch(s.hakim); await user.send({ content: `دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
-      const embed = new EmbedBuilder().setTitle('Hokm — انتخاب حکم')
-        .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')}\nحاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.\nهدف ست‌ها: ${s.targetSets}`)
-        .setColor(0x5865F2);
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-choose-S').setLabel('♠️ پیک').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-choose-H').setLabel('♥️ دل').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('hokm-choose-D').setLabel('♦️ خشت').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-choose-C').setLabel('♣️ گیشنیز').setStyle(ButtonStyle.Success),
-      );
-      let msgObj = null as any;
-      try { if (s.tableMsgId) { const m = await (interaction.channel as any).messages.fetch(s.tableMsgId).catch(()=>null); if (m) { await m.edit({ embeds: [embed], components: [row] }); msgObj = m; } } } catch {}
-      if (!msgObj) { msgObj = await (interaction.channel as any).send({ embeds: [embed], components: [row] }); s.tableMsgId = msgObj.id; }
-      await interaction.reply({ content: `بازی آغاز شد. هدف ست‌ها: ${s.targetSets}.`, ephemeral: true });
+      try { const user = await interaction.client.users.fetch(s.hakim); await user.send({ content: `ست جدید شروع شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
+      try { const chAny = interaction.channel as any; if (chAny && chAny.send) { await chAny.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` }); } } catch {}
+      if (interaction.guild) await refreshTableEmbed({ channel: interaction.channel as any }, s);
+      await refreshAllDMs({ client: interaction.client }, s);
       return;
     }
 
@@ -966,6 +1042,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const suit: Suit | undefined = (['S','H','D','C'] as Suit[]).find(x=>x===suitKey);
       if (!suit) { await interaction.reply({ content: 'خال نامعتبر.', ephemeral: true }); return; }
       s.hokm = suit;
+      try { addHokmPick(s.guildId, s.hakim!, suit); saveHokmStats(); } catch {}
       // deal remaining to all to reach 13
       const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
       for (const uid of s.order) {
@@ -1084,7 +1161,12 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       hand.splice(idx,1); s.hands.set(uid, hand);
       s.table = s.table || []; s.table.push({ userId: uid, card });
       s.turnIndex = (s.turnIndex + 1) % s.order.length;
-      await interaction.reply({ content: `کارت ${cardStr(card)} بازی شد.`, ephemeral: true });
+      // update the ephemeral hand panel dynamically
+      {
+        const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId);
+        const content = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:''} — ${uid===s.order[s.turnIndex??0]?'نوبت شماست.':'منتظر نوبت بمانید.'}`;
+        try { await interaction.update({ content, components: rows }); } catch { await interaction.reply({ content, components: rows, ephemeral: true }); }
+      }
       // update table only (hands are private via ephemeral)
       try {
         const ch = await interaction.client.channels.fetch(cId).catch(()=>null) as any;
@@ -1105,7 +1187,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     }
     return;
   }
-});
+}
 
 // Dot-prefix command: .t <duration> [reason]
 client.on('messageCreate', async (msg: Message) => {
@@ -1115,9 +1197,11 @@ client.on('messageCreate', async (msg: Message) => {
   processedMessages.add(msg.id);
   setTimeout(() => processedMessages.delete(msg.id), 60_000);
   const content = msg.content.trim();
+  const isCmd = (name: string) => new RegExp(`^\\.${name}(?:\\s|$)`).test(content);
+  const isSubCmd = (head: string, tail: string) => new RegExp(`^\\.${head}\\s+${tail}(?:\\s|$)`).test(content);
 
   // .friend [@user|userId]
-  if (content.startsWith('.friend')) {
+  if (isCmd('friend')) {
     const arg = content.slice(7).trim();
     let target = msg.mentions.users.first() || null;
     if (!target && arg) {
@@ -1170,8 +1254,69 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  // .best — top 20 Hokm winners (by wins)
+  if (isCmd('best')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const gId = msg.guildId!;
+    const stats = hokmStats.get(gId);
+    if (!stats || stats.size === 0) { await msg.reply({ content: 'در این سرور بازی انجام نشده است.' }); return; }
+    const entries = Array.from(stats.entries()) as Array<[string, HokmUserStat]>;
+    const arr = entries
+      .filter(([, st]) => ((st?.games)||0) > 0)
+      .sort((a: [string, HokmUserStat], b: [string, HokmUserStat]) => ((b[1].wins||0) - (a[1].wins||0)) || ((b[1].games||0) - (a[1].games||0)))
+      .slice(0, 20);
+    if (arr.length === 0) { await msg.reply({ content: 'در این سرور بازی انجام نشده است.' }); return; }
+    const server = msg.guild.name;
+    const lines: string[] = [];
+    lines.push(`✵ ${server} WINNER LIST:`);
+    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    let idx = 0;
+    for (const [uid, st] of arr) {
+      idx++;
+      const rank = String(idx).padStart(2, '0');
+      lines.push(`➡ ${rank} - <@${uid}> ▶︎Games : ${st.games||0} 💫WIN: ${st.wins||0}`);
+    }
+    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    const embedBest = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
+    await msg.reply({ embeds: [embedBest] });
+    return;
+  }
+
+  // .bazikon — show user's Hokm stats
+  if (isCmd('bazikon')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const gId = msg.guildId!;
+    const targetIds = await resolveTargetIds(msg, content, '.bazikon');
+    const targetId = targetIds[0] || msg.author.id;
+    const stMap = hokmStats.get(gId);
+    const st: HokmUserStat = stMap?.get(targetId) || { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} };
+    if (!st.games) { await msg.reply({ content: 'این کاربر بازی انجام نداده است.' }); return; }
+    let bestMate: string | null = null; let bestWins = 0;
+    for (const [uid, w] of Object.entries((st.teammateWins||{}) as Record<string, number>)) {
+      const val = Number(w)||0;
+      if (val > bestWins) { bestWins = val; bestMate = uid; }
+    }
+    const mateText = bestMate ? `<@${bestMate}> (${bestWins} WIN)` : '—';
+    const picks = (st.hokmPicks || {}) as Partial<Record<Suit, number>>;
+    const suitOrder: Suit[] = ['C','S','D','H'];
+    const sortedSuits = suitOrder.sort((a,b)=> (picks[b]||0) - (picks[a]||0));
+    const favArray = sortedSuits.filter(su => (picks[su]||0) > 0).map(su => SUIT_EMOJI[su as Suit].replace('️',''));
+    const favText = `[${favArray.join(',')}]`;
+    const lines: string[] = [];
+    lines.push(`✵ <@${targetId}> states:`);
+    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push(`▶︎Games : ${st.games||0}`);
+    lines.push(`💫WIN: ${st.wins||0}`);
+    lines.push(`❥︎Best Teamate: ${mateText}`);
+    lines.push(`🂡 Favorite hokm: ${favText}`);
+    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    const embedBaz = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
+    await msg.reply({ embeds: [embedBaz] });
+    return;
+  }
+
   // .topfriend — list top 10 pairs with most co-voice time (exclude bots)
-  if (content.startsWith('.topfriend')) {
+  if (isCmd('topfriend')) {
     const gId = msg.guildId!;
 
     // Aggregate persisted totals per unordered pair (a<b)
@@ -1193,15 +1338,15 @@ client.on('messageCreate', async (msg: Message) => {
     const pMap = pairStarts.get(gId);
     if (pMap && pMap.size) {
       const now = Date.now();
-      for (const [key, start] of pMap) {
+      for (const [key, start] of pMap.entries()) {
         const parts = key.split(':');
         if (parts.length < 3) continue;
         const [a, b] = [parts[0], parts[1]];
         const [x, y] = a < b ? [a, b] : [b, a];
         const k2 = `${x}:${y}`;
         const cur = agg.get(k2) || { a: x, b: y, ms: 0 };
-        const delta = Math.max(0, now - start);
-        cur.ms += delta;
+        const delta = now - start;
+        if (delta > 0) cur.ms += delta;
         agg.set(k2, cur);
       }
     }
@@ -1251,7 +1396,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .new — create room with join buttons
-  if (content.startsWith('.new')) {
+  if (isCmd('new')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     // reset session
@@ -1269,7 +1414,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .a1 @user — owner assigns user to Team 1
-  if (content.startsWith('.a1')) {
+  if (isCmd('a1')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
@@ -1297,7 +1442,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .a2 @user — owner assigns user to Team 2
-  if (content.startsWith('.a2')) {
+  if (isCmd('a2')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
@@ -1327,7 +1472,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .r — owner removes a user from teams
-  if (content.startsWith('.r')) {
+  if (isCmd('r')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
@@ -1354,7 +1499,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .end — owner ends the room and deletes control/table messages
-  if (content.startsWith('.end')) {
+  if (isCmd('end')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند پایان دهد.'); return; }
@@ -1368,7 +1513,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .reset — owner resets the room and redeals (like fresh start with current teams)
-  if (content.startsWith('.reset')) {
+  if (isCmd('reset')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند ریست کند.'); return; }
@@ -1398,11 +1543,16 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .list — show current state: waiting -> control list, otherwise re-render table image
-  if (content.startsWith('.list')) {
+  // .list — recreate control list if waiting; otherwise re-render table
+  if (isCmd('list')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state === 'waiting') {
+      // delete previous control message if exists
+      if (s.controlMsgId) {
+        try { const prev = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (prev) await prev.delete().catch(()=>{}); } catch {}
+        s.controlMsgId = undefined;
+      }
       const contentText = controlListText(s);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
@@ -1410,9 +1560,6 @@ client.on('messageCreate', async (msg: Message) => {
         new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
       );
-      if (s.controlMsgId) {
-        try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) { await m.edit({ content: contentText, components: [row] }); return; } } catch {}
-      }
       const sent = await msg.reply({ content: contentText, components: [row] });
       s.controlMsgId = sent.id;
     } else {
@@ -1422,7 +1569,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .hokm start — start game; optional N sets to win match
-  if (content.startsWith('.hokm start')) {
+  if (isSubCmd('hokm','start')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند بازی را شروع کند.'); return; }
@@ -1477,7 +1624,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .hokm hokm <suit> — hakim chooses trump; then deal remaining to all and DM hands
-  if (content.startsWith('.hokm hokm')) {
+  if (isSubCmd('hokm','hokm')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'choosing_hokm' || !s.hakim) { await msg.reply('الان وقت انتخاب حکم نیست.'); return; }
@@ -1510,7 +1657,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .hokm hand — DM your hand
-  if (content.startsWith('.hokm hand')) {
+  if (isSubCmd('hokm','hand')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state === 'waiting') { await msg.reply('بازی شروع نشده است.'); return; }
@@ -1523,7 +1670,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .hokm table — show teams and current state (with table/tricks)
-  if (content.startsWith('.hokm table')) {
+  if (isSubCmd('hokm','table')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     const parts: string[] = [];
@@ -1552,7 +1699,7 @@ ${tableLines.join('\n')}`);
   }
 
   // .komak — help
-  if (content.startsWith('.komak')) {
+  if (isCmd('komak')) {
     const lines: string[] = [
       '• .t <مدت> [دلیل] — تنظیم تایمر. نمونه: `.t 10m` یا `.t 60 [دلیل]`',
       '• .e <ثانیه> — افزودن چند ثانیه به آخرین تایمر خودت. نمونه: `.e 30`',
@@ -1574,7 +1721,7 @@ ${tableLines.join('\n')}`);
   }
 
   // .av [@user|userId]
-  if (content.startsWith('.av')) {
+  if (isCmd('av')) {
     const arg = content.slice(3).trim();
     let user = msg.mentions.users.first() || null;
     if (!user && arg) {
@@ -1603,7 +1750,7 @@ ${tableLines.join('\n')}`);
     return;
   }
 
-  if (content.startsWith('.ba')) {
+  if (isCmd('ba')) {
     const arg = content.slice(3).trim();
     let user = msg.mentions.users.first() || null;
     if (!user && arg) {
@@ -1639,7 +1786,7 @@ ${tableLines.join('\n')}`);
 
 
   // .llset — admin only
-  if (content.startsWith('.llset')) {
+  if (isCmd('llset')) {
     const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
     if (!isAdmin) {
       await msg.reply({ content: 'فقط مدیران می‌توانند از این دستور استفاده کنند.' });
@@ -1675,7 +1822,7 @@ ${tableLines.join('\n')}`);
   }
 
   // .llunset — admin only
-  if (content.startsWith('.llunset')) {
+  if (isCmd('llunset')) {
     const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
     if (!isAdmin) {
       await msg.reply({ content: 'فقط مدیران می‌توانند از این دستور استفاده کنند.' });
@@ -1711,7 +1858,7 @@ ${tableLines.join('\n')}`);
   }
 
   // .ll command
-  if (content.startsWith('.ll')) {
+  if (isCmd('ll')) {
     if (llInFlight.has(msg.id)) return;
     llInFlight.add(msg.id);
     try {
@@ -1872,7 +2019,7 @@ ${tableLines.join('\n')}`);
   }
 
   // .e command
-  if (content.startsWith('.e')) {
+  if (isCmd('e')) {
     const arg = content.slice(2).trim();
     if (!arg || !/^\d+$/.test(arg)) {
       await msg.reply({ content: 'استفاده: `.e 30` (افزودن ثانیه به آخرین تایمر شما)' });
@@ -1891,7 +2038,7 @@ ${tableLines.join('\n')}`);
     return;
   }
 
-  if (!content.startsWith('.t')) return;
+  if (!isCmd('t')) return;
 
   const args = content.slice(2).trim();
   if (!args) {
