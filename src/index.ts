@@ -864,10 +864,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       target.push(uid);
         await interaction.reply({ content: `به تیم ${id.endsWith('t1')? '1':'2'} پیوستی.`, ephemeral: true });
       }
-      // Update control message embed
-      const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
-        .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
-        .setColor(0x2f3136);
+      // Update control message as plain text (no embed)
+      const contentText = controlListText(s);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
@@ -877,8 +875,13 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       try {
         if (s.controlMsgId) {
           const m = await (interaction.channel as any).messages.fetch(s.controlMsgId).catch(()=>null);
-          if (m) await m.edit({ embeds: [embed], components: [row] });
+          if (m) { await m.edit({ content: contentText, components: [row] }); return; }
         }
+      } catch {}
+      // If missing, create new control message
+      try {
+        const sent = await (interaction.channel as any).send({ content: contentText, components: [row] });
+        s.controlMsgId = sent.id;
       } catch {}
       return;
     }
@@ -1289,7 +1292,7 @@ client.on('messageCreate', async (msg: Message) => {
       new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
     );
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
-    await msg.reply({ content: `افزوده شد: ${added.join(' , ') || '—'}\nنادیده: ${skipped.join(' , ') || '—'}` });
+    await msg.reply({ content: `افزوده شد: ${added.join(' , ') || '—'}` });
     return;
   }
 
@@ -1395,23 +1398,26 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .list — re-show or create the control list with buttons
+  // .list — show current state: waiting -> control list, otherwise re-render table image
   if (content.startsWith('.list')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
-    if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل نمایش است.'); return; }
-    const contentText = controlListText(s);
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
-    );
-    if (s.controlMsgId) {
-      try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) { await m.edit({ content: contentText, components: [row] }); return; } } catch {}
+    if (s.state === 'waiting') {
+      const contentText = controlListText(s);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
+      );
+      if (s.controlMsgId) {
+        try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) { await m.edit({ content: contentText, components: [row] }); return; } } catch {}
+      }
+      const sent = await msg.reply({ content: contentText, components: [row] });
+      s.controlMsgId = sent.id;
+    } else {
+      try { await refreshTableEmbed({ channel: msg.channel }, s); } catch {}
     }
-    const sent = await msg.reply({ content: contentText, components: [row] });
-    s.controlMsgId = sent.id;
     return;
   }
 
