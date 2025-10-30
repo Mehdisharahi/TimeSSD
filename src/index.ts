@@ -437,12 +437,17 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     // rank + suit
     const red = (c.s === 'H' || c.s === 'D');
     ctx.fillStyle = red ? '#dc2626' : '#111827';
-    ctx.font = `${ssdFontAvailable? '30px '+ssdFontFamily : '30px Arial'}`;
+    ctx.font = `${ssdFontAvailable? 'bold 36px '+ssdFontFamily : 'bold 36px Arial'}`;
     const rtxt = rankStr(c.r);
     ctx.textAlign = 'left';
     ctx.fillText(rtxt, x + 10, y + 28);
+    // center emoji suit, larger
     ctx.textAlign = 'center';
-    drawSuit(ctx, c.s, x + w/2, y + h/2 + 4, 16);
+    ctx.textBaseline = 'middle';
+    const emoji = SUIT_EMOJI[c.s];
+    ctx.font = `${ssdFontAvailable? 'bold 56px '+ssdFontFamily : 'bold 56px Arial'}`;
+    ctx.fillStyle = red ? '#dc2626' : '#111827';
+    ctx.fillText(emoji, x + w/2, y + h/2 + 8);
   }
   // draw seats and played cards
   for (let i=0;i<4;i++) {
