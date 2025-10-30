@@ -51,6 +51,7 @@ interface HokmSession {
   controlMsgId?: string; // message with join buttons
   tableMsgId?: string; // live table embed message id
   playerDMMsgIds?: Map<string, string>; // userId -> DM message id
+  lastTrick?: { userId: string; card: Card }[]; // recently won trick (4 cards)
   // Phase 2
   leaderIndex?: number; // index into order for current trick leader
   turnIndex?: number; // index into order whose turn it is now
@@ -260,13 +261,14 @@ function drawSuit(ctx: any, s: Suit, x: number, y: number, size: number) {
 }
 
 async function renderTableImage(s: HokmSession): Promise<Buffer> {
-  // square canvas to avoid layout overlap on edges
-  const width = 1000, height = 1000;
+  // larger square canvas for clarity
+  const width = 1300, height = 1300;
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
   // background felt
   ctx.fillStyle = '#0f5132';
   ctx.fillRect(0, 0, width, height);
+
   // border frame
   ctx.strokeStyle = '#e5e7eb';
   ctx.lineWidth = 6;
@@ -285,21 +287,34 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     const mv = await getMemberVisual(s.guildId, turnUid);
     ctx.fillText(mv.tag, 220, 45);
   }
-  ctx.fillText(`| دست‌ها: تیم یک ${s.tricksTeam1??0} / تیم دو ${s.tricksTeam2??0}`, 420, 45);
+  // colored trick counts
+  const TEAM1_COLOR = '#3b82f6'; // blue-500
+  const TEAM2_COLOR = '#ef4444'; // red-500
+  let tx = 420;
+  ctx.fillStyle = '#ffffff'; ctx.fillText(`| دست‌ها: تیم یک `, tx, 45); tx += ctx.measureText(`| دست‌ها: تیم یک `).width;
+  ctx.fillStyle = TEAM1_COLOR; ctx.fillText(String(s.tricksTeam1??0), tx, 45); tx += ctx.measureText(String(s.tricksTeam1??0)).width;
+  ctx.fillStyle = '#ffffff'; ctx.fillText(` / تیم دو `, tx, 45); tx += ctx.measureText(` / تیم دو `).width;
+  ctx.fillStyle = TEAM2_COLOR; ctx.fillText(String(s.tricksTeam2??0), tx, 45);
   // sets row (smaller)
   ctx.font = `${ssdFontAvailable? '22px '+ssdFontFamily : '22px Arial'}`;
-  ctx.fillText(`ست‌ها: تیم یک ${s.setsTeam1??0} / تیم دو ${s.setsTeam2??0} | هدف ست‌ها: ${s.targetSets??1}`, 28, 80);
+  // colored set counts
+  let tx2 = 28;
+  ctx.fillStyle = '#ffffff'; ctx.fillText(`ست‌ها: تیم یک `, tx2, 80); tx2 += ctx.measureText(`ست‌ها: تیم یک `).width;
+  ctx.fillStyle = TEAM1_COLOR; ctx.fillText(String(s.setsTeam1??0), tx2, 80); tx2 += ctx.measureText(String(s.setsTeam1??0)).width;
+  ctx.fillStyle = '#ffffff'; ctx.fillText(` / تیم دو `, tx2, 80); tx2 += ctx.measureText(` / تیم دو `).width;
+  ctx.fillStyle = TEAM2_COLOR; ctx.fillText(String(s.setsTeam2??0), tx2, 80); tx2 += ctx.measureText(String(s.setsTeam2??0)).width;
+  ctx.fillStyle = '#ffffff'; ctx.fillText(` | هدف ست‌ها: ${s.targetSets??1}`, tx2, 80);
 
   // positions for seats and cards (square layout, generous margins)
-  const margin = 180;
+  const margin = 220;
   const seats = [
     { x: width/2, y: margin },                // N
     { x: width - margin, y: height/2 },       // E
     { x: width/2, y: height - margin },       // S
     { x: margin, y: height/2 },               // W
   ];
-  const avatarRadius = 48; // keep in sync with drawSeatLabel
-  const nameFont = `${ssdFontAvailable? '20px '+ssdFontFamily : '20px Arial'}`;
+  const avatarRadius = 70; // bigger avatars
+  const nameFont = `${ssdFontAvailable? '24px '+ssdFontFamily : '24px Arial'}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   function drawSeatLabel(i: number, uid?: string, name?: string, avatar?: any, isTurn?: boolean, playerTricks?: number) {
@@ -315,6 +330,17 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
       ctx.closePath();
       ctx.clip();
       ctx.drawImage(avatar, avX-avR, avY-avR, avR*2, avR*2);
+      ctx.restore();
+    }
+    // team colored ring
+    if (uid) {
+      const color = s.team1.includes(uid) ? TEAM1_COLOR : (s.team2.includes(uid) ? TEAM2_COLOR : '#9ca3af');
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.arc(avX, avY, avR+6, 0, Math.PI*2);
+      ctx.stroke();
       ctx.restore();
     }
     // highlight glow around avatar if it's the player's turn
@@ -338,21 +364,22 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
       ctx.beginPath();
       ctx.roundRect(bx-14, by-12, 28, 24, 6);
       ctx.fill();
-      ctx.fillStyle = '#f9fafb';
+      ctx.fillStyle = s.team1.includes(uid||'') ? TEAM1_COLOR : s.team2.includes(uid||'') ? TEAM2_COLOR : '#f9fafb';
       ctx.textAlign = 'center';
-      ctx.font = `${ssdFontAvailable? '16px '+ssdFontFamily : '16px Arial'}`;
+      ctx.font = `${ssdFontAvailable? '18px '+ssdFontFamily : '18px Arial'}`;
       ctx.fillText(String(playerTricks), bx, by+2);
       ctx.restore();
     }
     ctx.textAlign = 'center';
   }
   function drawCard(x: number, y: number, c: Card) {
-    const w = 90, h = 130, r = 10;
+    const w = 120, h = 170, r = 12;
     // shadow
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.beginPath();
     ctx.roundRect(x+4, y+6, w, h, r);
     ctx.fill();
+
     // body
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
@@ -364,12 +391,12 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     // rank + suit
     const red = (c.s === 'H' || c.s === 'D');
     ctx.fillStyle = red ? '#dc2626' : '#111827';
-    ctx.font = `${ssdFontAvailable? '28px '+ssdFontFamily : '28px Arial'}`;
+    ctx.font = `${ssdFontAvailable? '30px '+ssdFontFamily : '30px Arial'}`;
     const rtxt = rankStr(c.r);
     ctx.textAlign = 'left';
     ctx.fillText(rtxt, x + 10, y + 28);
     ctx.textAlign = 'center';
-    drawSuit(ctx, c.s, x + w/2, y + h/2 + 4, 14);
+    drawSuit(ctx, c.s, x + w/2, y + h/2 + 6, 16);
   }
   // draw seats and played cards
   for (let i=0;i<4;i++) {
@@ -383,12 +410,21 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     if (play) {
       // offset from seat for card placement
       const cardPos = [
-        {x: seats[i].x - 45, y: seats[i].y + (avatarRadius + 58)},     // N: پایین آواتار
-        {x: seats[i].x - (avatarRadius + 140), y: seats[i].y - 65},    // E: چپ آواتار
-        {x: seats[i].x - 45, y: seats[i].y - (avatarRadius + 180)},    // S: بالای آواتار
-        {x: seats[i].x + (avatarRadius + 140), y: seats[i].y - 65},    // W: راست آواتار
+        {x: seats[i].x - 60, y: seats[i].y + (avatarRadius + 70)},     // N
+        {x: seats[i].x - (avatarRadius + 170), y: seats[i].y - 85},    // E
+        {x: seats[i].x - 60, y: seats[i].y - (avatarRadius + 220)},    // S
+        {x: seats[i].x + (avatarRadius + 170), y: seats[i].y - 85},    // W
       ][i];
       drawCard(cardPos.x, cardPos.y, play.card);
+    }
+  }
+  // last trick preview (bottom-right)
+  if (s.lastTrick && s.lastTrick.length === 4) {
+    const baseX = width - 4*140 - 40; // space for 4 cards
+    const baseY = height - 200;
+    for (let k=0;k<4;k++) {
+      const c = s.lastTrick[k].card;
+      drawCard(baseX + k*140, baseY, c);
     }
   }
   return canvas.toBuffer('image/png');
@@ -435,7 +471,8 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
   // per-player trick counter
   if (!s.tricksByPlayer) s.tricksByPlayer = new Map();
   s.tricksByPlayer.set(winnerUserId, (s.tricksByPlayer.get(winnerUserId) || 0) + 1);
-  // next trick
+  // preserve last trick for rendering, then next trick
+  s.lastTrick = (s.table || []).slice();
   s.leaderIndex = winnerTurnIndex; s.turnIndex = winnerTurnIndex; s.table = []; s.leadSuit = null;
   const target = s.targetTricks ?? 7;
   // Always operate on the game text channel, not the DM channel
@@ -450,13 +487,46 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     if ((s.setsTeam1>=targetSets) || (s.setsTeam2>=targetSets)) {
       s.state = 'finished';
       if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
-      if (gameChannel) await gameChannel.send({ content: `مچ تمام شد! تیم ${s.setsTeam1>=targetSets?1:2} برنده شد. ست‌ها — تیم1: ${s.setsTeam1} | تیم2: ${s.setsTeam2}` });
+      // Build result embed in requested format
+      // Update stats: all 4 players get a game; winner team members get a win
+      try {
+        const winnerTeamNum = (s.setsTeam1>=targetSets) ? 1 : 2;
+        const winners = winnerTeamNum===1 ? s.team1 : s.team2;
+        const players = Array.from(new Set([...(s.team1||[]), ...(s.team2||[])]));
+        for (const uid of players) addHokmGame(s.guildId, uid, winners.includes(uid));
+        addTeamWin(s.guildId, winners);
+        saveHokmStats();
+      } catch {}
+      const starter = s.ownerId ? `<@${s.ownerId}>` : '—';
+      const setsStr = `✹Sets: **[${targetSets}]**`;
+      const sep1 = '●▬▬▬▬▬▬▬▬▬▬▬▬▬●';
+      const team1Mentions = s.team1.map(u=>`<@${u}>`).join(' , ') || '—';
+      const team2Mentions = s.team2.map(u=>`<@${u}>`).join(' , ') || '—';
+      const team1Sets = s.setsTeam1 ?? 0;
+      const team2Sets = s.setsTeam2 ?? 0;
+      const winnerTeamNum = (s.setsTeam1>=targetSets) ? 1 : 2;
+      const lines = [
+        `✹Starter: ${starter} `,
+        setsStr,
+        sep1,
+        `✹Team 1: ${team1Mentions} ➤ **[${team1Sets}]**`,
+        '════════════════════',
+        `✹Team 2: ${team2Mentions} ➤ **[${team2Sets}]**`,
+        sep1,
+        `✹Winner: Team [${winnerTeamNum}] ✔`,
+      ];
+      const embed = new EmbedBuilder()
+        .setTitle('Hokm — نتیجه بازی')
+        .setDescription(lines.join('\n'))
+        .setColor(0x2f3136);
+      if (gameChannel) await gameChannel.send({ embeds: [embed] });
       return;
     }
     // prepare next hand in same match
     s.deck = shuffle(makeDeck());
     s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
     s.hokm = undefined; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0; s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
+    s.lastTrick = undefined;
     // choose next hakim randomly (can be improved to winner-led)
     s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
@@ -468,9 +538,41 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     await refreshAllDMs({ client: (interaction.client as Client) }, s);
     return;
   }
+
+  // .bazikon — show user's Hokm stats
+  if (content.startsWith('.bazikon')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const gId = msg.guildId!;
+    const targetIds = await resolveTargetIds(msg, content, '.bazikon');
+    const targetId = targetIds[0] || msg.author.id;
+    const stMap = hokmStats.get(gId);
+    const st = stMap?.get(targetId) || { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} };
+    // best teammate
+    let bestMate: string | null = null; let bestWins = 0;
+    for (const [uid, w] of Object.entries(st.teammateWins||{})) {
+      if ((w||0) > bestWins) { bestWins = (w||0); bestMate = uid; }
+    }
+    const mateText = bestMate ? `<@${bestMate}> (${bestWins} WIN)` : '—';
+    // favorite hokm picks by hakim
+    const picks = st.hokmPicks || {};
+    const suitOrder: Suit[] = ['C','S','D','H'];
+    const sortedSuits = suitOrder.sort((a,b)=> (picks[b]||0) - (picks[a]||0));
+    const favArray = sortedSuits.filter(su => (picks[su]||0) > 0).map(su => SUIT_EMOJI[su as Suit].replace('️',''));
+    const favText = `[${favArray.join(',')}]`;
+    const lines: string[] = [];
+    lines.push(`✵ <@${targetId}> states:`);
+    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push(`▶︎Games : ${st.games||0}`);
+    lines.push(`💫WIN: ${st.wins||0}`);
+    lines.push(`❥︎Best Teamate: ${mateText}`);
+    lines.push(`🂡 Favorite hokm: ${favText}`);
+    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    const embed = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
+    await msg.reply({ embeds: [embed] });
+    return;
+  }
   if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
   await refreshAllDMs({ client: (interaction.client as Client) }, s);
-  if (gameChannel) await gameChannel.send({ content: `این دست را برد: <@${winnerUserId}> (تیم ${team==='t1'?1:2}). نوبت شروع: <@${s.order[s.leaderIndex!]}>` });
 }
 
 function handToString(hand: Card[]){ const bySuit: Record<Suit, Card[]> = {S:[],H:[],D:[],C:[]}; hand.forEach(c=>bySuit[c.s].push(c)); (Object.keys(bySuit) as Suit[]).forEach(s=>bySuit[s].sort((a,b)=>b.r-a.r));
@@ -593,7 +695,6 @@ const llInFlight = new Set<string>();
 // ===== Voice co-presence tracking (for .friend) =====
 // channelMembers[guildId][channelId] -> Set<userId>
 const channelMembers: Map<string, Map<string, Set<string>>> = new Map();
-// pairStarts[guildId][pairKey] -> startEpochMs (active session per channel)
 const pairStarts: Map<string, Map<string, number>> = new Map();
 // partnerTotals[guildId][userId][partnerId] -> totalMs
 const partnerTotals: Map<string, Map<string, Map<string, number>>> = new Map();
@@ -625,6 +726,74 @@ function saveLoveOverrides() {
     for (const [g, m] of loveOverrides) obj[g] = Object.fromEntries(m.entries());
     fs.writeFileSync(loveFile, JSON.stringify(obj, null, 2), 'utf8');
   } catch {}
+}
+
+// ===== Hokm Stats (games, wins, teammate wins, hakim picks) per user per guild =====
+type HokmUserStat = {
+  games: number;
+  wins: number;
+  teammateWins?: Partial<Record<string, number>>; // teammateUserId -> wins together
+  hokmPicks?: Partial<Record<Suit, number>>; // picks by hakim
+};
+const hokmStats: Map<string, Map<string, HokmUserStat>> = new Map(); // guildId -> (userId -> stats)
+const hokmStatsFile = path.join(process.cwd(), 'data', 'hokm-stats.json');
+function loadHokmStats() {
+  try {
+    fs.mkdirSync(path.dirname(hokmStatsFile), { recursive: true });
+    const raw = fs.existsSync(hokmStatsFile) ? fs.readFileSync(hokmStatsFile, 'utf8') : '';
+    if (!raw) return;
+    const obj = JSON.parse(raw) as Record<string, Record<string, HokmUserStat>>;
+    hokmStats.clear();
+    for (const [g, users] of Object.entries(obj)) {
+      const m = new Map<string, HokmUserStat>();
+      for (const [uid, st] of Object.entries(users)) m.set(uid, {
+        games: (st as any).games||0,
+        wins: (st as any).wins||0,
+        teammateWins: ((st as any).teammateWins||{}) as Partial<Record<string, number>>,
+        hokmPicks: ((st as any).hokmPicks||{}) as Partial<Record<Suit, number>>,
+      });
+      hokmStats.set(g, m);
+    }
+  } catch {}
+}
+function saveHokmStats() {
+  try {
+    fs.mkdirSync(path.dirname(hokmStatsFile), { recursive: true });
+    const obj: Record<string, Record<string, HokmUserStat>> = {};
+    for (const [g, m] of hokmStats) obj[g] = Object.fromEntries(m.entries());
+    fs.writeFileSync(hokmStatsFile, JSON.stringify(obj, null, 2), 'utf8');
+  } catch {}
+}
+function addHokmGame(guildId: string, userId: string, won: boolean) {
+  let m = hokmStats.get(guildId);
+  if (!m) { m = new Map(); hokmStats.set(guildId, m); }
+  const st: HokmUserStat = m.get(userId) || { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} };
+  st.games += 1;
+  if (won) st.wins += 1;
+  m.set(userId, st);
+}
+
+function addTeamWin(guildId: string, winnerTeam: string[]) {
+  let m = hokmStats.get(guildId);
+  if (!m) { m = new Map(); hokmStats.set(guildId, m); }
+  for (const uid of winnerTeam) {
+    const st: HokmUserStat = m.get(uid) || { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} };
+    for (const mate of winnerTeam) {
+      if (mate === uid) continue;
+      st.teammateWins = st.teammateWins || {};
+      st.teammateWins[mate] = (st.teammateWins[mate] || 0) + 1;
+    }
+    m.set(uid, st);
+  }
+}
+
+function addHokmPick(guildId: string, userId: string, suit: Suit) {
+  let m = hokmStats.get(guildId);
+  if (!m) { m = new Map(); hokmStats.set(guildId, m); }
+  const st: HokmUserStat = m.get(userId) || { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} };
+  st.hokmPicks = st.hokmPicks || {};
+  st.hokmPicks[suit] = (st.hokmPicks[suit] || 0) + 1;
+  m.set(userId, st);
 }
 
 function getMap<K, V>(map: Map<K, V>, key: K, mk: () => V): V {
@@ -699,6 +868,7 @@ if (pgUrl) {
 
 loadLoveOverrides();
 loadLoveRandoms();
+loadHokmStats();
 
 async function addDuration(guildId: string, a: string, b: string, deltaMs: number) {
   if (deltaMs <= 0) return;
@@ -1408,10 +1578,11 @@ client.on('messageCreate', async (msg: Message) => {
         new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
       );
+      // delete old lobby message if exists, then post fresh one
       if (s.controlMsgId) {
-        try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) { await m.edit({ content: contentText, components: [row] }); return; } } catch {}
+        try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.delete().catch(()=>{}); } catch {}
       }
-      const sent = await msg.reply({ content: contentText, components: [row] });
+      const sent = await msg.channel.send({ content: contentText, components: [row] });
       s.controlMsgId = sent.id;
     } else {
       await msg.reply({ content: 'این دستور فقط قبل از شروع بازی قابل استفاده است.' });
