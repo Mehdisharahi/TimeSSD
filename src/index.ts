@@ -20,6 +20,21 @@ const EMOJI_TO_SUIT: Record<string, Suit> = {
 };
 const RANKS = [2,3,4,5,6,7,8,9,10,11,12,13,14]; // 11:J 12:Q 13:K 14:A
 interface Card { s: Suit; r: number }
+
+function controlListText(s: HokmSession): string {
+  const t1 = s.team1.map((u,i)=>`${i+1}- <@${u}>`).join('\n') || '—';
+  const t2 = s.team2.map((u,i)=>`${i+1}- <@${u}>`).join('\n') || '—';
+  const sep = '●▬▬▬▬▬▬▬▬▬▬▬●';
+  return [
+    sep,
+    'Team 1:',
+    t1,
+    sep,
+    'Team 2:',
+    t2,
+    sep,
+  ].join('\n');
+}
 interface HokmSession {
   channelId: string;
   guildId: string;
@@ -44,6 +59,10 @@ interface HokmSession {
   tricksTeam1?: number;
   tricksTeam2?: number;
   tricksByPlayer?: Map<string, number>;
+  // match-level (sets)
+  targetSets?: number; // how many won hands (sets) to win the match
+  setsTeam1?: number;
+  setsTeam2?: number;
 }
 const hokmSessions = new Map<string, HokmSession>(); // key: guildId:channelId
 function keyGC(g: string, c: string){ return `${g}:${c}`; }
@@ -266,7 +285,10 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     const mv = await getMemberVisual(s.guildId, turnUid);
     ctx.fillText(mv.tag, 220, 45);
   }
-  ctx.fillText(`| تیم یک: ${s.tricksTeam1??0}  تیم دو: ${s.tricksTeam2??0}`, 420, 45);
+  ctx.fillText(`| دست‌ها: تیم یک ${s.tricksTeam1??0} / تیم دو ${s.tricksTeam2??0}`, 420, 45);
+  // sets row (smaller)
+  ctx.font = `${ssdFontAvailable? '22px '+ssdFontFamily : '22px Arial'}`;
+  ctx.fillText(`ست‌ها: تیم یک ${s.setsTeam1??0} / تیم دو ${s.setsTeam2??0} | هدف ست‌ها: ${s.targetSets??1}`, 28, 80);
 
   // positions for seats and cards (square layout, generous margins)
   const margin = 180;
@@ -420,9 +442,30 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
   let gameChannel: any = null;
   try { gameChannel = await (interaction.client as Client).channels.fetch(s.channelId).catch(()=>null); } catch {}
   if ((s.tricksTeam1||0) >= target || (s.tricksTeam2||0) >= target) {
-    s.state = 'finished';
+    // hand complete -> award a set
+    const winnerTeam = (s.tricksTeam1||0) >= target ? 't1' : 't2';
+    s.setsTeam1 = s.setsTeam1 || 0; s.setsTeam2 = s.setsTeam2 || 0;
+    if (winnerTeam==='t1') s.setsTeam1++; else s.setsTeam2++;
+    const targetSets = s.targetSets ?? 1;
+    if ((s.setsTeam1>=targetSets) || (s.setsTeam2>=targetSets)) {
+      s.state = 'finished';
+      if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
+      if (gameChannel) await gameChannel.send({ content: `مچ تمام شد! تیم ${s.setsTeam1>=targetSets?1:2} برنده شد. ست‌ها — تیم1: ${s.setsTeam1} | تیم2: ${s.setsTeam2}` });
+      return;
+    }
+    // prepare next hand in same match
+    s.deck = shuffle(makeDeck());
+    s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
+    s.hokm = undefined; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0; s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
+    // choose next hakim randomly (can be improved to winner-led)
+    s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
+    const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
+    give(s.hakim, 5);
+    s.state = 'choosing_hokm';
+    try { const user = await (interaction.client as Client).users.fetch(s.hakim); await user.send({ content: `ست جدید شروع شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
+    if (gameChannel) await gameChannel.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
     if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
-    if (gameChannel) await gameChannel.send({ content: `بازی تمام شد! تیم ${(s.tricksTeam1||0)>=target?1:2} برنده شد. نتیجه — تیم1: ${s.tricksTeam1} | تیم2: ${s.tricksTeam2}` });
+    await refreshAllDMs({ client: (interaction.client as Client) }, s);
     return;
   }
   if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
@@ -840,14 +883,52 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       return;
     }
 
-    // Start game button (owner only, default target 7)
+    // Start game button (owner only): let owner choose targetSets before starting
     if (id === 'hokm-start') {
       if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
       const s = ensureSession(interaction.guild.id, interaction.channel.id);
       if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'فقط سازنده اتاق می‌تواند شروع کند.', ephemeral: true }); return; }
       if (s.state !== 'waiting') { await interaction.reply({ content: 'اتاق در وضعیت شروع نیست.', ephemeral: true }); return; }
       if (s.team1.length !== 2 || s.team2.length !== 2) { await interaction.reply({ content: 'هر دو تیم باید ۲ نفر داشته باشند.', ephemeral: true }); return; }
+      // show ephemeral config for targetSets selection
+      const current = s.targetSets ?? 1;
+      const rowSets1 = new ActionRowBuilder<ButtonBuilder>();
+      for (let n=1;n<=4;n++) rowSets1.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${n}`).setLabel(String(n)).setStyle(current===n?ButtonStyle.Primary:ButtonStyle.Secondary));
+      const rowSets2 = new ActionRowBuilder<ButtonBuilder>();
+      for (let n=5;n<=7;n++) rowSets2.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${n}`).setLabel(String(n)).setStyle(current===n?ButtonStyle.Primary:ButtonStyle.Secondary));
+      const rowGo = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId('hokm-start-go').setLabel('شروع').setStyle(ButtonStyle.Danger));
+      await interaction.reply({ content: `تعداد ست‌های لازم برای برد کامل را انتخاب کن (پیش‌فرض: ${current}). سپس «شروع» را بزن.`, components: [rowSets1, rowSets2, rowGo], ephemeral: true });
+      return;
+    }
+
+    // Sets selection buttons
+    if (id.startsWith('hokm-sets-')) {
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
+      const s = ensureSession(interaction.guild.id, interaction.channel.id);
+      if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'فقط سازنده اتاق می‌تواند تنظیم کند.', ephemeral: true }); return; }
+      const n = parseInt(id.split('hokm-sets-')[1], 10);
+      if (!(n>=1 && n<=7)) { await interaction.reply({ content: 'بین 1 تا 7 انتخاب کن.', ephemeral: true }); return; }
+      s.targetSets = n;
+      // re-render ephemeral rows with active selection
+      const rowSets1 = new ActionRowBuilder<ButtonBuilder>();
+      for (let k=1;k<=4;k++) rowSets1.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${k}`).setLabel(String(k)).setStyle(n===k?ButtonStyle.Primary:ButtonStyle.Secondary));
+      const rowSets2 = new ActionRowBuilder<ButtonBuilder>();
+      for (let k=5;k<=7;k++) rowSets2.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${k}`).setLabel(String(k)).setStyle(n===k?ButtonStyle.Primary:ButtonStyle.Secondary));
+      const rowGo = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId('hokm-start-go').setLabel('شروع').setStyle(ButtonStyle.Danger));
+      await interaction.update({ content: `تعداد ست‌ها: ${n}. برای شروع «شروع» را بزن.`, components: [rowSets1, rowSets2, rowGo] });
+      return;
+    }
+
+    // Start after sets selection
+    if (id === 'hokm-start-go') {
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
+      const s = ensureSession(interaction.guild.id, interaction.channel.id);
+      if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'فقط سازنده اتاق می‌تواند شروع کند.', ephemeral: true }); return; }
+      if (s.state !== 'waiting') { await interaction.reply({ content: 'اتاق در وضعیت شروع نیست.', ephemeral: true }); return; }
+      if (s.team1.length !== 2 || s.team2.length !== 2) { await interaction.reply({ content: 'هر دو تیم باید ۲ نفر داشته باشند.', ephemeral: true }); return; }
+      s.targetSets = s.targetSets ?? 1;
       s.targetTricks = s.targetTricks ?? 7;
+      s.setsTeam1 = 0; s.setsTeam2 = 0;
       s.order = [s.team1[0], s.team2[0], s.team1[1], s.team2[1]];
       s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
       s.deck = shuffle(makeDeck());
@@ -856,9 +937,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       give(s.hakim, 5);
       s.state = 'choosing_hokm';
       try { const user = await interaction.client.users.fetch(s.hakim); await user.send({ content: `دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
-      // create or update table message with suit buttons
       const embed = new EmbedBuilder().setTitle('Hokm — انتخاب حکم')
-        .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')}\nحاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.`)
+        .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')}\nحاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.\nهدف ست‌ها: ${s.targetSets}`)
         .setColor(0x5865F2);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId('hokm-choose-S').setLabel('♠️ پیک').setStyle(ButtonStyle.Primary),
@@ -867,17 +947,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         new ButtonBuilder().setCustomId('hokm-choose-C').setLabel('♣️ گیشنیز').setStyle(ButtonStyle.Success),
       );
       let msgObj = null as any;
-      try {
-        if (s.tableMsgId) {
-          const m = await (interaction.channel as any).messages.fetch(s.tableMsgId).catch(()=>null);
-          if (m) { await m.edit({ embeds: [embed], components: [row] }); msgObj = m; }
-        }
-      } catch {}
-      if (!msgObj) {
-        msgObj = await (interaction.channel as any).send({ embeds: [embed], components: [row] });
-        s.tableMsgId = msgObj.id;
-      }
-      await interaction.reply({ content: 'بازی با موفقیت شروع شد. منتظر انتخاب حکم از حاکم باشید.', ephemeral: true });
+      try { if (s.tableMsgId) { const m = await (interaction.channel as any).messages.fetch(s.tableMsgId).catch(()=>null); if (m) { await m.edit({ embeds: [embed], components: [row] }); msgObj = m; } } } catch {}
+      if (!msgObj) { msgObj = await (interaction.channel as any).send({ embeds: [embed], components: [row] }); s.tableMsgId = msgObj.id; }
+      await interaction.reply({ content: `بازی آغاز شد. هدف ست‌ها: ${s.targetSets}.`, ephemeral: true });
       return;
     }
 
@@ -1175,22 +1247,20 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .hokm new — create room with join buttons (now includes Start button)
-  if (content.startsWith('.hokm new')) {
+  // .new — create room with join buttons
+  if (content.startsWith('.new')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     // reset session
     s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'waiting'; s.ownerId = msg.author.id; s.tableMsgId = undefined;
-    const embed = new EmbedBuilder().setTitle('Hokm — اتاق جدید')
-      .setDescription('با دکمه‌ها تیم خود را انتخاب کنید. هر تیم ۲ نفر. سپس `.hokm start` (یا `.hokm start 1..7`) را بزنید.')
-      .setColor(0x2f3136);
+    const contentText = controlListText(s);
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
     );
-    const sent = await msg.reply({ embeds: [embed], components: [row] });
+    const sent = await msg.reply({ content: contentText, components: [row] });
     s.controlMsgId = sent.id;
     return;
   }
@@ -1211,16 +1281,14 @@ client.on('messageCreate', async (msg: Message) => {
       if (s.team1.length >= 2) { skipped.push(`<@${uid}> (تیم 1 پر است)`); continue; }
       s.team1.push(uid); added.push(`<@${uid}>`);
     }
-    const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
-      .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
-      .setColor(0x2f3136);
+    const contentText = controlListText(s);
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
     );
-    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ embeds: [embed], components: [row] }); } } catch {}
+    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
     await msg.reply({ content: `افزوده شد: ${added.join(' , ') || '—'}\nنادیده: ${skipped.join(' , ') || '—'}` });
     return;
   }
@@ -1270,40 +1338,26 @@ client.on('messageCreate', async (msg: Message) => {
       s.team2 = s.team2.filter(x=>x!==uid);
       if (inAny) removed.push(`<@${uid}>`); else notIn.push(`<@${uid}>`);
     }
-    const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
-      .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
-      .setColor(0x2f3136);
+    const contentText = controlListText(s);
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
     );
-    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ embeds: [embed], components: [row] }); } } catch {}
+    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
     await msg.reply({ content: `حذف شد: ${removed.join(' , ') || '—'}\nناموجود: ${notIn.join(' , ') || '—'}` });
     return;
   }
 
-  // .end — owner ends the room and disables controls
+  // .end — owner ends the room and deletes control/table messages
   if (content.startsWith('.end')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند پایان دهد.'); return; }
-    // disable buttons if control exists
-    if (s.controlMsgId) {
-      try {
-        const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null);
-        if (m) {
-          const disabledRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary).setDisabled(true),
-            new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success).setDisabled(true),
-            new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary).setDisabled(true),
-            new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger).setDisabled(true),
-          );
-          await m.edit({ components: [disabledRow] });
-        }
-      } catch {}
-    }
+    // delete control and table messages if exist
+    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.delete().catch(()=>{}); } } catch {}
+    try { if (s.tableMsgId) { const m2 = await (msg.channel as any).messages.fetch(s.tableMsgId).catch(()=>null); if (m2) await m2.delete().catch(()=>{}); } } catch {}
     // clear session
     s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'finished'; s.controlMsgId = undefined; s.tableMsgId = undefined;
     await msg.reply('اتاق پایان یافت.');
@@ -1326,39 +1380,59 @@ client.on('messageCreate', async (msg: Message) => {
     s.hokm = undefined; s.tableMsgId = undefined;
     s.state = 'choosing_hokm';
     try { const user = await msg.client.users.fetch(s.hakim); await user.send({ content: `بازی ریست شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
-    // update control embed if exists
+    // update control list if exists
     if (s.controlMsgId) {
-      const embed = new EmbedBuilder().setTitle('Hokm — اتاق فعال')
-        .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '—'}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '—'}`)
-        .setColor(0x2f3136);
+      const contentText = controlListText(s);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
       );
-      try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ embeds: [embed], components: [row] }); } catch {}
+      try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } catch {}
     }
     await msg.reply({ content: `ریست شد. حاکم: <@${s.hakim}> — لطفاً با ".hokm hokm <خال>" حکم را انتخاب کن.` });
     return;
   }
 
-  // .hokm start — start game, deal first 5 to hakim (seat = team1[0]) and ask for hokm
+  // .list — re-show or create the control list with buttons
+  if (content.startsWith('.list')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل نمایش است.'); return; }
+    const contentText = controlListText(s);
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
+    );
+    if (s.controlMsgId) {
+      try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) { await m.edit({ content: contentText, components: [row] }); return; } } catch {}
+    }
+    const sent = await msg.reply({ content: contentText, components: [row] });
+    s.controlMsgId = sent.id;
+    return;
+  }
+
+  // .hokm start — start game; optional N sets to win match
   if (content.startsWith('.hokm start')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند بازی را شروع کند.'); return; }
     if (s.state !== 'waiting') { await msg.reply('اتاق در وضعیت شروع نیست.'); return; }
     if (s.team1.length !== 2 || s.team2.length !== 2) { await msg.reply('هر دو تیم باید ۲ نفر داشته باشند.'); return; }
-    // parse optional target tricks
+    // parse optional target sets (full hands)
     const m = content.match(/^\.hokm start(?:\s+(\d+))?/);
-    let target = 7;
+    let targetSets = 1;
     if (m && m[1]) {
       const n = parseInt(m[1], 10);
-      if (Number.isNaN(n) || n < 1 || n > 7) { await msg.reply('عدد معتبر بین 1 تا 7 وارد کنید. مثال: `.hokm start 5`'); return; }
-      target = n;
+      if (Number.isNaN(n) || n < 1 || n > 7) { await msg.reply('عدد معتبر بین 1 تا 7 وارد کنید. مثال: `.hokm start 3`'); return; }
+      targetSets = n;
     }
-    s.targetTricks = target;
+    s.targetSets = targetSets; // number of sets to win
+    s.targetTricks = s.targetTricks ?? 7; // tricks to win a set (always 7)
+    s.setsTeam1 = 0; s.setsTeam2 = 0;
     s.order = [s.team1[0], s.team2[0], s.team1[1], s.team2[1]];
     s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
     s.deck = shuffle(makeDeck());
@@ -1392,7 +1466,7 @@ client.on('messageCreate', async (msg: Message) => {
         s.tableMsgId = msgObj.id;
       }
     }
-    await msg.reply({ content: `بازی آغاز شد. هدف برد دست‌ها: ${s.targetTricks}. حاکم: <@${s.hakim}> — از دکمه‌های میز برای انتخاب حکم استفاده کن.` });
+    await msg.reply({ content: `بازی آغاز شد. هدف ست‌ها: ${s.targetSets} (هر ست = ۷ دست). حاکم: <@${s.hakim}> — از دکمه‌های میز برای انتخاب حکم استفاده کن.` });
     return;
   }
 
