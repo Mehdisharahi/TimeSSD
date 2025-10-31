@@ -488,15 +488,15 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   // Team labels and scores with colors (bold, placed below top bar)
   const team1Color = '#3b82f6';
   const team2Color = '#ef4444';
-  const numColor = '#fde047';
+  const numColor = '#ffffff';
   // Left side (Team 1)
   ctx.textAlign = 'left';
-  ctx.font = `${ssdFontAvailable? 'bold 52px '+ssdFontFamily : 'bold 52px Arial'}`;
+  ctx.font = `${ssdFontAvailable? 'bold 44px '+ssdFontFamily : 'bold 44px Arial'}`;
   ctx.fillStyle = team1Color;
-  ctx.fillText('Team 1', 28, 90);
-  // Tricks/Sets line with yellow numbers
-  ctx.font = `${ssdFontAvailable? 'bold 48px '+ssdFontFamily : 'bold 48px Arial'}`;
-  let xL = 28; const yL = 124;
+  ctx.fillText('Team 1', 28, 96);
+  // Tricks/Sets line with white numbers; add more vertical spacing
+  ctx.font = `${ssdFontAvailable? 'bold 40px '+ssdFontFamily : 'bold 40px Arial'}`;
+  let xL = 28; const yL = 146;
   const tLabel = 'Tricks: ';
   const sLabel = '  Sets: ';
   ctx.fillStyle = team1Color; ctx.fillText(tLabel, xL, yL); xL += ctx.measureText(tLabel).width;
@@ -506,10 +506,10 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   // Right side (Team 2)
   ctx.textAlign = 'right';
   ctx.fillStyle = team2Color;
-  ctx.font = `${ssdFontAvailable? 'bold 52px '+ssdFontFamily : 'bold 52px Arial'}`;
-  ctx.fillText('Team 2', width-28, 90);
-  ctx.font = `${ssdFontAvailable? 'bold 48px '+ssdFontFamily : 'bold 48px Arial'}`;
-  const yR = 124; let xR = width - 28;
+  ctx.font = `${ssdFontAvailable? 'bold 44px '+ssdFontFamily : 'bold 44px Arial'}`;
+  ctx.fillText('Team 2', width-28, 96);
+  ctx.font = `${ssdFontAvailable? 'bold 40px '+ssdFontFamily : 'bold 40px Arial'}`;
+  const yR = 146; let xR = width - 28;
   const t2 = String(s.tricksTeam2 ?? 0); const s2 = String(s.setsTeam2 ?? 0);
   // draw from right to left
   ctx.fillStyle = numColor; ctx.fillText(s2, xR, yR); xR -= ctx.measureText(s2).width;
