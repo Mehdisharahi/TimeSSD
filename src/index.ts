@@ -445,7 +445,7 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = red ? '#dc2626' : '#111827';
-    drawSuit(ctx, c.s, x + w/2, y + h/2 + 6, 20);
+    drawSuit(ctx, c.s, x + w/2, y + h/2 + 6, 28);
   }
   // draw seats and played cards
   for (let i=0;i<4;i++) {
@@ -488,18 +488,34 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   // Team labels and scores with colors (bold, placed below top bar)
   const team1Color = '#3b82f6';
   const team2Color = '#ef4444';
+  const numColor = '#fde047';
+  // Left side (Team 1)
   ctx.textAlign = 'left';
-  ctx.font = `${ssdFontAvailable? 'bold 26px '+ssdFontFamily : 'bold 26px Arial'}`;
+  ctx.font = `${ssdFontAvailable? 'bold 52px '+ssdFontFamily : 'bold 52px Arial'}`;
   ctx.fillStyle = team1Color;
   ctx.fillText('Team 1', 28, 90);
-  ctx.font = `${ssdFontAvailable? 'bold 24px '+ssdFontFamily : 'bold 24px Arial'}`;
-  ctx.fillText(`Tricks: ${s.tricksTeam1??0}  Sets: ${s.setsTeam1??0}`, 28, 124);
+  // Tricks/Sets line with yellow numbers
+  ctx.font = `${ssdFontAvailable? 'bold 48px '+ssdFontFamily : 'bold 48px Arial'}`;
+  let xL = 28; const yL = 124;
+  const tLabel = 'Tricks: ';
+  const sLabel = '  Sets: ';
+  ctx.fillStyle = team1Color; ctx.fillText(tLabel, xL, yL); xL += ctx.measureText(tLabel).width;
+  ctx.fillStyle = numColor; ctx.fillText(String(s.tricksTeam1 ?? 0), xL, yL); xL += ctx.measureText(String(s.tricksTeam1 ?? 0)).width;
+  ctx.fillStyle = team1Color; ctx.fillText(sLabel, xL, yL); xL += ctx.measureText(sLabel).width;
+  ctx.fillStyle = numColor; ctx.fillText(String(s.setsTeam1 ?? 0), xL, yL);
+  // Right side (Team 2)
   ctx.textAlign = 'right';
   ctx.fillStyle = team2Color;
-  ctx.font = `${ssdFontAvailable? 'bold 26px '+ssdFontFamily : 'bold 26px Arial'}`;
+  ctx.font = `${ssdFontAvailable? 'bold 52px '+ssdFontFamily : 'bold 52px Arial'}`;
   ctx.fillText('Team 2', width-28, 90);
-  ctx.font = `${ssdFontAvailable? 'bold 24px '+ssdFontFamily : 'bold 24px Arial'}`;
-  ctx.fillText(`Tricks: ${s.tricksTeam2??0}  Sets: ${s.setsTeam2??0}`, width-28, 124);
+  ctx.font = `${ssdFontAvailable? 'bold 48px '+ssdFontFamily : 'bold 48px Arial'}`;
+  const yR = 124; let xR = width - 28;
+  const t2 = String(s.tricksTeam2 ?? 0); const s2 = String(s.setsTeam2 ?? 0);
+  // draw from right to left
+  ctx.fillStyle = numColor; ctx.fillText(s2, xR, yR); xR -= ctx.measureText(s2).width;
+  ctx.fillStyle = team2Color; ctx.fillText(sLabel, xR, yR); xR -= ctx.measureText(sLabel).width;
+  ctx.fillStyle = numColor; ctx.fillText(t2, xR, yR); xR -= ctx.measureText(t2).width;
+  ctx.fillStyle = team2Color; ctx.fillText(tLabel, xR, yR);
   return canvas.toBuffer('image/png');
 }
 
