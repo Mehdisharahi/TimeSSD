@@ -8,6 +8,24 @@ import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed 
 
 const token = process.env.BOT_TOKEN;
 
+// Emoji font registration (optional)
+let emojiFontAvailable = false;
+try {
+  const candidates = [
+    path.join(process.cwd(), 'fonts', 'NotoColorEmoji.ttf'),
+    path.join(process.cwd(), 'fonts', 'NotoColorEmoji-Regular.ttf'),
+    path.join(process.cwd(), 'fonts', 'NotoColorEmojiCompat.ttf'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      const buf = fs.readFileSync(p);
+      GlobalFonts.register(buf, 'Noto Color Emoji');
+      emojiFontAvailable = true;
+      break;
+    }
+  }
+} catch {}
+
 // ===== Hokm Phase 1 state =====
 type Suit = 'S' | 'H' | 'D' | 'C';
 const SUIT_EMOJI: Record<Suit, string> = { S: '♠️', H: '♥️', D: '♦️', C: '♣️' };
@@ -330,8 +348,16 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     const suitFill = (s.hokm==='H' || s.hokm==='D') ? '#f87171' : '#ffffff';
     const totalWidth = 36 + gap + setsWidth; // suit ~36px
     const startX = cx - totalWidth/2;
-    ctx.fillStyle = suitFill;
-    drawSuit(ctx, s.hokm, startX + 18, cy, 18);
+    if (emojiFontAvailable) {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `${ssdFontAvailable? 'bold 22px '+ssdFontFamily : 'bold 22px Arial'}, 'Noto Color Emoji', 'Segoe UI Emoji', 'Apple Color Emoji'`;
+      ctx.fillText(SUIT_EMOJI[s.hokm], startX + 18, cy + 1);
+      ctx.textAlign = 'left';
+    } else {
+      ctx.fillStyle = suitFill;
+      drawSuit(ctx, s.hokm, startX + 18, cy, 18);
+    }
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ffffff';
     ctx.fillText(setsTxt, startX + 36 + gap, cy + 1);
@@ -441,11 +467,17 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     const rtxt = rankStr(c.r);
     ctx.textAlign = 'left';
     ctx.fillText(rtxt, x + 10, y + 28);
-    // center vector suit (no emoji tofu), larger
+    // center suit: prefer emoji if emoji font is available; fallback to vector
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = red ? '#dc2626' : '#111827';
-    drawSuit(ctx, c.s, x + w/2, y + h/2 + 6, 28);
+    if (emojiFontAvailable) {
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `bold 56px 'Noto Color Emoji'`;
+      ctx.fillText(SUIT_EMOJI[c.s], x + w/2, y + h/2 + 6);
+    } else {
+      ctx.fillStyle = red ? '#dc2626' : '#111827';
+      drawSuit(ctx, c.s, x + w/2, y + h/2 + 6, 28);
+    }
   }
   // draw seats and played cards
   for (let i=0;i<4;i++) {
@@ -1548,7 +1580,12 @@ client.on('messageCreate', async (msg: Message) => {
     );
     const contentText = controlListText(s);
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
-    await msg.reply({ content: `افزوده شد: ${added.join(' , ') || '—'}\nنادیده: ${skipped.join(' , ') || '—'}` });
+    {
+      const lines: string[] = [];
+      lines.push(`افزوده شد: ${added.join(' , ') || '—'}`);
+      if (skipped.length > 0) lines.push(`نادیده: ${skipped.join(' , ')}`);
+      await msg.reply({ content: lines.join('\n') });
+    }
     return;
   }
 
@@ -1575,7 +1612,12 @@ client.on('messageCreate', async (msg: Message) => {
       new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
     );
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
-    await msg.reply({ content: `حذف شد: ${removed.join(' , ') || '—'}\nناموجود: ${notIn.join(' , ') || '—'}` });
+    {
+      const lines: string[] = [];
+      lines.push(`حذف شد: ${removed.join(' , ') || '—'}`);
+      if (notIn.length > 0) lines.push(`ناموجود: ${notIn.join(' , ')}`);
+      await msg.reply({ content: lines.join('\n') });
+    }
     return;
   }
 
