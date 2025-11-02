@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember, AttachmentBuilder } from 'discord.js';
-import { createCanvas, GlobalFonts, loadImage } from '@napi-rs/canvas';
+import { createCanvas, GlobalFonts, loadImage, Canvas } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
 import { PgFriendStore } from './storage/pgFriendStore';
@@ -38,6 +38,10 @@ const EMOJI_TO_SUIT: Record<string, Suit> = {
 };
 const RANKS = [2,3,4,5,6,7,8,9,10,11,12,13,14]; // 11:J 12:Q 13:K 14:A
 interface Card { s: Suit; r: number }
+
+// Cached prerendered card bitmaps to speed up table rendering
+const cardBitmapCache = new Map<string, Canvas>();
+function cardKey(c: Card, scale: number) { return `${c.s}-${c.r}-${scale}`; }
 
 function controlListText(s: HokmSession): string {
   const t1 = s.team1.map((u,i)=>`${i+1}- <@${u}>`).join('\n') || '—';
@@ -406,21 +410,10 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     ctx.beginPath();
     ctx.arc(avX, avY, avR + 4, 0, Math.PI * 2);
     ctx.stroke();
-    // yellow outer ring if player's turn (brighter + glow)
+    // yellow outer ring if player's turn (fast, no heavy blur)
     if (isTurn) {
-      // glow
-      ctx.save();
-      ctx.strokeStyle = '#fde047'; // bright yellow
-      ctx.lineWidth = 8;
-      (ctx as any).shadowColor = '#fde047';
-      (ctx as any).shadowBlur = 18;
-      ctx.beginPath();
-      ctx.arc(avX, avY, avR + 12, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-      // solid highlight ring
       ctx.strokeStyle = '#facc15';
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 6;
       ctx.beginPath();
       ctx.arc(avX, avY, avR + 12, 0, Math.PI * 2);
       ctx.stroke();
@@ -443,46 +436,55 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     }
     ctx.textAlign = 'center';
   }
-  function drawCard(x: number, y: number, c: Card) {
-    const w = 110, h = 155, r = 12;
+  function getCardBitmap(c: Card, scale: number) {
+    const key = cardKey(c, scale);
+    const existing = cardBitmapCache.get(key);
+    if (existing) return existing;
+    const w = Math.round(110 * scale), h = Math.round(155 * scale), r = Math.round(12 * scale);
+    const off = createCanvas(w + Math.ceil(6*scale), h + Math.ceil(8*scale));
+    const c2 = off.getContext('2d');
     // shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    ctx.beginPath();
-    ctx.roundRect(x+4, y+6, w, h, r);
-    ctx.fill();
+    c2.fillStyle = 'rgba(0,0,0,0.30)';
+    c2.beginPath();
+    c2.roundRect(4*scale, 6*scale, w, h, r);
+    c2.fill();
     // body
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.roundRect(x, y, w, h, r);
-    ctx.fill();
-    ctx.strokeStyle = '#e5e7eb';
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    c2.fillStyle = '#ffffff';
+    c2.beginPath();
+    c2.roundRect(0, 0, w, h, r);
+    c2.fill();
+    c2.strokeStyle = '#e5e7eb';
+    c2.lineWidth = Math.max(1, 2*scale);
+    c2.stroke();
     // rank + suit
     const red = (c.s === 'H' || c.s === 'D');
-    ctx.fillStyle = red ? '#dc2626' : '#111827';
-    ctx.font = `${ssdFontAvailable? 'bold 36px '+ssdFontFamily : 'bold 36px Arial'}`;
+    c2.fillStyle = red ? '#dc2626' : '#111827';
+    c2.font = `${ssdFontAvailable? 'bold '+Math.round(36*scale)+'px '+ssdFontFamily : 'bold '+Math.round(36*scale)+'px Arial'}`;
     const rtxt = rankStr(c.r);
-    ctx.textAlign = 'left';
-    ctx.fillText(rtxt, x + 10, y + 28);
-    // center suit: prefer emoji if emoji font is available; fallback to vector
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    c2.textAlign = 'left';
+    c2.textBaseline = 'alphabetic';
+    c2.fillText(rtxt, 10*scale, 28*scale);
+    // center suit
+    c2.textAlign = 'center';
+    c2.textBaseline = 'middle';
     if (emojiFontAvailable) {
-      ctx.fillStyle = '#ffffff';
-      ctx.font = `bold 56px 'Noto Color Emoji'`;
-      ctx.fillText(SUIT_EMOJI[c.s], x + w/2, y + h/2 + 6);
+      c2.fillStyle = '#ffffff';
+      c2.font = `bold ${Math.round(56*scale)}px 'Noto Color Emoji'`;
+      c2.fillText(SUIT_EMOJI[c.s], w/2, h/2 + 6*scale);
     } else {
-      ctx.fillStyle = red ? '#dc2626' : '#111827';
-      drawSuit(ctx, c.s, x + w/2, y + h/2 + 6, 28);
+      c2.fillStyle = red ? '#dc2626' : '#111827';
+      drawSuit(c2 as any, c.s, w/2, h/2 + 6*scale, 28*scale);
     }
+    cardBitmapCache.set(key, off);
+    return off;
+  }
+  function drawCard(x: number, y: number, c: Card) {
+    const bmp = getCardBitmap(c, 1);
+    ctx.drawImage(bmp as any, x, y);
   }
   function drawCardScaled(x: number, y: number, c: Card, scale: number) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(scale, scale);
-    drawCard(0, 0, c);
-    ctx.restore();
+    const bmp = getCardBitmap(c, scale);
+    ctx.drawImage(bmp as any, x, y);
   }
   // draw seats and played cards
   for (let i=0;i<4;i++) {
