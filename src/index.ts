@@ -23,6 +23,69 @@ try {
       emojiFontAvailable = true;
       break;
     }
+
+// ===== Bot Auto-Play =====
+function legalMovesFor(hand: Card[], s: HokmSession): Card[] {
+  const lead = s.leadSuit;
+  if (!lead) return hand.slice();
+  const follow = hand.filter(c=>c.s===lead);
+  return follow.length? follow : hand.slice();
+}
+function chooseBotCard(hand: Card[], s: HokmSession): Card {
+  const lead = s.leadSuit; const trump = s.hokm!;
+  const legal = legalMovesFor(hand, s);
+  // If following suit, try minimal winning, else lowest
+  const table = s.table || [];
+  const beatCard = (a: Card, b: Card)=>{
+    if (a.s===b.s) return a.r>b.r;
+    if (a.s===trump && b.s!==trump) return true;
+    return false;
+  };
+  if (table.length>0) {
+    let best = table[0].card;
+    for (let i=1;i<table.length;i++) if (beatCard(table[i].card, best)) best = table[i].card;
+    const winners = legal.filter(c=>beatCard(c, best));
+    if (winners.length) return winners.sort((a,b)=>a.r-b.r)[0];
+    return legal.sort((a,b)=>a.r-b.r)[0];
+  } else {
+    // leading: avoid trump early, play mid-low non-trump if possible
+    const nonTrump = legal.filter(c=>c.s!==trump);
+    if (nonTrump.length) return nonTrump.sort((a,b)=>a.r-b.r)[0];
+    return legal.sort((a,b)=>a.r-b.r)[0];
+  }
+}
+async function maybeBotAutoPlay(client: Client, s: HokmSession) {
+  if (s.state!=='playing' || s.turnIndex==null) return;
+  const uid = s.order[s.turnIndex];
+  if (!isVirtualBot(uid)) return;
+  const hand = s.hands.get(uid) || [];
+  if (hand.length===0) return;
+  // schedule a short delay
+  setTimeout(async () => {
+    try {
+      // compute legal card
+      const card = chooseBotCard(hand, s);
+      // play
+      const idx = hand.findIndex(c=>c.s===card.s && c.r===card.r);
+      if (idx<0) return;
+      hand.splice(idx,1); s.hands.set(uid, hand);
+      s.table = s.table || []; s.table.push({ userId: uid, card });
+      if (!s.leadSuit) s.leadSuit = card.s;
+      const nextTurn = ((s.turnIndex ?? 0) + 1) % s.order.length;
+      s.turnIndex = nextTurn;
+      // render table
+      let ch: any = null; try { ch = await client.channels.fetch(s.channelId).catch(()=>null); } catch {}
+      if (ch) await refreshTableEmbed({ channel: ch }, s);
+      // resolve trick if needed
+      if (s.table.length === 4) {
+        // fabricate a minimal Interaction-like for resolveTrickAndContinue
+        await resolveTrickAndContinue({ client } as any, s);
+      } else {
+        await maybeBotAutoPlay(client, s);
+      }
+    } catch {}
+  }, 500);
+}
   }
 } catch {}
 
@@ -43,9 +106,27 @@ interface Card { s: Suit; r: number }
 const cardBitmapCache = new Map<string, Canvas>();
 function cardKey(c: Card, scale: number) { return `${c.s}-${c.r}-${scale}`; }
 
+// ===== Virtual Bots =====
+function isVirtualBot(id: string) { return /^BOT[1-3]$/.test(id); }
+function nextAvailableBotId(s: HokmSession): string | null {
+  const used = new Set([...s.team1, ...s.team2, ...s.order]);
+  for (const b of ['BOT1','BOT2','BOT3']) if (!used.has(b)) return b;
+  return null;
+}
+function addBotToTeam(s: HokmSession, team: 1|2): { id: string } | null {
+  const id = nextAvailableBotId(s); if (!id) return null;
+  const teamArr = team===1 ? s.team1 : s.team2;
+  if (teamArr.length >= 2) return null;
+  // remove if exists in other team just in case
+  s.team1 = s.team1.filter(x=>x!==id); s.team2 = s.team2.filter(x=>x!==id);
+  teamArr.push(id);
+  return { id };
+}
+
 function controlListText(s: HokmSession): string {
-  const t1 = s.team1.map((u,i)=>`${i+1}- <@${u}>`).join('\n') || '—';
-  const t2 = s.team2.map((u,i)=>`${i+1}- <@${u}>`).join('\n') || '—';
+  const name = (u: string)=> isVirtualBot(u) ? u.replace('BOT','Bot') : `<@${u}>`;
+  const t1 = s.team1.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || '—';
+  const t2 = s.team2.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || '—';
   const sep = '●▬▬▬▬▬▬▬▬▬▬▬●';
   return [
     sep,
@@ -228,7 +309,7 @@ async function refreshPlayerDM(ctx: { client: Client }, s: HokmSession, userId: 
 }
 
 async function refreshAllDMs(ctx: { client: Client }, s: HokmSession) {
-  for (const uid of s.order) await refreshPlayerDM(ctx, s, uid);
+  for (const uid of s.order) { if (!isVirtualBot(uid)) await refreshPlayerDM(ctx, s, uid); }
 }
 
 function buildHandRowsSimple(hand: Card[], userId: string, gId: string, cId: string): ActionRowBuilder<ButtonBuilder>[] {
@@ -247,6 +328,7 @@ function buildHandRowsSimple(hand: Card[], userId: string, gId: string, cId: str
 }
 
 async function refreshPlayerChannelHand(ctx: { channel: any }, s: HokmSession, userId: string) {
+  if (isVirtualBot(userId)) return; // bots don't need channel hand controls
   const hand = s.hands.get(userId) || [];
   const rows = buildHandRowsSimple(hand, userId, s.guildId, s.channelId);
   const content = `<@${userId}> — ${userId===s.order[s.turnIndex??0] ? 'نوبت شماست.' : 'منتظر نوبت بمانید.'}`;
@@ -265,6 +347,11 @@ const avatarCache: Map<string, AvatarEntry> = new Map();
 const AVATAR_TTL_MS = 10 * 60 * 1000;
 
 async function getMemberVisual(guildId: string, userId: string): Promise<{ tag: string; img: any|null }> {
+  // virtual bot visuals
+  if (isVirtualBot(userId)) {
+    const tag = userId.replace('BOT', 'Bot');
+    return { tag, img: null };
+  }
   try {
     const g = await client.guilds.fetch(guildId).catch(()=>null);
     if (!g) return { tag: userId, img: null };
@@ -399,6 +486,22 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
       ctx.closePath();
       ctx.clip();
       ctx.drawImage(avatar, avX-avR, avY-avR, avR*2, avR*2);
+      ctx.restore();
+    } else if (uid && isVirtualBot(uid)) {
+      // draw a simple bot avatar placeholder tinted toward team color
+      const isT1 = s.team1.includes(uid);
+      const tint = isT1 ? '#3b82f6' : '#ef4444';
+      ctx.save();
+      ctx.beginPath(); ctx.arc(avX, avY, avR, 0, Math.PI*2); ctx.clip();
+      // background
+      ctx.fillStyle = '#e5e7eb';
+      ctx.fillRect(avX-avR, avY-avR, avR*2, avR*2);
+      // silhouette
+      ctx.fillStyle = tint;
+      // head
+      ctx.beginPath(); ctx.arc(avX, avY-avR*0.25, avR*0.32, 0, Math.PI*2); ctx.fill();
+      // body
+      ctx.beginPath(); ctx.roundRect(avX-avR*0.45, avY-avR*0.05, avR*0.9, avR*0.9, avR*0.2); ctx.fill();
       ctx.restore();
     }
     // team-colored ring
@@ -1668,8 +1771,14 @@ client.on('messageCreate', async (msg: Message) => {
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را اضافه کند.'); return; }
+    const raw = content.slice(3).trim();
+    if (/^bot\b/i.test(raw)) {
+      const added = addBotToTeam(s, 1);
+      await msg.reply({ content: added? `Bot به تیم 1 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 1 وجود ندارد.' });
+      return;
+    }
     const targets = await resolveTargetIds(msg, content, '.a1');
-    if (targets.length === 0) { await msg.reply('استفاده: `.a1 @user1 @user2` یا ریپلای/آیدی'); return; }
+    if (targets.length === 0) { await msg.reply('استفاده: `.a1 @user1 @user2` یا `.a1 bot`'); return; }
     const added: string[] = []; const skipped: string[] = [];
     for (const uid of targets) {
       try { const u = await msg.client.users.fetch(uid); if (u.bot) { skipped.push(`<@${uid}> (bot)`); continue; } } catch { skipped.push(`<@${uid}> (نامعتبر)`); continue; }
@@ -1696,8 +1805,14 @@ client.on('messageCreate', async (msg: Message) => {
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را اضافه کند.'); return; }
+    const raw = content.slice(3).trim();
+    if (/^bot\b/i.test(raw)) {
+      const added = addBotToTeam(s, 2);
+      await msg.reply({ content: added? `Bot به تیم 2 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 2 وجود ندارد.' });
+      return;
+    }
     const targets = await resolveTargetIds(msg, content, '.a2');
-    if (targets.length === 0) { await msg.reply('استفاده: `.a2 @user1 @user2` یا ریپلای/آیدی'); return; }
+    if (targets.length === 0) { await msg.reply('استفاده: `.a2 @user1 @user2` یا `.a2 bot`'); return; }
     const added: string[] = []; const skipped: string[] = [];
     for (const uid of targets) {
       try { const u = await msg.client.users.fetch(uid); if (u.bot) { skipped.push(`<@${uid}> (bot)`); continue; } } catch { skipped.push(`<@${uid}> (نامعتبر)`); continue; }
