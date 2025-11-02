@@ -892,12 +892,12 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
         const lines: string[] = [];
         lines.push(`### ✹Starter: ${starter}`);
         lines.push(`### ✹Sets: ${s.targetSets ?? 1}`);
-        lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●,');
-        lines.push(`### ✹Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ➤ # ${t1Set}`);
-        lines.push('════════════════════');
-        lines.push(`### ✹Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ➤ # ${t2Set}`);
         lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-        lines.push(`### ✹Winner: Team ${t1Set>t2Set?1:2} ✔`);
+        lines.push(`### ✹Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ➤ ${t1Set}`);
+        lines.push('════════════════════');
+        lines.push(`### ✹Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ➤ ${t2Set}`);
+        lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+        lines.push(`### ✹Winner: Team ${t1Set>t2Set?1:2} ✅`);
         const emb = new EmbedBuilder().setDescription(lines.join('\n')).setColor(t1Set>t2Set?0x3b82f6:0xef4444);
         await gameChannel.send({ embeds: [emb] });
       }
