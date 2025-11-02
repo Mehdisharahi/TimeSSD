@@ -23,6 +23,87 @@ try {
       emojiFontAvailable = true;
       break;
     }
+  }
+} catch {}
+
+// ===== Hokm Phase 1 state =====
+type Suit = 'S' | 'H' | 'D' | 'C';
+const SUIT_EMOJI: Record<Suit, string> = { S: '♠️', H: '♥️', D: '♦️', C: '♣️' };
+const EMOJI_TO_SUIT: Record<string, Suit> = {
+  '♠': 'S','♠️': 'S',':spades:': 'S','🂡': 'S',
+  '♥': 'H','♥️': 'H',':hearts:': 'H',
+  '♦': 'D','♦️': 'D',':diamonds:': 'D',
+  '♣': 'C','♣️': 'C',':clubs:': 'C',
+  'پیک': 'S','دل': 'H','خشت': 'D','گیشنیز': 'C','گشنیز': 'C'
+};
+const RANKS = [2,3,4,5,6,7,8,9,10,11,12,13,14]; // 11:J 12:Q 13:K 14:A
+interface Card { s: Suit; r: number }
+
+// Cached prerendered card bitmaps to speed up table rendering
+const cardBitmapCache = new Map<string, Canvas>();
+function cardKey(c: Card, scale: number) { return `${c.s}-${c.r}-${scale}`; }
+
+// ===== Virtual Bots =====
+function isVirtualBot(id: string) { return /^BOT[1-3]$/.test(id); }
+function nextAvailableBotId(s: HokmSession): string | null {
+  const allBots = [...s.team1, ...s.team2].filter(isVirtualBot);
+  const count = allBots.length;
+  if (count >= 3) return null;
+  return `BOT${count + 1}`;
+}
+function addBotToTeam(s: HokmSession, team: 1|2): { id: string } | null {
+  const id = nextAvailableBotId(s); if (!id) return null;
+  const teamArr = team===1 ? s.team1 : s.team2;
+  if (teamArr.length >= 2) return null;
+  teamArr.push(id);
+  return { id };
+}
+
+function controlListText(s: HokmSession): string {
+  const name = (u: string)=> isVirtualBot(u) ? u.replace('BOT','Bot') : `<@${u}>`;
+  const t1 = s.team1.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || '—';
+  const t2 = s.team2.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || '—';
+  const sep = '●▬▬▬▬▬▬▬▬▬▬▬●';
+  return [
+    sep,
+    'Team 1:',
+    t1,
+    sep,
+    'Team 2:',
+    t2,
+    sep,
+  ].join('\n');
+}
+interface HokmSession {
+  channelId: string;
+  guildId: string;
+  ownerId?: string;
+  team1: string[]; // userIds
+  team2: string[];
+  order: string[]; // play order: [t1[0], t2[0], t1[1], t2[1]]
+  hakim?: string; // userId
+  hokm?: Suit;
+  targetTricks?: number; // 1..7, default 7
+  deck: Card[];
+  hands: Map<string, Card[]>; // userId -> 0..13
+  state: 'waiting'|'choosing_hokm'|'playing'|'finished';
+  controlMsgId?: string; // message with join buttons
+  tableMsgId?: string; // live table embed message id
+  playerDMMsgIds?: Map<string, string>; // userId -> DM message id
+  // Phase 2
+  leaderIndex?: number; // index into order for current trick leader
+  turnIndex?: number; // index into order whose turn it is now
+  table?: { userId: string; card: Card }[];
+  leadSuit?: Suit | null;
+  tricksTeam1?: number;
+  tricksTeam2?: number;
+  tricksByPlayer?: Map<string, number>;
+  lastTrick?: { userId: string; card: Card }[];
+  // match-level (sets)
+  targetSets?: number; // how many won hands (sets) to win the match
+  setsTeam1?: number;
+  setsTeam2?: number;
+}
 
 // ===== Bot Auto-Play =====
 function legalMovesFor(hand: Card[], s: HokmSession): Card[] {
@@ -86,88 +167,7 @@ async function maybeBotAutoPlay(client: Client, s: HokmSession) {
     } catch {}
   }, 500);
 }
-  }
-} catch {}
 
-// ===== Hokm Phase 1 state =====
-type Suit = 'S' | 'H' | 'D' | 'C';
-const SUIT_EMOJI: Record<Suit, string> = { S: '♠️', H: '♥️', D: '♦️', C: '♣️' };
-const EMOJI_TO_SUIT: Record<string, Suit> = {
-  '♠': 'S','♠️': 'S',':spades:': 'S','🂡': 'S',
-  '♥': 'H','♥️': 'H',':hearts:': 'H',
-  '♦': 'D','♦️': 'D',':diamonds:': 'D',
-  '♣': 'C','♣️': 'C',':clubs:': 'C',
-  'پیک': 'S','دل': 'H','خشت': 'D','گیشنیز': 'C','گشنیز': 'C'
-};
-const RANKS = [2,3,4,5,6,7,8,9,10,11,12,13,14]; // 11:J 12:Q 13:K 14:A
-interface Card { s: Suit; r: number }
-
-// Cached prerendered card bitmaps to speed up table rendering
-const cardBitmapCache = new Map<string, Canvas>();
-function cardKey(c: Card, scale: number) { return `${c.s}-${c.r}-${scale}`; }
-
-// ===== Virtual Bots =====
-function isVirtualBot(id: string) { return /^BOT[1-3]$/.test(id); }
-function nextAvailableBotId(s: HokmSession): string | null {
-  const used = new Set([...s.team1, ...s.team2, ...s.order]);
-  for (const b of ['BOT1','BOT2','BOT3']) if (!used.has(b)) return b;
-  return null;
-}
-function addBotToTeam(s: HokmSession, team: 1|2): { id: string } | null {
-  const id = nextAvailableBotId(s); if (!id) return null;
-  const teamArr = team===1 ? s.team1 : s.team2;
-  if (teamArr.length >= 2) return null;
-  // remove if exists in other team just in case
-  s.team1 = s.team1.filter(x=>x!==id); s.team2 = s.team2.filter(x=>x!==id);
-  teamArr.push(id);
-  return { id };
-}
-
-function controlListText(s: HokmSession): string {
-  const name = (u: string)=> isVirtualBot(u) ? u.replace('BOT','bot') : `<@${u}>`;
-  const t1 = s.team1.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || '—';
-  const t2 = s.team2.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || '—';
-  const sep = '●▬▬▬▬▬▬▬▬▬▬▬●';
-  return [
-    sep,
-    'Team 1:',
-    t1,
-    sep,
-    'Team 2:',
-    t2,
-    sep,
-  ].join('\n');
-}
-interface HokmSession {
-  channelId: string;
-  guildId: string;
-  ownerId?: string;
-  team1: string[]; // userIds
-  team2: string[];
-  order: string[]; // play order: [t1[0], t2[0], t1[1], t2[1]]
-  hakim?: string; // userId
-  hokm?: Suit;
-  targetTricks?: number; // 1..7, default 7
-  deck: Card[];
-  hands: Map<string, Card[]>; // userId -> 0..13
-  state: 'waiting'|'choosing_hokm'|'playing'|'finished';
-  controlMsgId?: string; // message with join buttons
-  tableMsgId?: string; // live table embed message id
-  playerDMMsgIds?: Map<string, string>; // userId -> DM message id
-  // Phase 2
-  leaderIndex?: number; // index into order for current trick leader
-  turnIndex?: number; // index into order whose turn it is now
-  table?: { userId: string; card: Card }[];
-  leadSuit?: Suit | null;
-  tricksTeam1?: number;
-  tricksTeam2?: number;
-  tricksByPlayer?: Map<string, number>;
-  lastTrick?: { userId: string; card: Card }[];
-  // match-level (sets)
-  targetSets?: number; // how many won hands (sets) to win the match
-  setsTeam1?: number;
-  setsTeam2?: number;
-}
 // ===== Hokm Stats =====
 type HokmUserStat = {
   games: number;
@@ -908,6 +908,8 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
 
   if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
   await refreshAllDMs({ client: (interaction.client as Client) }, s);
+  // trigger bot auto-play if next turn is bot
+  await maybeBotAutoPlay(interaction.client as Client, s);
 }
 
 function handToString(hand: Card[]){ const bySuit: Record<Suit, Card[]> = {S:[],H:[],D:[],C:[]}; hand.forEach(c=>bySuit[c.s].push(c)); (Object.keys(bySuit) as Suit[]).forEach(s=>bySuit[s].sort((a,b)=>b.r-a.r));
@@ -1417,6 +1419,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       await refreshTableEmbed({ channel: interaction.channel }, s);
       // no per-player channel hand messages; users open hand ephemerally via table button
       await interaction.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]}. بازی شروع شد. برای دیدن دست خود، روی دکمه "دست من" زیر میز بزن.`, ephemeral: true });
+      // trigger bot auto-play if first turn is a bot
+      await maybeBotAutoPlay(interaction.client as Client, s);
       return;
     }
 
@@ -1527,6 +1531,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       // check trick resolve
       if (s.table.length === 4) {
         await resolveTrickAndContinue(interaction, s);
+      } else {
+        // trigger bot if next turn is bot
+        await maybeBotAutoPlay(interaction.client as Client, s);
       }
       return;
     }
@@ -1782,7 +1789,7 @@ client.on('messageCreate', async (msg: Message) => {
         new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
       );
       try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
-      await msg.reply({ content: added? `Bot به تیم 1 افزوده شد (${added.id.replace('BOT','bot')}).` : 'امکان افزودن Bot به تیم 1 وجود ندارد.' });
+      await msg.reply({ content: added? `Bot به تیم 1 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 1 وجود ندارد.' });
       return;
     }
     const targets = await resolveTargetIds(msg, content, '.a1');
@@ -1824,7 +1831,7 @@ client.on('messageCreate', async (msg: Message) => {
         new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
       );
       try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
-      await msg.reply({ content: added? `Bot به تیم 2 افزوده شد (${added.id.replace('BOT','bot')}).` : 'امکان افزودن Bot به تیم 2 وجود ندارد.' });
+      await msg.reply({ content: added? `Bot به تیم 2 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 2 وجود ندارد.' });
       return;
     }
     const targets = await resolveTargetIds(msg, content, '.a2');
