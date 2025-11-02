@@ -124,7 +124,7 @@ function addBotToTeam(s: HokmSession, team: 1|2): { id: string } | null {
 }
 
 function controlListText(s: HokmSession): string {
-  const name = (u: string)=> isVirtualBot(u) ? u.replace('BOT','Bot') : `<@${u}>`;
+  const name = (u: string)=> isVirtualBot(u) ? u.replace('BOT','bot') : `<@${u}>`;
   const t1 = s.team1.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || '—';
   const t2 = s.team2.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || '—';
   const sep = '●▬▬▬▬▬▬▬▬▬▬▬●';
@@ -1774,7 +1774,15 @@ client.on('messageCreate', async (msg: Message) => {
     const raw = content.slice(3).trim();
     if (/^bot\b/i.test(raw)) {
       const added = addBotToTeam(s, 1);
-      await msg.reply({ content: added? `Bot به تیم 1 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 1 وجود ندارد.' });
+      const contentText = controlListText(s);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
+      );
+      try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
+      await msg.reply({ content: added? `Bot به تیم 1 افزوده شد (${added.id.replace('BOT','bot')}).` : 'امکان افزودن Bot به تیم 1 وجود ندارد.' });
       return;
     }
     const targets = await resolveTargetIds(msg, content, '.a1');
@@ -1808,7 +1816,15 @@ client.on('messageCreate', async (msg: Message) => {
     const raw = content.slice(3).trim();
     if (/^bot\b/i.test(raw)) {
       const added = addBotToTeam(s, 2);
-      await msg.reply({ content: added? `Bot به تیم 2 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 2 وجود ندارد.' });
+      const contentText = controlListText(s);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
+      );
+      try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
+      await msg.reply({ content: added? `Bot به تیم 2 افزوده شد (${added.id.replace('BOT','bot')}).` : 'امکان افزودن Bot به تیم 2 وجود ندارد.' });
       return;
     }
     const targets = await resolveTargetIds(msg, content, '.a2');
