@@ -1691,6 +1691,20 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  // .tablepng — ارسال عکس میز برای دانلود/ادیت
+  if (isCmd('tablepng')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    try {
+      const buffer = await renderTableImage(s);
+      const attachment = new AttachmentBuilder(buffer, { name: 'hokm-table.png' });
+      await msg.reply({ files: [attachment] });
+    } catch {
+      await msg.reply({ content: 'خطا در ساخت تصویر میز.' });
+    }
+    return;
+  }
+
   // .miz — پاک‌سازی پیام میز فعلی و نمایش دوباره میز در چنل
   if (isCmd('miz')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
