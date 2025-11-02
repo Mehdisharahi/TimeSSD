@@ -880,14 +880,14 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
         const t1Set = s.setsTeam1 ?? 0; const t2Set = s.setsTeam2 ?? 0;
         const starter = s.ownerId ? `<@${s.ownerId}>` : '—';
         const lines: string[] = [];
-        lines.push(`✹Starter: ${starter}`);
-        lines.push(`✹Sets: [${s.targetSets ?? 1}]`);
-        lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-        lines.push(`✹Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ➤ [${t1Set}]`);
-        lines.push('════════════════════');
-        lines.push(`✹Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ➤ [${t2Set}]`);
-        lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-        lines.push(`✹Winner: Team ${t1Set>t2Set?1:2} ✔`);
+        lines.push(`### ✹Starter: ${starter}`);
+        lines.push(`### ✹Sets: [${s.targetSets ?? 1}]`);
+        lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+        lines.push(`### ✹Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ➤ [${t1Set}]`);
+        lines.push('### ════════════════════');
+        lines.push(`### ✹Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ➤ [${t2Set}]`);
+        lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+        lines.push(`### ✹Winner: Team ${t1Set>t2Set?1:2} ✔`);
         const emb = new EmbedBuilder().setDescription(lines.join('\n')).setColor(t1Set>t2Set?0x3b82f6:0xef4444);
         await gameChannel.send({ embeds: [emb] });
       }
@@ -1630,15 +1630,15 @@ client.on('messageCreate', async (msg: Message) => {
     if (arr.length === 0) { await msg.reply({ content: 'در این سرور بازی انجام نشده است.' }); return; }
     const server = msg.guild.name;
     const lines: string[] = [];
-    lines.push(`✵ ${server} WINNER LIST:`);
-    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push(`## ✵ ${server} WINNER LIST:`);
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
     let idx = 0;
     for (const [uid, st] of arr) {
       idx++;
       const rank = String(idx).padStart(2, '0');
-      lines.push(`➡ ${rank} - <@${uid}> ▶︎Games : ${st.games||0} 💫WIN: ${st.wins||0}`);
+      lines.push(`### ➡ ${rank} - <@${uid}> ▶︎Games : ${st.games||0} 💫WIN: ${st.wins||0}`);
     }
-    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
     const embedBest = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
     await msg.reply({ embeds: [embedBest] });
     return;
@@ -1665,13 +1665,13 @@ client.on('messageCreate', async (msg: Message) => {
     const favArray = sortedSuits.filter(su => (picks[su]||0) > 0).map(su => SUIT_EMOJI[su as Suit].replace('️',''));
     const favText = `[${favArray.join(',')}]`;
     const lines: string[] = [];
-    lines.push(`✵ <@${targetId}> states:`);
-    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-    lines.push(`▶︎Games : ${st.games||0}`);
-    lines.push(`💫WIN: ${st.wins||0}`);
-    lines.push(`❥︎Best Teamate: ${mateText}`);
-    lines.push(`🂡 Favorite hokm: ${favText}`);
-    lines.push('●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push(`## ✵ <@${targetId}> states:`);
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push(`### ▶︎Games : ${st.games||0}`);
+    lines.push(`### 💫WIN: ${st.wins||0}`);
+    lines.push(`### ❥︎Best Teamate: ${mateText}`);
+    lines.push(`### 🂡 Favorite hokm: ${favText}`);
+    lines.push('###●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
     const embedBaz = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
     await msg.reply({ embeds: [embedBaz] });
     return;
