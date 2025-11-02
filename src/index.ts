@@ -372,22 +372,20 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     ctx.fillText(setsTxt, startX + hokmWidth + gap, cy + 1);
   }
 
-  // positions for seats and cards (square layout, generous margins)
-  const margin = 220;
+  // seats: use exact SVG coordinates and radii for proportional match
   const seats = [
-    { x: width/2, y: margin },                // N
-    { x: width - margin, y: height/2 },       // E
-    { x: width/2, y: height - margin },       // S
-    { x: margin, y: height/2 },               // W
+    { x: 500,    y: 201.13, r: 75.75 }, // N (top)
+    { x: 861.04, y: 504.00, r: 74.22 }, // E (right)
+    { x: 500,    y: 845.00, r: 84.10 }, // S (bottom)
+    { x: 144.00, y: 500.00, r: 76.63 }, // W (left)
   ];
-  const avatarRadius = 64; // bigger avatars
   const nameFont = `${ssdFontAvailable? '22px '+ssdFontFamily : '22px Arial'}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   function drawSeatLabel(i: number, uid?: string, name?: string, avatar?: any, isTurn?: boolean, playerTricks?: number) {
     const seat = seats[i];
-    // avatar only (bigger)
-    const avR = avatarRadius;
+    // avatar radius from SVG seat circle to keep proportions
+    const avR = seat.r;
     const avX = seat.x;
     const avY = seat.y; // center on seat
     if (avatar) {
@@ -479,6 +477,13 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
       drawSuit(ctx, c.s, x + w/2, y + h/2 + 6, 28);
     }
   }
+  function drawCardScaled(x: number, y: number, c: Card, scale: number) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+    drawCard(0, 0, c);
+    ctx.restore();
+  }
   // draw seats and played cards
   for (let i=0;i<4;i++) {
     const uid = s.order[i];
@@ -489,32 +494,34 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     drawSeatLabel(i, uid, mv.tag, mv.img, isTurn, pTricks);
     const play = (s.table||[]).find(t=>t.userId===uid);
     if (play) {
-      // offset from seat for card placement
-      const cardPos = [
-        {x: seats[i].x - 55, y: seats[i].y + (avatarRadius + 70)},     // N: پایین آواتار
-        {x: seats[i].x - (avatarRadius + 170), y: seats[i].y - 75},    // E: چپ آواتار
-        {x: seats[i].x - 55, y: seats[i].y - (avatarRadius + 210)},    // S: بالای آواتار
-        {x: seats[i].x + (avatarRadius + 170), y: seats[i].y - 75},    // W: راست آواتار
-      ][i];
-      drawCard(cardPos.x, cardPos.y, play.card);
+      // fixed positions to match SVG
+      const playPos = [
+        { x: 445,    y: 303.58 }, // from top
+        { x: 590.29, y: 430.58 }, // from right
+        { x: 445,    y: 576.00 }, // from bottom
+        { x: 304.02, y: 430.58 }, // from left
+      ];
+      const pos = playPos[i];
+      drawCard(pos.x, pos.y, play.card);
     }
   }
 
   // Show previous trick (lastTrick) bottom-right
   if (s.lastTrick && s.lastTrick.length === 4) {
-    const baseX = width - 480; const baseY = height - 260;
+    // fixed mini-card positions and scale to match SVG
+    const mini = [
+      { x: 782.19, y: 693.43 },
+      { x: 706.12, y: 761.96 },
+      { x: 860.59, y: 761.96 },
+      { x: 782.19, y: 840.43 },
+    ];
+    const scale = 0.54;
     ctx.save();
-    ctx.globalAlpha = 0.95;
+    ctx.globalAlpha = 0.98;
     for (let i=0;i<4;i++) {
-      const dx = baseX + (i%2)*140;
-      const dy = baseY + Math.floor(i/2)*90;
-      drawCard(dx, dy, s.lastTrick[i].card);
+      drawCardScaled(mini[i].x, mini[i].y, s.lastTrick[i].card, scale);
     }
     ctx.restore();
-    ctx.fillStyle = 'rgba(0,0,0,0.4)';
-    ctx.font = `${ssdFontAvailable? '18px '+ssdFontFamily : '18px Arial'}`;
-    ctx.textAlign = 'right';
-    ctx.fillText('Last Trick', width - 24, baseY - 12);
   }
 
   // Team labels and scores with colors (bold, placed below top bar)
