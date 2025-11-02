@@ -944,10 +944,19 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
   let gameChannel: any = null;
   try { gameChannel = await (interaction.client as Client).channels.fetch(s.channelId).catch(()=>null); } catch {}
   if ((s.tricksTeam1||0) >= target || (s.tricksTeam2||0) >= target) {
-    // hand complete -> award a set
-    const winnerTeam = (s.tricksTeam1||0) >= target ? 't1' : 't2';
+    // hand complete -> award set(s) with koot rules
+    const t1Tr = s.tricksTeam1||0; const t2Tr = s.tricksTeam2||0;
+    const winnerTeam = t1Tr >= target ? 't1' : 't2';
+    const winnerTr = winnerTeam==='t1' ? t1Tr : t2Tr;
+    const loserTr = winnerTeam==='t1' ? t2Tr : t1Tr;
     s.setsTeam1 = s.setsTeam1 || 0; s.setsTeam2 = s.setsTeam2 || 0;
-    if (winnerTeam==='t1') s.setsTeam1++; else s.setsTeam2++;
+    let add = 1;
+    if (winnerTr === 7 && loserTr === 0) {
+      const hakimIsTeam1 = s.team1.includes(s.hakim!);
+      const winnerIsHakimTeam = (winnerTeam==='t1' && hakimIsTeam1) || (winnerTeam==='t2' && !hakimIsTeam1);
+      add = winnerIsHakimTeam ? 2 : 3; // koot=2, hakim-koot=3
+    }
+    if (winnerTeam==='t1') s.setsTeam1 += add; else s.setsTeam2 += add;
     const targetSets = s.targetSets ?? 1;
     if ((s.setsTeam1>=targetSets) || (s.setsTeam2>=targetSets)) {
       s.state = 'finished';
@@ -989,8 +998,11 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     s.deck = shuffle(makeDeck());
     s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
     s.hokm = undefined; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0; s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
-    // choose next hakim randomly (can be improved to winner-led)
-    s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
+    // choose next hakim: if current hakim's team won, keep; else clockwise next player
+    const hakimIdx = s.order.indexOf(s.hakim!);
+    const hakimIsTeam1 = s.team1.includes(s.hakim!);
+    const hakimTeamWon = (winnerTeam==='t1' && hakimIsTeam1) || (winnerTeam==='t2' && !hakimIsTeam1);
+    s.hakim = hakimTeamWon ? s.hakim! : s.order[(hakimIdx+1) % s.order.length];
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
     give(s.hakim, 5);
     s.state = 'choosing_hokm';
@@ -998,6 +1010,7 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     if (gameChannel) await gameChannel.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
     if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
     await refreshAllDMs({ client: (interaction.client as Client) }, s);
+    if (isVirtualBot(s.hakim)) { await botChooseHokmAndStart(interaction.client as Client, gameChannel, s); }
     return;
   }
 
