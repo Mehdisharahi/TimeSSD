@@ -553,94 +553,126 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
 
 async function renderTableSVG(s: HokmSession) {
   const width = 1000, height = 1000;
-  const cx = Math.floor(width/2);
-  const cy = Math.floor(height/2);
-  const avatarRadius = 64;
-  const seats = [
-    { x: cx, y: 220 },
-    { x: width - 220, y: cy },
-    { x: cx, y: height - 220 },
-    { x: 220, y: cy },
+  const cx = 500, cy = 500;
+  // positions and radii to match the user's Illustrator SVG
+  const seatSpec = [
+    { x: 500, y: 201.13, r: 75.75 }, // top
+    { x: 861.04, y: 504.00, r: 74.22 }, // right
+    { x: 500, y: 845.00, r: 84.10 }, // bottom
+    { x: 144.00, y: 500.00, r: 76.63 }, // left
   ];
-  const t1 = s.team1; const t2 = s.team2;
+  const teamColor = (uid?: string)=> uid && s.team1.includes(uid) ? '#3b82f6' : '#ef4444';
   const isTurn = (i:number)=> s.turnIndex!=null && s.order[s.turnIndex]===s.order[i];
   const suitTxt = (su: Suit)=> SUIT_EMOJI[su];
-  function esc(t: string){ return t.replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c] as string)); }
-  const getName = async (uid?: string)=>{
-    if (!uid) return '';
-    try { const mv = await getMemberVisual(s.guildId, uid); return mv.tag; } catch { return uid; }
-  };
-  const p0 = await getName(s.order[0]);
-  const p1 = await getName(s.order[1]);
-  const p2 = await getName(s.order[2]);
-  const p3 = await getName(s.order[3]);
-  const teamColor = (uid?: string)=> uid && t1.includes(uid) ? '#3b82f6' : '#ef4444';
-  function cardSVG(x:number,y:number,c:Card){
-    const w=110,h=155,r=12; const red = (c.s==='H'||c.s==='D');
+  function esc(t: string){ return t.replace(/[&<>\"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\\"":"&quot;"}[c] as string)); }
+  function cardGroup(id:string, x:number, y:number, c:Card, scale=1){
+    const w=110*scale,h=155*scale,r=12;
+    const red = (c.s==='H'||c.s==='D');
     return `
-    <g class="card">
-      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" ry="${r}" fill="#ffffff" stroke="#e5e7eb" stroke-width="2" />
-      <text x="${x+10}" y="${y+28}" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="30" fill="${red?'#dc2626':'#111827'}" text-anchor="start">${esc(rankStr(c.r))}</text>
-      <text x="${x+w/2}" y="${y+h/2+6}" font-family="'Noto Color Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', Arial" font-weight="700" font-size="56" fill="#111827" text-anchor="middle" dominant-baseline="middle">${esc(suitTxt(c.s))}</text>
+    <g id="${id}">
+      <rect class="st12" x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" ry="${r}"/>
+      <text class="st6" transform="translate(${x+10} ${y+28})">${esc(rankStr(c.r))}</text>
+      <text class="st7" transform="translate(${x+19.12*scale} ${y+83.5*scale})">${esc(suitTxt(c.s))}</text>
     </g>`;
   }
-  const topBarY = 10, topBarH = 54;
+  // header content
+  const hokmMark = s.hokm ? `${esc(suitTxt(s.hokm))}` : 'حکم؟';
   const setsTxt = `Sets: ${s.targetSets ?? 1}`;
-  let hokmPart = s.hokm ? `<text x="${cx-18}" y="${topBarY+topBarH/2+1}" text-anchor="middle" dominant-baseline="middle" font-family="'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji', Arial" font-weight="700" font-size="22" fill="#ffffff">${esc(suitTxt(s.hokm))}</text>` : `<text x="${cx-18}" y="${topBarY+topBarH/2+1}" text-anchor="middle" dominant-baseline="middle" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="22" fill="#ffffff">${esc('حکم؟')}</text>`;
-  const setsPart = `<text x="${cx+18}" y="${topBarY+topBarH/2+1}" text-anchor="start" dominant-baseline="middle" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="22" fill="#ffffff">${esc(setsTxt)}</text>`;
-  const team1Title = `<text x="28" y="96" text-anchor="start" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="44" fill="#3b82f6">Team 1</text>`;
-  const team2Title = `<text x="${width-28}" y="96" text-anchor="end" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="44" fill="#ef4444">Team 2</text>`;
-  function statsLine(side:'L'|'R'){
-    const y=146; const labelColor = side==='L'? '#3b82f6':'#ef4444'; const anchor = side==='L'?'start':'end';
-    const tricks = side==='L'? (s.tricksTeam1??0) : (s.tricksTeam2??0);
-    const sets = side==='L'? (s.setsTeam1??0) : (s.setsTeam2??0);
-    const x = side==='L'? 28 : width-28;
-    return `<text x="${x}" y="${y}" text-anchor="${anchor}" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="40">
-      <tspan fill="${labelColor}">Tricks: </tspan><tspan fill="#ffffff">${tricks}</tspan><tspan fill="${labelColor}">  Sets: </tspan><tspan fill="#ffffff">${sets}</tspan>
-    </text>`;
-  }
-  function seatGroup(i:number){
-    const uid = s.order[i]; const p = seats[i]; const tag = [p0,p1,p2,p3][i];
-    const ring = teamColor(uid);
-    const isT = isTurn(i);
-    return `
-    <g id="seat-${i}">
-      <circle cx="${p.x}" cy="${p.y}" r="${avatarRadius}" fill="#cccccc" />
-      <circle cx="${p.x}" cy="${p.y}" r="${avatarRadius+4}" fill="none" stroke="${ring}" stroke-width="5" />
-      ${isT?`<circle cx="${p.x}" cy="${p.y}" r="${avatarRadius+12}" fill="none" stroke="#facc15" stroke-width="4" />`:''}
-      <text x="${p.x}" y="${p.y+avatarRadius+22}" text-anchor="middle" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="18" fill="#ffffff">${esc(tag||'')}</text>
-    </g>`;
-  }
-  const table = s.table||[];
-  const plays = [
-    { pos:{x:cx-55,y:cy-140}, user:s.order[0] },
-    { pos:{x:cx+120,y:cy-55}, user:s.order[1] },
-    { pos:{x:cx-55,y:cy+30}, user:s.order[2] },
-    { pos:{x:cx-230,y:cy-55}, user:s.order[3] },
+  // table cards positions to match sample
+  const playPos = [
+    { x: 445, y: 303.58 }, // from top
+    { x: 590.29, y: 430.58 }, // from right
+    { x: 445, y: 576 }, // from bottom
+    { x: 304.02, y: 430.58 }, // from left
   ];
+  // last trick mini-cards bottom-right (if available)
+  const miniPos = [
+    { x: 782.19, y: 693.43 },
+    { x: 706.12, y: 761.96 },
+    { x: 860.59, y: 761.96 },
+    { x: 782.19, y: 840.43 },
+  ];
+  const table = s.table||[];
   let playsSvg = '';
   for (let i=0;i<4;i++){
     const pl = table.find(t=>t.userId===s.order[i]);
-    if (pl) playsSvg += cardSVG(plays[i].pos.x, plays[i].pos.y, pl.card);
+    if (pl) playsSvg += cardGroup(`plays${i===0?'':i}`, playPos[i].x, playPos[i].y, pl.card, 1);
   }
+  let lastSvg = '';
+  if (s.lastTrick && s.lastTrick.length) {
+    for (let i=0;i<Math.min(4, s.lastTrick.length); i++) {
+      const c = s.lastTrick[i].card;
+      lastSvg += cardGroup(`plays${i+4}`, miniPos[i].x, miniPos[i].y, c, 0.54);
+    }
+  }
+  // build SVG with the user's class names and styles
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
-  <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-    <g id="background">
-      <rect x="0" y="0" width="${width}" height="${height}" fill="#0f5132" />
-      <rect x="8" y="8" width="${width-16}" height="${height-16}" fill="none" stroke="#d1fae5" stroke-width="4" />
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 1000 1000">
+  <defs>
+    <style>
+      .st0,.st1,.st2,.st3,.st4,.st5,.st6,.st7,.st8,.st9,.st10,.st11{isolation:isolate}
+      .st0,.st1,.st5,.st6,.st8,.st9,.st10,.st11{font-family:${ssdFontAvailable?esc(ssdFontFamily):'Arial'}, Arial}
+      .st0,.st9{fill:#3b82f6}
+      .st0,.st10{font-size:44px}
+      .st1,.st3{font-size:22px}
+      .st1,.st3,.st5,.st12{fill:#fff}
+      .st2{font-size:30.22px}
+      .st2,.st3,.st7{font-family:ArialMT, Arial}
+      .st2,.st6,.st7,.st8{fill:#111827}
+      .st13{stroke:#d1fae5}
+      .st13,.st14,.st15,.st16{fill:none}
+      .st13,.st15{stroke-width:4px}
+      .st14{stroke:#3b82f6}
+      .st14,.st16{stroke-width:5px}
+      .st15{stroke:#facc15}
+      .st5,.st9,.st11{font-size:40px}
+      .st16{stroke:#ef4444}
+      .st6{font-size:30px}
+      .st7{font-size:56px}
+      .st17{fill:#ccc}
+      .st8{font-size:16.19px}
+      .st10,.st11{fill:#ef4444}
+      .st12{stroke:#e5e7eb;stroke-width:2px}
+      .st18{fill:#0f5132}
+    </style>
+  </defs>
+  <g id="background">
+    <rect class="st18" width="1000" height="1000"/>
+    <rect class="st13" x="8" y="8" width="984" height="984"/>
+  </g>
+  <g id="header">
+    <rect x="10" y="10" width="980" height="54"/>
+    <text class="st3" transform="translate(468.14 38)">${s.hokm?esc(suitTxt(s.hokm)):esc('حکم؟')}</text>
+    <text class="st1" transform="translate(518 38)">${esc(setsTxt)}</text>
+  </g>
+  <g id="teams">
+    <text class="st0" transform="translate(28 96)">Team 1</text>
+    <g class="st4">
+      <text class="st9" transform="translate(28 146)">Tricks: </text>
+      <text class="st5" transform="translate(166.76 146)">${String(s.tricksTeam1 ?? 0)}</text>
+      <text class="st9" transform="translate(191.48 146)" xml:space="preserve"> Sets: </text>
+      <text class="st5" transform="translate(299.28 146)">${String(s.setsTeam1 ?? 0)}</text>
     </g>
-    <g id="header">
-      <rect x="10" y="${topBarY}" width="${width-20}" height="${topBarH}" fill="rgba(0,0,0,0.25)" />
-      ${hokmPart}${setsPart}
+    <text class="st10" transform="translate(818.93 96)">Team 2</text>
+    <g class="st4">
+      <text class="st11" transform="translate(676.01 146)">Tricks: </text>
+      <text class="st5" transform="translate(814.76 146)">${String(s.tricksTeam2 ?? 0)}</text>
+      <text class="st11" transform="translate(839.48 146)" xml:space="preserve"> Sets: </text>
+      <text class="st5" transform="translate(947.28 146)">${String(s.setsTeam2 ?? 0)}</text>
     </g>
-    <g id="teams">
-      ${team1Title}${statsLine('L')}${team2Title}${statsLine('R')}
-    </g>
-    <g id="seats">
-      ${seatGroup(0)}${seatGroup(1)}${seatGroup(2)}${seatGroup(3)}
-    </g>
-    <g id="plays">${playsSvg}</g>
-  </svg>`;
+  </g>
+  ${seatSpec.map((p,i)=>{
+    const uid = s.order[i];
+    const ring = teamColor(uid);
+    const isT = isTurn(i);
+    const ringClass = ring==='#3b82f6'?'st14':'st16';
+    const base = `<circle class="st17" cx="${p.x}" cy="${p.y}" r="${p.r}"/>\n  <circle class="${ringClass}" cx="${p.x}" cy="${p.y}" r="${(p.r+4).toFixed(2)}"/>`;
+    const turn = isT? `\n  <circle class=\"st15\" cx=\"${p.x}\" cy=\"${p.y}\" r=\"${(p.r+14.36).toFixed(2)}\"/>` : '';
+    return base+turn;
+  }).join('\n')}
+  <g id="plays">${playsSvg}</g>
+  ${lastSvg ? `<g id="last_trick">${lastSvg}</g>` : ''}
+</svg>`;
   return Buffer.from(svg, 'utf8');
 }
 
