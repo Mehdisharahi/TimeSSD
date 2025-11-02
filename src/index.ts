@@ -611,20 +611,23 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     }
   }
 
-  // Show previous trick (lastTrick) bottom-right
+  // Show previous trick (lastTrick) bottom-right — align by seat positions
   if (s.lastTrick && s.lastTrick.length === 4) {
-    // fixed mini-card positions and scale to match SVG
-    const mini = [
-      { x: 782.19, y: 693.43 },
-      { x: 706.12, y: 761.96 },
-      { x: 860.59, y: 761.96 },
-      { x: 782.19, y: 840.43 },
+    // mini positions mapped to seats: [Top, Right, Bottom, Left]
+    const miniPos = [
+      { x: 782.19, y: 693.43 }, // Top
+      { x: 860.59, y: 761.96 }, // Right
+      { x: 782.19, y: 840.43 }, // Bottom
+      { x: 706.12, y: 761.96 }, // Left
     ];
     const scale = 0.54;
     ctx.save();
     ctx.globalAlpha = 0.98;
+    // for each seat index, find that user's card in lastTrick
     for (let i=0;i<4;i++) {
-      drawCardScaled(mini[i].x, mini[i].y, s.lastTrick[i].card, scale);
+      const uid = s.order[i];
+      const entry = s.lastTrick.find(t=>t.userId===uid);
+      if (entry) drawCardScaled(miniPos[i].x, miniPos[i].y, entry.card, scale);
     }
     ctx.restore();
   }
