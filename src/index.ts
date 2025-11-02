@@ -176,7 +176,17 @@ type HokmUserStat = {
   hokmPicks: Partial<Record<Suit, number>>;
 };
 const hokmStats: Map<string, Map<string, HokmUserStat>> = new Map();
-const hokmStatsFile = path.join(process.cwd(), 'data', 'hokm-stats.json');
+// Prefer env override, then Railway volume (/data), else project data/
+function getHokmDataDir() {
+  const envDir = process.env.HOKM_DATA_DIR;
+  if (envDir && envDir.trim().length) return envDir;
+  if (process.platform !== 'win32' && fs.existsSync('/data')) return '/data';
+  return path.join(process.cwd(), 'data');
+}
+const hokmDataDir = getHokmDataDir();
+const hokmStatsFile = path.join(hokmDataDir, 'hokm-stats.json');
+try { fs.mkdirSync(hokmDataDir, { recursive: true }); } catch {}
+console.log(`[HOKM] Stats path: ${hokmStatsFile}`);
 function loadHokmStats() {
   try {
     fs.mkdirSync(path.dirname(hokmStatsFile), { recursive: true });
@@ -881,11 +891,11 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
         const starter = s.ownerId ? `<@${s.ownerId}>` : '—';
         const lines: string[] = [];
         lines.push(`### ✹Starter: ${starter}`);
-        lines.push(`### ✹Sets: [${s.targetSets ?? 1}]`);
-        lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-        lines.push(`### ✹Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ➤ [${t1Set}]`);
-        lines.push('### ════════════════════');
-        lines.push(`### ✹Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ➤ [${t2Set}]`);
+        lines.push(`### ✹Sets: ${s.targetSets ?? 1}`);
+        lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●,');
+        lines.push(`### ✹Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ➤ # ${t1Set}`);
+        lines.push('════════════════════');
+        lines.push(`### ✹Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ➤ # ${t2Set}`);
         lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
         lines.push(`### ✹Winner: Team ${t1Set>t2Set?1:2} ✔`);
         const emb = new EmbedBuilder().setDescription(lines.join('\n')).setColor(t1Set>t2Set?0x3b82f6:0xef4444);
@@ -1671,7 +1681,7 @@ client.on('messageCreate', async (msg: Message) => {
     lines.push(`### 💫WIN: ${st.wins||0}`);
     lines.push(`### ❥︎Best Teamate: ${mateText}`);
     lines.push(`### 🂡 Favorite hokm: ${favText}`);
-    lines.push('###●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
     const embedBaz = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
     await msg.reply({ embeds: [embedBaz] });
     return;
