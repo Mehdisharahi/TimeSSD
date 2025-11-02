@@ -551,6 +551,99 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   return canvas.toBuffer('image/png');
 }
 
+async function renderTableSVG(s: HokmSession) {
+  const width = 1000, height = 1000;
+  const cx = Math.floor(width/2);
+  const cy = Math.floor(height/2);
+  const avatarRadius = 64;
+  const seats = [
+    { x: cx, y: 220 },
+    { x: width - 220, y: cy },
+    { x: cx, y: height - 220 },
+    { x: 220, y: cy },
+  ];
+  const t1 = s.team1; const t2 = s.team2;
+  const isTurn = (i:number)=> s.turnIndex!=null && s.order[s.turnIndex]===s.order[i];
+  const suitTxt = (su: Suit)=> SUIT_EMOJI[su];
+  function esc(t: string){ return t.replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c] as string)); }
+  const getName = async (uid?: string)=>{
+    if (!uid) return '';
+    try { const mv = await getMemberVisual(s.guildId, uid); return mv.tag; } catch { return uid; }
+  };
+  const p0 = await getName(s.order[0]);
+  const p1 = await getName(s.order[1]);
+  const p2 = await getName(s.order[2]);
+  const p3 = await getName(s.order[3]);
+  const teamColor = (uid?: string)=> uid && t1.includes(uid) ? '#3b82f6' : '#ef4444';
+  function cardSVG(x:number,y:number,c:Card){
+    const w=110,h=155,r=12; const red = (c.s==='H'||c.s==='D');
+    return `
+    <g class="card">
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" ry="${r}" fill="#ffffff" stroke="#e5e7eb" stroke-width="2" />
+      <text x="${x+10}" y="${y+28}" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="30" fill="${red?'#dc2626':'#111827'}" text-anchor="start">${esc(rankStr(c.r))}</text>
+      <text x="${x+w/2}" y="${y+h/2+6}" font-family="'Noto Color Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', Arial" font-weight="700" font-size="56" fill="#111827" text-anchor="middle" dominant-baseline="middle">${esc(suitTxt(c.s))}</text>
+    </g>`;
+  }
+  const topBarY = 10, topBarH = 54;
+  const setsTxt = `Sets: ${s.targetSets ?? 1}`;
+  let hokmPart = s.hokm ? `<text x="${cx-18}" y="${topBarY+topBarH/2+1}" text-anchor="middle" dominant-baseline="middle" font-family="'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji', Arial" font-weight="700" font-size="22" fill="#ffffff">${esc(suitTxt(s.hokm))}</text>` : `<text x="${cx-18}" y="${topBarY+topBarH/2+1}" text-anchor="middle" dominant-baseline="middle" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="22" fill="#ffffff">${esc('حکم؟')}</text>`;
+  const setsPart = `<text x="${cx+18}" y="${topBarY+topBarH/2+1}" text-anchor="start" dominant-baseline="middle" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="22" fill="#ffffff">${esc(setsTxt)}</text>`;
+  const team1Title = `<text x="28" y="96" text-anchor="start" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="44" fill="#3b82f6">Team 1</text>`;
+  const team2Title = `<text x="${width-28}" y="96" text-anchor="end" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="44" fill="#ef4444">Team 2</text>`;
+  function statsLine(side:'L'|'R'){
+    const y=146; const labelColor = side==='L'? '#3b82f6':'#ef4444'; const anchor = side==='L'?'start':'end';
+    const tricks = side==='L'? (s.tricksTeam1??0) : (s.tricksTeam2??0);
+    const sets = side==='L'? (s.setsTeam1??0) : (s.setsTeam2??0);
+    const x = side==='L'? 28 : width-28;
+    return `<text x="${x}" y="${y}" text-anchor="${anchor}" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="40">
+      <tspan fill="${labelColor}">Tricks: </tspan><tspan fill="#ffffff">${tricks}</tspan><tspan fill="${labelColor}">  Sets: </tspan><tspan fill="#ffffff">${sets}</tspan>
+    </text>`;
+  }
+  function seatGroup(i:number){
+    const uid = s.order[i]; const p = seats[i]; const tag = [p0,p1,p2,p3][i];
+    const ring = teamColor(uid);
+    const isT = isTurn(i);
+    return `
+    <g id="seat-${i}">
+      <circle cx="${p.x}" cy="${p.y}" r="${avatarRadius}" fill="#cccccc" />
+      <circle cx="${p.x}" cy="${p.y}" r="${avatarRadius+4}" fill="none" stroke="${ring}" stroke-width="5" />
+      ${isT?`<circle cx="${p.x}" cy="${p.y}" r="${avatarRadius+12}" fill="none" stroke="#facc15" stroke-width="4" />`:''}
+      <text x="${p.x}" y="${p.y+avatarRadius+22}" text-anchor="middle" font-family="${ssdFontAvailable?esc(ssdFontFamily):'Arial'}" font-weight="700" font-size="18" fill="#ffffff">${esc(tag||'')}</text>
+    </g>`;
+  }
+  const table = s.table||[];
+  const plays = [
+    { pos:{x:cx-55,y:cy-140}, user:s.order[0] },
+    { pos:{x:cx+120,y:cy-55}, user:s.order[1] },
+    { pos:{x:cx-55,y:cy+30}, user:s.order[2] },
+    { pos:{x:cx-230,y:cy-55}, user:s.order[3] },
+  ];
+  let playsSvg = '';
+  for (let i=0;i<4;i++){
+    const pl = table.find(t=>t.userId===s.order[i]);
+    if (pl) playsSvg += cardSVG(plays[i].pos.x, plays[i].pos.y, pl.card);
+  }
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+  <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <g id="background">
+      <rect x="0" y="0" width="${width}" height="${height}" fill="#0f5132" />
+      <rect x="8" y="8" width="${width-16}" height="${height-16}" fill="none" stroke="#d1fae5" stroke-width="4" />
+    </g>
+    <g id="header">
+      <rect x="10" y="${topBarY}" width="${width-20}" height="${topBarH}" fill="rgba(0,0,0,0.25)" />
+      ${hokmPart}${setsPart}
+    </g>
+    <g id="teams">
+      ${team1Title}${statsLine('L')}${team2Title}${statsLine('R')}
+    </g>
+    <g id="seats">
+      ${seatGroup(0)}${seatGroup(1)}${seatGroup(2)}${seatGroup(3)}
+    </g>
+    <g id="plays">${playsSvg}</g>
+  </svg>`;
+  return Buffer.from(svg, 'utf8');
+}
+
 async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
   const img = await renderTableImage(s);
   const attachment = new AttachmentBuilder(img, { name: 'table.png' });
@@ -1701,6 +1794,20 @@ client.on('messageCreate', async (msg: Message) => {
       await msg.reply({ files: [attachment] });
     } catch {
       await msg.reply({ content: 'خطا در ساخت تصویر میز.' });
+    }
+    return;
+  }
+
+  // .tablesvg — خروجی وکتور کامل میز با گروه‌بندی المان‌ها
+  if (isCmd('tablesvg')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    try {
+      const svgBuf = await renderTableSVG(s);
+      const attachment = new AttachmentBuilder(svgBuf, { name: 'hokm-table.svg' });
+      await msg.reply({ files: [attachment] });
+    } catch {
+      await msg.reply({ content: 'خطا در ساخت SVG میز.' });
     }
     return;
   }
