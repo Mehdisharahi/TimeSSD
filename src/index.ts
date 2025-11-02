@@ -23,6 +23,47 @@ try {
       emojiFontAvailable = true;
       break;
     }
+
+// Bot hakim chooses hokm (trump) based on the initial 5-card hand.
+function botPickHokm(s: HokmSession): Suit {
+  const hand = s.hands.get(s.hakim!) || [];
+  const score: Record<Suit, number> = { S:0, H:0, D:0, C:0 };
+  const count: Record<Suit, number> = { S:0, H:0, D:0, C:0 };
+  for (const c of hand) {
+    count[c.s] += 1;
+    const rw = c.r>=14?5 : c.r===13?4 : c.r===12?3 : c.r===11?2 : c.r/14;
+    score[c.s] += rw;
+  }
+  const suits: Suit[] = ['S','H','D','C'];
+  suits.sort((a,b)=> count[b]-count[a] || score[b]-score[a]);
+  return suits[0];
+}
+
+async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSession) {
+  if (!s.hakim) return;
+  const suit = botPickHokm(s);
+  s.hokm = suit;
+  try { addHokmPick(s.guildId, s.hakim!, suit); saveHokmStats(); } catch {}
+  const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
+  for (const uid of s.order) {
+    const need = 13 - (s.hands.get(uid)?.length || 0);
+    give(uid, need);
+  }
+  s.state = 'playing';
+  s.leaderIndex = s.order.indexOf(s.hakim); if (s.leaderIndex < 0) s.leaderIndex = 0;
+  s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
+  s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
+  const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
+    .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>`);
+  try {
+    if (s.tableMsgId && channel) {
+      const m = await channel.messages.fetch(s.tableMsgId).catch(()=>null);
+      if (m) await m.edit({ embeds: [tableEmbed] });
+    }
+  } catch {}
+  if (channel) await refreshTableEmbed({ channel }, s);
+  await maybeBotAutoPlay(client, s);
+}
   }
 } catch {}
 
@@ -166,6 +207,47 @@ async function maybeBotAutoPlay(client: Client, s: HokmSession) {
       }
     } catch {}
   }, 500);
+}
+
+// Bot hakim chooses hokm (trump) based on the initial 5-card hand).
+function botPickHokm(s: HokmSession): Suit {
+  const hand = s.hands.get(s.hakim!) || [];
+  const score: Record<Suit, number> = { S:0, H:0, D:0, C:0 };
+  const count: Record<Suit, number> = { S:0, H:0, D:0, C:0 };
+  for (const c of hand) {
+    count[c.s] += 1;
+    const rw = c.r>=14?5 : c.r===13?4 : c.r===12?3 : c.r===11?2 : c.r/14;
+    score[c.s] += rw;
+  }
+  const suits: Suit[] = ['S','H','D','C'];
+  suits.sort((a,b)=> count[b]-count[a] || score[b]-score[a]);
+  return suits[0];
+}
+
+async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSession) {
+  if (!s.hakim) return;
+  const suit = botPickHokm(s);
+  s.hokm = suit;
+  try { addHokmPick(s.guildId, s.hakim!, suit); saveHokmStats(); } catch {}
+  const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
+  for (const uid of s.order) {
+    const need = 13 - (s.hands.get(uid)?.length || 0);
+    give(uid, need);
+  }
+  s.state = 'playing';
+  s.leaderIndex = s.order.indexOf(s.hakim); if (s.leaderIndex < 0) s.leaderIndex = 0;
+  s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
+  s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
+  const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
+    .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>`);
+  try {
+    if (s.tableMsgId && channel?.messages?.fetch) {
+      const m = await channel.messages.fetch(s.tableMsgId).catch(()=>null);
+      if (m) await m.edit({ embeds: [tableEmbed] });
+    }
+  } catch {}
+  if (channel) await refreshTableEmbed({ channel }, s);
+  await maybeBotAutoPlay(client, s);
 }
 
 // ===== Hokm Stats =====
@@ -1395,6 +1477,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       try { const chAny = interaction.channel as any; if (chAny && chAny.send) { await chAny.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` }); } } catch {}
       if (interaction.guild) await refreshTableEmbed({ channel: interaction.channel as any }, s);
       await refreshAllDMs({ client: interaction.client }, s);
+      if (isVirtualBot(s.hakim)) { await botChooseHokmAndStart(interaction.client as Client, interaction.channel as any, s); }
       return;
     }
 
