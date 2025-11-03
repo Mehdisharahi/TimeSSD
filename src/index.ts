@@ -532,16 +532,23 @@ async function refreshAllDMs(ctx: { client: Client }, s: HokmSession) {
 
 function buildHandRowsSimple(hand: Card[], userId: string, gId: string, cId: string, hokm?: Suit): ActionRowBuilder<ButtonBuilder>[] {
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
-  const items = sortHand(hand, hokm);
-  for (let r=0; r<3; r++) {
-    const slice = items.slice(r*5, r*5+5);
-    if (!slice.length) break;
+  // Group by suit
+  const bySuit: Record<Suit, Card[]> = { S: [], H: [], D: [], C: [] };
+  hand.forEach(c => bySuit[c.s].push(c));
+  // Sort each suit descending
+  (Object.keys(bySuit) as Suit[]).forEach(s => {
+    bySuit[s].sort((a, b) => b.r - a.r);
+  });
+  // Create one row per suit with cards
+  (['S', 'H', 'D', 'C'] as Suit[]).forEach(s => {
+    const cards = bySuit[s];
+    if (cards.length === 0) return;
     const row = new ActionRowBuilder<ButtonBuilder>();
-    for (const c of slice) {
+    for (const c of cards) {
       row.addComponents(new ButtonBuilder().setCustomId(`hokm-play-${gId}-${cId}-${userId}-${c.s}-${c.r}`).setLabel(cardStr(c)).setStyle(ButtonStyle.Secondary));
     }
     rows.push(row);
-  }
+  });
   return rows;
 }
 
