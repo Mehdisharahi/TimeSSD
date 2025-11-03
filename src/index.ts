@@ -1,24 +1,12 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember, AttachmentBuilder } from 'discord.js';
-import { createCanvas, GlobalFonts, loadImage } from '@napi-rs/canvas';
+import { createCanvas, GlobalFonts, loadImage, Canvas } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
 import { PgFriendStore } from './storage/pgFriendStore';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
 
 const token = process.env.BOT_TOKEN;
-
-// Persian font registration
-try {
-  const persianFontPath = path.join(process.cwd(), 'assets', 'fonts', 'Sarbaz.ttf');
-  if (fs.existsSync(persianFontPath)) {
-    const buf = fs.readFileSync(persianFontPath);
-    GlobalFonts.register(buf, 'Sarbaz');
-    console.log('[Font] Persian font (Sarbaz) registered successfully');
-  }
-} catch (e) {
-  console.warn('[Font] Failed to register Persian font:', e);
-}
 
 // Emoji font registration (optional)
 let emojiFontAvailable = false;
@@ -35,21 +23,66 @@ try {
       emojiFontAvailable = true;
       break;
     }
+
+// Bot hakim chooses hokm (trump) based on the initial 5-card hand.
+function botPickHokm(s: HokmSession): Suit {
+  const hand = s.hands.get(s.hakim!) || [];
+  const score: Record<Suit, number> = { S:0, H:0, D:0, C:0 };
+  const count: Record<Suit, number> = { S:0, H:0, D:0, C:0 };
+  for (const c of hand) {
+    count[c.s] += 1;
+    const rw = c.r>=14?5 : c.r===13?4 : c.r===12?3 : c.r===11?2 : c.r/14;
+    score[c.s] += rw;
+  }
+  const suits: Suit[] = ['S','H','D','C'];
+  suits.sort((a,b)=> count[b]-count[a] || score[b]-score[a]);
+  return suits[0];
+}
+
+async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSession) {
+  if (!s.hakim) return;
+  const suit = botPickHokm(s);
+  s.hokm = suit;
+  try { addHokmPick(s.guildId, s.hakim!, suit); saveHokmStats(); } catch {}
+  const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
+  for (const uid of s.order) {
+    const need = 13 - (s.hands.get(uid)?.length || 0);
+    give(uid, need);
+  }
+  s.state = 'playing';
+  s.leaderIndex = s.order.indexOf(s.hakim); if (s.leaderIndex < 0) s.leaderIndex = 0;
+  s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
+  s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
+  const tableEmbed = new EmbedBuilder().setTitle('Hokm ? ??? ????')
+    .setDescription(`???: ${SUIT_EMOJI[s.hokm]} ? ????: <@${s.order[s.turnIndex]}>`);
+  try {
+    if (s.tableMsgId && channel) {
+      const m = await channel.messages.fetch(s.tableMsgId).catch(()=>null);
+      if (m) await m.edit({ embeds: [tableEmbed] });
+    }
+  } catch {}
+  if (channel) await refreshTableEmbed({ channel }, s);
+  await maybeBotAutoPlay(client, s);
+}
   }
 } catch {}
 
 // ===== Hokm Phase 1 state =====
 type Suit = 'S' | 'H' | 'D' | 'C';
-const SUIT_EMOJI: Record<Suit, string> = { S: 'â ď¸', H: 'âĽď¸', D: 'âŚď¸', C: 'âŁď¸' };
+const SUIT_EMOJI: Record<Suit, string> = { S: '??', H: '??', D: '??', C: '??' };
 const EMOJI_TO_SUIT: Record<string, Suit> = {
-  'â ': 'S','â ď¸': 'S',':spades:': 'S','đĄ': 'S',
-  'âĽ': 'H','âĽď¸': 'H',':hearts:': 'H',
-  'âŚ': 'D','âŚď¸': 'D',':diamonds:': 'D',
-  'âŁ': 'C','âŁď¸': 'C',':clubs:': 'C',
-  'ŮžŰÚŠ': 'S','ŘŻŮ': 'H','ŘŽŘ´ŘŞ': 'D','ÚŻŰŘ´ŮŰŘ˛': 'C','ÚŻŘ´ŮŰŘ˛': 'C'
+  '?': 'S','??': 'S',':spades:': 'S','??': 'S',
+  '?': 'H','??': 'H',':hearts:': 'H',
+  '?': 'D','??': 'D',':diamonds:': 'D',
+  '?': 'C','??': 'C',':clubs:': 'C',
+  '???': 'S','??': 'H','???': 'D','??????': 'C','?????': 'C'
 };
 const RANKS = [2,3,4,5,6,7,8,9,10,11,12,13,14]; // 11:J 12:Q 13:K 14:A
 interface Card { s: Suit; r: number }
+
+// Cached prerendered card bitmaps to speed up table rendering
+const cardBitmapCache = new Map<string, Canvas>();
+function cardKey(c: Card, scale: number) { return `${c.s}-${c.r}-${scale}`; }
 
 // ===== Virtual Bots =====
 function isVirtualBot(id: string) { return /^BOT[1-3]$/.test(id); }
@@ -69,15 +102,15 @@ function addBotToTeam(s: HokmSession, team: 1|2): { id: string } | null {
 
 function controlListText(s: HokmSession): string {
   const name = (u: string)=> isVirtualBot(u) ? u.replace('BOT','Bot') : `<@${u}>`;
-  const t1 = s.team1.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || 'â';
-  const t2 = s.team2.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || 'â';
-  const sep = 'ââŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâ';
+  const t1 = s.team1.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || '?';
+  const t2 = s.team2.map((u,i)=>`${i+1}- ${name(u)}`).join('\n') || '?';
+  const sep = '?????????????';
   return [
     sep,
-    'ŘŞŰŮ 1:',
+    'Team 1:',
     t1,
     sep,
-    'ŘŞŰŮ 2:',
+    'Team 2:',
     t2,
     sep,
   ].join('\n');
@@ -98,7 +131,7 @@ interface HokmSession {
   controlMsgId?: string; // message with join buttons
   tableMsgId?: string; // live table embed message id
   playerDMMsgIds?: Map<string, string>; // userId -> DM message id
-  hokmChooseMessageId?: string; // message asking hakim to choose hokm
+  newSetAnnounceMsgId?: string; // "ŘłŘŞ ŘŹŘŻŰŘŻ Ř˘ŘşŘ§Ř˛ Ř´ŘŻ" message to delete after hokm chosen
   // Phase 2
   leaderIndex?: number; // index into order for current trick leader
   turnIndex?: number; // index into order whose turn it is now
@@ -113,6 +146,217 @@ interface HokmSession {
   setsTeam1?: number;
   setsTeam2?: number;
 }
+
+// ===== Bot Auto-Play =====
+function legalMovesFor(hand: Card[], s: HokmSession): Card[] {
+  const lead = s.leadSuit;
+  if (!lead) return hand.slice();
+  const follow = hand.filter(c=>c.s===lead);
+  return follow.length? follow : hand.slice();
+}
+function chooseBotCard(hand: Card[], s: HokmSession): Card {
+  const trump = s.hokm!; const table = s.table || []; const legal = legalMovesFor(hand, s);
+  const botId = s.order[s.turnIndex!]; const pos = table.length;
+  const botTeam = s.team1.includes(botId)?1:2;
+  const beatCard = (a: Card, b: Card)=>{ if(a.s===b.s) return a.r>b.r; if(a.s===trump&&b.s!==trump) return true; return false; };
+  const minCard = (arr: Card[])=> [...arr].sort((a,b)=>a.r-b.r)[0];
+  const maxCard = (arr: Card[])=> [...arr].sort((a,b)=>b.r-a.r)[0];
+  const countBySuit = (h: Card[])=>{ const m=new Map<Suit,number>(); h.forEach(c=>m.set(c.s,(m.get(c.s)||0)+1)); return m; };
+  const minNonTrump = (h: Card[])=>{ const nt=h.filter(c=>c.s!==trump); if(!nt.length) return minCard(h); const cnt=countBySuit(nt); return minCard([...nt].sort((a,b)=>(cnt.get(a.s)||0)-(cnt.get(b.s)||0)||a.r-b.r)); };
+  const teammate = (tableIdx: number)=>{ const seatIdx=(s.leaderIndex!+tableIdx)%4; const uid=s.order[seatIdx]; return (s.team1.includes(uid)?1:2)===botTeam; };
+  const getWinner = ()=>{ if(!table.length) return -1; let w=0,wc=table[0].card; for(let i=1;i<table.length;i++){ if(beatCard(table[i].card,wc)){ w=i; wc=table[i].card; }} return w; };
+  const isPlayed = (su: Suit, rk: number)=> s.lastTrick?.some(t=>t.card.s===su&&t.card.r===rk) || table.some(t=>t.card.s===su&&t.card.r===rk);
+  const isAcePlayed = (su: Suit)=> isPlayed(su,14);
+  const isKingPlayed = (su: Suit)=> isPlayed(su,13);
+  
+  if (pos===0) {
+    const aces = legal.filter(c=>c.r===14&&c.s!==trump);
+    if (aces.length) return minCard(aces);
+    const kings = legal.filter(c=>c.r===13&&c.s!==trump&&isAcePlayed(c.s));
+    if (kings.length) return minCard(kings);
+    const queens = legal.filter(c=>c.r===12&&c.s!==trump&&isAcePlayed(c.s)&&isKingPlayed(c.s));
+    if (queens.length) return minCard(queens);
+    return minNonTrump(legal);
+  }
+  
+  const lead = s.leadSuit!; const follow = legal.filter(c=>c.s===lead); const canFollow = follow.length>0;
+  
+  if (pos===3) {
+    const w = getWinner(); const mateWins = teammate(w);
+    if (canFollow) {
+      if (mateWins) return minCard(follow);
+      const wc = table[w].card;
+      const winners = follow.filter(c=>beatCard(c,wc));
+      if (winners.length) return minCard(winners);
+      return minCard(follow);
+    } else {
+      if (mateWins) return minNonTrump(legal);
+      const trumps = legal.filter(c=>c.s===trump);
+      if (!trumps.length) return minNonTrump(legal);
+      const wc = table[w].card;
+      if (wc.s===trump) {
+        const better = trumps.filter(c=>c.r>wc.r);
+        return better.length? minCard(better) : minNonTrump(legal);
+      }
+      return minCard(trumps);
+    }
+  }
+  
+  if (pos===1) {
+    const c0 = table[0].card;
+    if (canFollow) {
+      if (c0.r===14) return minCard(follow);
+      if (c0.r===13) {
+        const ace = follow.find(c=>c.r===14);
+        return ace || minCard(follow);
+      }
+      const ace = follow.find(c=>c.r===14);
+      if (ace) return ace;
+      const king = follow.find(c=>c.r===13);
+      if (king && (c0.r===12 || isAcePlayed(lead))) return king;
+      const better = follow.filter(c=>c.r>c0.r);
+      if (better.length) {
+        const noK = better.filter(c=>c.r!==13);
+        return noK.length? maxCard(noK) : minCard(follow);
+      }
+      return minCard(follow);
+    } else {
+      const trumps = legal.filter(c=>c.s===trump);
+      return trumps.length? minCard(trumps) : minNonTrump(legal);
+    }
+  }
+  
+  if (pos===2) {
+    const c0=table[0].card, c1=table[1].card;
+    const mate0=teammate(0);
+    const mateCard = mate0?c0:c1;
+    const oppCard = mate0?c1:c0;
+    const w = getWinner(); const mateWins = teammate(w);
+    
+    if (canFollow) {
+      if (mateCard.r===14) return minCard(follow);
+      if (mateCard.r===13 && mateWins) return minCard(follow);
+      if (mateWins) {
+        // ŮŮŘˇ Ř§ÚŻŘą ŰŘ§Řą A ŰŘ§ K ŰŘ§ Q (12+) Ř¨Ř§Ř˛Ű ÚŠŘąŘŻŮ Ř¨ŘąŘ´ ŮŘ˛Ů
+        if (mateCard.r >= 12) return minCard(follow);
+        // ŘŻŘą ŘşŰŘą Ř§ŰŮ ŘľŮŘąŘŞ Ř¨ŘąŘ´ Ř¨Ř˛Ů Ř§ÚŻŘą ŮŰâŘŞŮŮŰ
+        const wc = table[w].card;
+        const better = follow.filter(c=>beatCard(c,wc));
+        if (better.length) {
+          const noK = better.filter(c=>c.r!==13);
+          return noK.length? maxCard(noK) : minCard(follow);
+        }
+        return minCard(follow);
+      }
+      const ace = follow.find(c=>c.r===14);
+      if (ace) return ace;
+      const king = follow.find(c=>c.r===13);
+      const wc = table[w].card;
+      const better = follow.filter(c=>beatCard(c,wc));
+      if (better.length) {
+        if (king && isAcePlayed(lead)) return king;
+        const noK = better.filter(c=>c.r!==13);
+        return noK.length? maxCard(noK) : minCard(follow);
+      }
+      return minCard(follow);
+    } else {
+      if (mateCard.r===14 || (mateCard.r===13&&isAcePlayed(lead))) return minNonTrump(legal);
+      if (mateWins && oppCard.s!==trump) return minNonTrump(legal);
+      const trumps = legal.filter(c=>c.s===trump);
+      if (!trumps.length) return minNonTrump(legal);
+      if (oppCard.s===trump) {
+        const better = trumps.filter(c=>c.r>oppCard.r);
+        return better.length? minCard(better) : minNonTrump(legal);
+      }
+      if (mateCard.r>=12 && !isAcePlayed(lead)) return minNonTrump(legal);
+      return minCard(trumps);
+    }
+  }
+  
+  return minCard(legal);
+}
+async function maybeBotAutoPlay(client: Client, s: HokmSession) {
+  if (s.state!=='playing' || s.turnIndex==null) return;
+  const uid = s.order[s.turnIndex];
+  if (!isVirtualBot(uid)) return;
+  const hand = s.hands.get(uid) || [];
+  if (hand.length===0) return;
+  // schedule a short delay
+  setTimeout(async () => {
+    try {
+      // compute legal card
+      const card = chooseBotCard(hand, s);
+      // play
+      const idx = hand.findIndex(c=>c.s===card.s && c.r===card.r);
+      if (idx<0) return;
+      hand.splice(idx,1); s.hands.set(uid, hand);
+      s.table = s.table || []; s.table.push({ userId: uid, card });
+      if (!s.leadSuit) s.leadSuit = card.s;
+      const nextTurn = ((s.turnIndex ?? 0) + 1) % s.order.length;
+      s.turnIndex = nextTurn;
+      // render table
+      let ch: any = null; try { ch = await client.channels.fetch(s.channelId).catch(()=>null); } catch {}
+      if (ch) await refreshTableEmbed({ channel: ch }, s);
+      // resolve trick if needed
+      if (s.table.length === 4) {
+        // fabricate a minimal Interaction-like for resolveTrickAndContinue
+        await resolveTrickAndContinue({ client } as any, s);
+      } else {
+        await maybeBotAutoPlay(client, s);
+      }
+    } catch {}
+  }, 500);
+}
+
+// Bot hakim chooses hokm (trump) based on the initial 5-card hand).
+function botPickHokm(s: HokmSession): Suit {
+  const hand = s.hands.get(s.hakim!) || [];
+  const score: Record<Suit, number> = { S:0, H:0, D:0, C:0 };
+  const count: Record<Suit, number> = { S:0, H:0, D:0, C:0 };
+  for (const c of hand) {
+    count[c.s] += 1;
+    const rw = c.r>=14?5 : c.r===13?4 : c.r===12?3 : c.r===11?2 : c.r/14;
+    score[c.s] += rw;
+  }
+  const suits: Suit[] = ['S','H','D','C'];
+  suits.sort((a,b)=> count[b]-count[a] || score[b]-score[a]);
+  return suits[0];
+}
+
+async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSession) {
+  if (!s.hakim) return;
+  const suit = botPickHokm(s);
+  s.hokm = suit;
+  try { addHokmPick(s.guildId, s.hakim!, suit); saveHokmStats(); } catch {}
+  const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
+  for (const uid of s.order) {
+    const need = 13 - (s.hands.get(uid)?.length || 0);
+    give(uid, need);
+  }
+  s.state = 'playing';
+  s.leaderIndex = s.order.indexOf(s.hakim); if (s.leaderIndex < 0) s.leaderIndex = 0;
+  s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
+  s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
+  const tableEmbed = new EmbedBuilder().setTitle('Hokm ? ??? ????')
+    .setDescription(`???: ${SUIT_EMOJI[s.hokm]} ? ????: <@${s.order[s.turnIndex]}>`);
+  try {
+    if (s.tableMsgId && channel?.messages?.fetch) {
+      const m = await channel.messages.fetch(s.tableMsgId).catch(()=>null);
+      if (m) await m.edit({ embeds: [tableEmbed] });
+    }
+  } catch {}
+  if (channel) await refreshTableEmbed({ channel }, s);
+  // Ř­Ř°Ů ŮžŰŘ§Ů "ŘłŘŞ ŘŹŘŻŰŘŻ Ř˘ŘşŘ§Ř˛ Ř´ŘŻ"
+  if (s.newSetAnnounceMsgId && channel) {
+    try {
+      const announceMsg = await channel.messages.fetch(s.newSetAnnounceMsgId).catch(()=>null);
+      if (announceMsg) await announceMsg.delete().catch(()=>{});
+      s.newSetAnnounceMsgId = undefined;
+    } catch {}
+  }
+  await maybeBotAutoPlay(client, s);
+}
+
 // ===== Hokm Stats =====
 type HokmUserStat = {
   games: number;
@@ -121,7 +365,17 @@ type HokmUserStat = {
   hokmPicks: Partial<Record<Suit, number>>;
 };
 const hokmStats: Map<string, Map<string, HokmUserStat>> = new Map();
-const hokmStatsFile = path.join(process.cwd(), 'data', 'hokm-stats.json');
+// Prefer env override, then Railway volume (/data), else project data/
+function getHokmDataDir() {
+  const envDir = process.env.HOKM_DATA_DIR;
+  if (envDir && envDir.trim().length) return envDir;
+  if (process.platform !== 'win32' && fs.existsSync('/data')) return '/data';
+  return path.join(process.cwd(), 'data');
+}
+const hokmDataDir = getHokmDataDir();
+const hokmStatsFile = path.join(hokmDataDir, 'hokm-stats.json');
+try { fs.mkdirSync(hokmDataDir, { recursive: true }); } catch {}
+console.log(`[HOKM] Stats path: ${hokmStatsFile}`);
 function loadHokmStats() {
   try {
     fs.mkdirSync(path.dirname(hokmStatsFile), { recursive: true });
@@ -166,10 +420,10 @@ function parseCardToken(tok: string): Card | null {
   const t = tok.trim().toLowerCase();
   // suit detection
   let s: Suit | null = null;
-  if (t.includes('â ') || t.includes(':spades:') || t.endsWith('s')) s = 'S';
-  else if (t.includes('âĽ') || t.includes(':hearts:') || t.endsWith('h')) s = 'H';
-  else if (t.includes('âŚ') || t.includes(':diamonds:') || t.endsWith('d')) s = 'D';
-  else if (t.includes('âŁ') || t.includes(':clubs:') || t.endsWith('c')) s = 'C';
+  if (t.includes('?') || t.includes(':spades:') || t.endsWith('s')) s = 'S';
+  else if (t.includes('?') || t.includes(':hearts:') || t.endsWith('h')) s = 'H';
+  else if (t.includes('?') || t.includes(':diamonds:') || t.endsWith('d')) s = 'D';
+  else if (t.includes('?') || t.includes(':clubs:') || t.endsWith('c')) s = 'C';
   if (!s) return null;
   // rank
   const rt = t.replace(/[^a-z0-9]/g,'');
@@ -188,13 +442,32 @@ function parseCardToken(tok: string): Card | null {
 function sameCard(a: Card, b: Card){ return a.s===b.s && a.r===b.r; }
 
 // ====== UI helpers for interactive Hokm ======
-function sortHand(hand: Card[]): Card[] { return [...hand].sort((a,b)=> a.s===b.s ? b.r-a.r : ['S','H','D','C'].indexOf(a.s)-['S','H','D','C'].indexOf(b.s)); }
-function suitName(s: Suit){ return s==='S'?'â ď¸ ŮžŰÚŠ':s==='H'?'âĽď¸ ŘŻŮ':s==='D'?'âŚď¸ ŘŽŘ´ŘŞ':'âŁď¸ ÚŻŰŘ´ŮŰŘ˛'; }
+function sortHand(hand: Card[], hokm?: Suit): Card[] {
+  if (!hokm) return [...hand].sort((a,b)=> a.s===b.s ? b.r-a.r : ['S','H','D','C'].indexOf(a.s)-['S','H','D','C'].indexOf(b.s));
+  const sameColor = (s: Suit)=>{
+    if (s===hokm) return 0;
+    if ((s==='H'&&hokm==='D')||(s==='D'&&hokm==='H')) return 1;
+    if ((s==='S'&&hokm==='C')||(s==='C'&&hokm==='S')) return 1;
+    return 2;
+  };
+  const countMap = new Map<Suit,number>();
+  hand.forEach(c=>countMap.set(c.s, (countMap.get(c.s)||0)+1));
+  return [...hand].sort((a,b)=>{
+    const colorA = sameColor(a.s); const colorB = sameColor(b.s);
+    if (colorA!==colorB) return colorA-colorB;
+    if (colorA===0) return b.r-a.r;
+    const cA = countMap.get(a.s)||0; const cB = countMap.get(b.s)||0;
+    if (cA!==cB) return cB-cA;
+    if (a.s===b.s) return b.r-a.r;
+    return ['S','H','D','C'].indexOf(a.s)-['S','H','D','C'].indexOf(b.s);
+  });
+}
+function suitName(s: Suit){ return s==='S'?'?? ???':s==='H'?'?? ??':s==='D'?'?? ???':'?? ??????'; }
 
 function buildHandButtons(s: HokmSession, userId: string, opts?: { filter?: Suit|'ALL'; page?: number }): { rows: ActionRowBuilder<ButtonBuilder>[]; meta: { filter: string; page: number; totalPages: number } } {
   const filter = (opts?.filter ?? 'ALL') as Suit|'ALL';
   const page = opts?.page ?? 0;
-  const hand = sortHand(s.hands.get(userId) || []);
+  const hand = sortHand(s.hands.get(userId) || [], s.hokm);
   const filtered = filter==='ALL' ? hand : hand.filter(c=>c.s===filter);
   const perPage = 10; // 2 rows of 5 buttons
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
@@ -213,18 +486,18 @@ function buildHandButtons(s: HokmSession, userId: string, opts?: { filter?: Suit
   }
   // filter row
   const rowFilter = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`hokm-hand-filter-${s.guildId}-${s.channelId}-${userId}-ALL`).setLabel('ŮŮŮ').setStyle(filter==='ALL'?ButtonStyle.Primary:ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`hokm-hand-filter-${s.guildId}-${s.channelId}-${userId}-S`).setLabel('â ď¸').setStyle(filter==='S'?ButtonStyle.Primary:ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`hokm-hand-filter-${s.guildId}-${s.channelId}-${userId}-H`).setLabel('âĽď¸').setStyle(filter==='H'?ButtonStyle.Primary:ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`hokm-hand-filter-${s.guildId}-${s.channelId}-${userId}-D`).setLabel('âŚď¸').setStyle(filter==='D'?ButtonStyle.Primary:ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`hokm-hand-filter-${s.guildId}-${s.channelId}-${userId}-C`).setLabel('âŁď¸').setStyle(filter==='C'?ButtonStyle.Primary:ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`hokm-hand-filter-${s.guildId}-${s.channelId}-${userId}-ALL`).setLabel('???').setStyle(filter==='ALL'?ButtonStyle.Primary:ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`hokm-hand-filter-${s.guildId}-${s.channelId}-${userId}-S`).setLabel('??').setStyle(filter==='S'?ButtonStyle.Primary:ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`hokm-hand-filter-${s.guildId}-${s.channelId}-${userId}-H`).setLabel('??').setStyle(filter==='H'?ButtonStyle.Primary:ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`hokm-hand-filter-${s.guildId}-${s.channelId}-${userId}-D`).setLabel('??').setStyle(filter==='D'?ButtonStyle.Primary:ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`hokm-hand-filter-${s.guildId}-${s.channelId}-${userId}-C`).setLabel('??').setStyle(filter==='C'?ButtonStyle.Primary:ButtonStyle.Secondary),
   );
   rows.push(rowFilter);
   // pagination row (if needed)
   if (totalPages > 1) {
     const rowPage = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId(`hokm-hand-page-${s.guildId}-${s.channelId}-${userId}-${Math.max(0, page-1)}`).setLabel('ŮŘ¨ŮŰ').setStyle(ButtonStyle.Secondary).setDisabled(page<=0),
-      new ButtonBuilder().setCustomId(`hokm-hand-page-${s.guildId}-${s.channelId}-${userId}-${Math.min(totalPages-1, page+1)}`).setLabel('Ř¨ŘšŘŻŰ').setStyle(ButtonStyle.Secondary).setDisabled(page>=totalPages-1),
+      new ButtonBuilder().setCustomId(`hokm-hand-page-${s.guildId}-${s.channelId}-${userId}-${Math.max(0, page-1)}`).setLabel('????').setStyle(ButtonStyle.Secondary).setDisabled(page<=0),
+      new ButtonBuilder().setCustomId(`hokm-hand-page-${s.guildId}-${s.channelId}-${userId}-${Math.min(totalPages-1, page+1)}`).setLabel('????').setStyle(ButtonStyle.Secondary).setDisabled(page>=totalPages-1),
     );
     rows.push(rowPage);
   }
@@ -241,7 +514,7 @@ async function refreshPlayerDM(ctx: { client: Client }, s: HokmSession, userId: 
     const page = prev?.page || 0;
     const { rows, meta } = buildHandButtons(s, userId, { filter: filter as any, page });
     (global as any)[stateKey] = { filter: meta.filter, page: meta.page };
-    const content = `Ř­ÚŠŮ: ${s.hokm?SUIT_EMOJI[s.hokm]:''} â ${userId===s.order[s.turnIndex??0]?'ŮŮŘ¨ŘŞ Ř´ŮŘ§ŘłŘŞ.':'ŮŮŘŞŘ¸Řą ŮŮŘ¨ŘŞ Ř¨ŮŘ§ŮŰŘŻ.'}\nŘŻŘłŘŞ Ř´ŮŘ§:\n${handToString(s.hands.get(userId) || [])}`;
+    const content = `???: ${s.hokm?SUIT_EMOJI[s.hokm]:''} ? ${userId===s.order[s.turnIndex??0]?'???? ?????.':'????? ???? ??????.'}\n??? ???:\n${handToString(s.hands.get(userId) || [])}`;
     const msgId = s.playerDMMsgIds?.get(userId);
     if (msgId) {
       const m = await dm.messages.fetch(msgId).catch(()=>null);
@@ -254,12 +527,12 @@ async function refreshPlayerDM(ctx: { client: Client }, s: HokmSession, userId: 
 }
 
 async function refreshAllDMs(ctx: { client: Client }, s: HokmSession) {
-  for (const uid of s.order) await refreshPlayerDM(ctx, s, uid);
+  for (const uid of s.order) { if (!isVirtualBot(uid)) await refreshPlayerDM(ctx, s, uid); }
 }
 
-function buildHandRowsSimple(hand: Card[], userId: string, gId: string, cId: string): ActionRowBuilder<ButtonBuilder>[] {
+function buildHandRowsSimple(hand: Card[], userId: string, gId: string, cId: string, hokm?: Suit): ActionRowBuilder<ButtonBuilder>[] {
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
-  const items = [...hand].sort((a,b)=> a.s===b.s ? b.r-a.r : ['S','H','D','C'].indexOf(a.s)-['S','H','D','C'].indexOf(b.s));
+  const items = sortHand(hand, hokm);
   for (let r=0; r<3; r++) {
     const slice = items.slice(r*5, r*5+5);
     if (!slice.length) break;
@@ -273,9 +546,10 @@ function buildHandRowsSimple(hand: Card[], userId: string, gId: string, cId: str
 }
 
 async function refreshPlayerChannelHand(ctx: { channel: any }, s: HokmSession, userId: string) {
+  if (isVirtualBot(userId)) return; // bots don't need channel hand controls
   const hand = s.hands.get(userId) || [];
-  const rows = buildHandRowsSimple(hand, userId, s.guildId, s.channelId);
-  const content = `<@${userId}> â ${userId===s.order[s.turnIndex??0] ? 'ŮŮŘ¨ŘŞ Ř´ŮŘ§ŘłŘŞ.' : 'ŮŮŘŞŘ¸Řą ŮŮŘ¨ŘŞ Ř¨ŮŘ§ŮŰŘŻ.'}`;
+  const rows = buildHandRowsSimple(hand, userId, s.guildId, s.channelId, s.hokm);
+  const content = `<@${userId}> ? ${userId===s.order[s.turnIndex??0] ? '???? ?????.' : '????? ???? ??????.'}`;
   s.playerDMMsgIds = s.playerDMMsgIds || new Map<string,string>();
   const prevId = s.playerDMMsgIds.get(userId);
   if (prevId) {
@@ -291,6 +565,11 @@ const avatarCache: Map<string, AvatarEntry> = new Map();
 const AVATAR_TTL_MS = 10 * 60 * 1000;
 
 async function getMemberVisual(guildId: string, userId: string): Promise<{ tag: string; img: any|null }> {
+  // virtual bot visuals
+  if (isVirtualBot(userId)) {
+    const tag = userId.replace('BOT', 'Bot');
+    return { tag, img: null };
+  }
   try {
     const g = await client.guilds.fetch(guildId).catch(()=>null);
     if (!g) return { tag: userId, img: null };
@@ -392,7 +671,7 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     ctx.fillStyle = '#ffffff';
     ctx.fillText(setsTxt, startX + 36 + gap, cy + 1);
   } else {
-    const hokmTxt = 'Ř­ÚŠŮŘ';
+    const hokmTxt = '????';
     ctx.fillStyle = '#ffffff';
     const hokmWidth = ctx.measureText(hokmTxt).width;
     const totalWidth = hokmWidth + gap + setsWidth;
@@ -402,22 +681,20 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     ctx.fillText(setsTxt, startX + hokmWidth + gap, cy + 1);
   }
 
-  // positions for seats and cards (square layout, generous margins)
-  const margin = 220;
+  // seats: use exact SVG coordinates and radii for proportional match
   const seats = [
-    { x: width/2, y: margin },                // N
-    { x: width - margin, y: height/2 },       // E
-    { x: width/2, y: height - margin },       // S
-    { x: margin, y: height/2 },               // W
+    { x: 500,    y: 201.13, r: 75.75 }, // N (top)
+    { x: 861.04, y: 504.00, r: 74.22 }, // E (right)
+    { x: 500,    y: 845.00, r: 84.10 }, // S (bottom)
+    { x: 144.00, y: 500.00, r: 76.63 }, // W (left)
   ];
-  const avatarRadius = 64; // bigger avatars
   const nameFont = `${ssdFontAvailable? '22px '+ssdFontFamily : '22px Arial'}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   function drawSeatLabel(i: number, uid?: string, name?: string, avatar?: any, isTurn?: boolean, playerTricks?: number) {
     const seat = seats[i];
-    // avatar only (bigger)
-    const avR = avatarRadius;
+    // avatar radius from SVG seat circle to keep proportions
+    const avR = seat.r;
     const avX = seat.x;
     const avY = seat.y; // center on seat
     if (avatar) {
@@ -427,6 +704,22 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
       ctx.closePath();
       ctx.clip();
       ctx.drawImage(avatar, avX-avR, avY-avR, avR*2, avR*2);
+      ctx.restore();
+    } else if (uid && isVirtualBot(uid)) {
+      // draw a simple bot avatar placeholder tinted toward team color
+      const isT1 = s.team1.includes(uid);
+      const tint = isT1 ? '#3b82f6' : '#ef4444';
+      ctx.save();
+      ctx.beginPath(); ctx.arc(avX, avY, avR, 0, Math.PI*2); ctx.clip();
+      // background
+      ctx.fillStyle = '#e5e7eb';
+      ctx.fillRect(avX-avR, avY-avR, avR*2, avR*2);
+      // silhouette
+      ctx.fillStyle = tint;
+      // head
+      ctx.beginPath(); ctx.arc(avX, avY-avR*0.25, avR*0.32, 0, Math.PI*2); ctx.fill();
+      // body
+      ctx.beginPath(); ctx.roundRect(avX-avR*0.45, avY-avR*0.05, avR*0.9, avR*0.9, avR*0.2); ctx.fill();
       ctx.restore();
     }
     // team-colored ring
@@ -438,21 +731,10 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     ctx.beginPath();
     ctx.arc(avX, avY, avR + 4, 0, Math.PI * 2);
     ctx.stroke();
-    // yellow outer ring if player's turn (brighter + glow)
+    // yellow outer ring if player's turn (fast, no heavy blur)
     if (isTurn) {
-      // glow
-      ctx.save();
-      ctx.strokeStyle = '#fde047'; // bright yellow
-      ctx.lineWidth = 8;
-      (ctx as any).shadowColor = '#fde047';
-      (ctx as any).shadowBlur = 18;
-      ctx.beginPath();
-      ctx.arc(avX, avY, avR + 12, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-      // solid highlight ring
       ctx.strokeStyle = '#facc15';
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 6;
       ctx.beginPath();
       ctx.arc(avX, avY, avR + 12, 0, Math.PI * 2);
       ctx.stroke();
@@ -475,39 +757,55 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     }
     ctx.textAlign = 'center';
   }
-  function drawCard(x: number, y: number, c: Card) {
-    const w = 110, h = 155, r = 12;
+  function getCardBitmap(c: Card, scale: number) {
+    const key = cardKey(c, scale);
+    const existing = cardBitmapCache.get(key);
+    if (existing) return existing;
+    const w = Math.round(110 * scale), h = Math.round(155 * scale), r = Math.round(12 * scale);
+    const off = createCanvas(w + Math.ceil(6*scale), h + Math.ceil(8*scale));
+    const c2 = off.getContext('2d');
     // shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    ctx.beginPath();
-    ctx.roundRect(x+4, y+6, w, h, r);
-    ctx.fill();
+    c2.fillStyle = 'rgba(0,0,0,0.30)';
+    c2.beginPath();
+    c2.roundRect(4*scale, 6*scale, w, h, r);
+    c2.fill();
     // body
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.roundRect(x, y, w, h, r);
-    ctx.fill();
-    ctx.strokeStyle = '#e5e7eb';
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    c2.fillStyle = '#ffffff';
+    c2.beginPath();
+    c2.roundRect(0, 0, w, h, r);
+    c2.fill();
+    c2.strokeStyle = '#e5e7eb';
+    c2.lineWidth = Math.max(1, 2*scale);
+    c2.stroke();
     // rank + suit
     const red = (c.s === 'H' || c.s === 'D');
-    ctx.fillStyle = red ? '#dc2626' : '#111827';
-    ctx.font = `${ssdFontAvailable? 'bold 36px '+ssdFontFamily : 'bold 36px Arial'}`;
+    c2.fillStyle = red ? '#dc2626' : '#111827';
+    c2.font = `${ssdFontAvailable? 'bold '+Math.round(36*scale)+'px '+ssdFontFamily : 'bold '+Math.round(36*scale)+'px Arial'}`;
     const rtxt = rankStr(c.r);
-    ctx.textAlign = 'left';
-    ctx.fillText(rtxt, x + 10, y + 28);
-    // center suit: prefer emoji if emoji font is available; fallback to vector
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    c2.textAlign = 'left';
+    c2.textBaseline = 'alphabetic';
+    c2.fillText(rtxt, 10*scale, 28*scale);
+    // center suit
+    c2.textAlign = 'center';
+    c2.textBaseline = 'middle';
     if (emojiFontAvailable) {
-      ctx.fillStyle = '#ffffff';
-      ctx.font = `bold 56px 'Noto Color Emoji'`;
-      ctx.fillText(SUIT_EMOJI[c.s], x + w/2, y + h/2 + 6);
+      c2.fillStyle = '#ffffff';
+      c2.font = `bold ${Math.round(56*scale)}px 'Noto Color Emoji'`;
+      c2.fillText(SUIT_EMOJI[c.s], w/2, h/2 + 6*scale);
     } else {
-      ctx.fillStyle = red ? '#dc2626' : '#111827';
-      drawSuit(ctx, c.s, x + w/2, y + h/2 + 6, 28);
+      c2.fillStyle = red ? '#dc2626' : '#111827';
+      drawSuit(c2 as any, c.s, w/2, h/2 + 6*scale, 28*scale);
     }
+    cardBitmapCache.set(key, off);
+    return off;
+  }
+  function drawCard(x: number, y: number, c: Card) {
+    const bmp = getCardBitmap(c, 1);
+    ctx.drawImage(bmp as any, x, y);
+  }
+  function drawCardScaled(x: number, y: number, c: Card, scale: number) {
+    const bmp = getCardBitmap(c, scale);
+    ctx.drawImage(bmp as any, x, y);
   }
   // draw seats and played cards
   for (let i=0;i<4;i++) {
@@ -519,32 +817,37 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     drawSeatLabel(i, uid, mv.tag, mv.img, isTurn, pTricks);
     const play = (s.table||[]).find(t=>t.userId===uid);
     if (play) {
-      // offset from seat for card placement
-      const cardPos = [
-        {x: seats[i].x - 55, y: seats[i].y + (avatarRadius + 70)},     // N: ŮžŘ§ŰŰŮ Ř˘ŮŘ§ŘŞŘ§Řą
-        {x: seats[i].x - (avatarRadius + 170), y: seats[i].y - 75},    // E: ÚŮž Ř˘ŮŘ§ŘŞŘ§Řą
-        {x: seats[i].x - 55, y: seats[i].y - (avatarRadius + 210)},    // S: Ř¨Ř§ŮŘ§Ű Ř˘ŮŘ§ŘŞŘ§Řą
-        {x: seats[i].x + (avatarRadius + 170), y: seats[i].y - 75},    // W: ŘąŘ§ŘłŘŞ Ř˘ŮŘ§ŘŞŘ§Řą
-      ][i];
-      drawCard(cardPos.x, cardPos.y, play.card);
+      // fixed positions to match SVG
+      const playPos = [
+        { x: 445,    y: 303.58 }, // from top
+        { x: 590.29, y: 430.58 }, // from right
+        { x: 445,    y: 576.00 }, // from bottom
+        { x: 304.02, y: 430.58 }, // from left
+      ];
+      const pos = playPos[i];
+      drawCard(pos.x, pos.y, play.card);
     }
   }
 
-  // Show previous trick (lastTrick) bottom-right
+  // Show previous trick (lastTrick) bottom-right ? align by seat positions
   if (s.lastTrick && s.lastTrick.length === 4) {
-    const baseX = width - 480; const baseY = height - 260;
+    // mini positions mapped to seats: [Top, Right, Bottom, Left]
+    const miniPos = [
+      { x: 782.19, y: 693.43 }, // Top
+      { x: 860.59, y: 761.96 }, // Right
+      { x: 782.19, y: 840.43 }, // Bottom
+      { x: 706.12, y: 761.96 }, // Left
+    ];
+    const scale = 0.54;
     ctx.save();
-    ctx.globalAlpha = 0.95;
+    ctx.globalAlpha = 0.98;
+    // for each seat index, find that user's card in lastTrick
     for (let i=0;i<4;i++) {
-      const dx = baseX + (i%2)*140;
-      const dy = baseY + Math.floor(i/2)*90;
-      drawCard(dx, dy, s.lastTrick[i].card);
+      const uid = s.order[i];
+      const entry = s.lastTrick.find(t=>t.userId===uid);
+      if (entry) drawCardScaled(miniPos[i].x, miniPos[i].y, entry.card, scale);
     }
     ctx.restore();
-    ctx.fillStyle = 'rgba(0,0,0,0.4)';
-    ctx.font = `${ssdFontAvailable? '18px '+ssdFontFamily : '18px Arial'}`;
-    ctx.textAlign = 'right';
-    ctx.fillText('Last Trick', width - 24, baseY - 12);
   }
 
   // Team labels and scores with colors (bold, placed below top bar)
@@ -581,26 +884,151 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   return canvas.toBuffer('image/png');
 }
 
+async function renderTableSVG(s: HokmSession) {
+  const width = 1000, height = 1000;
+  const cx = 500, cy = 500;
+  // positions and radii to match the user's Illustrator SVG
+  const seatSpec = [
+    { x: 500, y: 201.13, r: 75.75 }, // top
+    { x: 861.04, y: 504.00, r: 74.22 }, // right
+    { x: 500, y: 845.00, r: 84.10 }, // bottom
+    { x: 144.00, y: 500.00, r: 76.63 }, // left
+  ];
+  const teamColor = (uid?: string)=> uid && s.team1.includes(uid) ? '#3b82f6' : '#ef4444';
+  const isTurn = (i:number)=> s.turnIndex!=null && s.order[s.turnIndex]===s.order[i];
+  const suitTxt = (su: Suit)=> SUIT_EMOJI[su];
+  function esc(t: string){ return t.replace(/[&<>\"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\\"":"&quot;"}[c] as string)); }
+  function cardGroup(id:string, x:number, y:number, c:Card, scale=1){
+    const w=110*scale,h=155*scale,r=12;
+    const red = (c.s==='H'||c.s==='D');
+    return `
+    <g id="${id}">
+      <rect class="st12" x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" ry="${r}"/>
+      <text class="st6" transform="translate(${x+10} ${y+28})">${esc(rankStr(c.r))}</text>
+      <text class="st7" transform="translate(${x+19.12*scale} ${y+83.5*scale})">${esc(suitTxt(c.s))}</text>
+    </g>`;
+  }
+  // header content
+  const hokmMark = s.hokm ? `${esc(suitTxt(s.hokm))}` : '????';
+  const setsTxt = `Sets: ${s.targetSets ?? 1}`;
+  // table cards positions to match sample
+  const playPos = [
+    { x: 445, y: 303.58 }, // from top
+    { x: 590.29, y: 430.58 }, // from right
+    { x: 445, y: 576 }, // from bottom
+    { x: 304.02, y: 430.58 }, // from left
+  ];
+  // last trick mini-cards bottom-right (if available)
+  const miniPos = [
+    { x: 782.19, y: 693.43 },
+    { x: 706.12, y: 761.96 },
+    { x: 860.59, y: 761.96 },
+    { x: 782.19, y: 840.43 },
+  ];
+  const table = s.table||[];
+  let playsSvg = '';
+  for (let i=0;i<4;i++){
+    const pl = table.find(t=>t.userId===s.order[i]);
+    if (pl) playsSvg += cardGroup(`plays${i===0?'':i}`, playPos[i].x, playPos[i].y, pl.card, 1);
+  }
+  let lastSvg = '';
+  if (s.lastTrick && s.lastTrick.length) {
+    for (let i=0;i<Math.min(4, s.lastTrick.length); i++) {
+      const c = s.lastTrick[i].card;
+      lastSvg += cardGroup(`plays${i+4}`, miniPos[i].x, miniPos[i].y, c, 0.54);
+    }
+  }
+  // build SVG with the user's class names and styles
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 1000 1000">
+  <defs>
+    <style>
+      .st0,.st1,.st2,.st3,.st4,.st5,.st6,.st7,.st8,.st9,.st10,.st11{isolation:isolate}
+      .st0,.st1,.st5,.st6,.st8,.st9,.st10,.st11{font-family:${ssdFontAvailable?esc(ssdFontFamily):'Arial'}, Arial}
+      .st0,.st9{fill:#3b82f6}
+      .st0,.st10{font-size:44px}
+      .st1,.st3{font-size:22px}
+      .st1,.st3,.st5,.st12{fill:#fff}
+      .st2{font-size:30.22px}
+      .st2,.st3,.st7{font-family:ArialMT, Arial}
+      .st2,.st6,.st7,.st8{fill:#111827}
+      .st13{stroke:#d1fae5}
+      .st13,.st14,.st15,.st16{fill:none}
+      .st13,.st15{stroke-width:4px}
+      .st14{stroke:#3b82f6}
+      .st14,.st16{stroke-width:5px}
+      .st15{stroke:#facc15}
+      .st5,.st9,.st11{font-size:40px}
+      .st16{stroke:#ef4444}
+      .st6{font-size:30px}
+      .st7{font-size:56px}
+      .st17{fill:#ccc}
+      .st8{font-size:16.19px}
+      .st10,.st11{fill:#ef4444}
+      .st12{stroke:#e5e7eb;stroke-width:2px}
+      .st18{fill:#0f5132}
+    </style>
+  </defs>
+  <g id="background">
+    <rect class="st18" width="1000" height="1000"/>
+    <rect class="st13" x="8" y="8" width="984" height="984"/>
+  </g>
+  <g id="header">
+    <rect x="10" y="10" width="980" height="54"/>
+    <text class="st3" transform="translate(468.14 38)">${s.hokm?esc(suitTxt(s.hokm)):esc('????')}</text>
+    <text class="st1" transform="translate(518 38)">${esc(setsTxt)}</text>
+  </g>
+  <g id="teams">
+    <text class="st0" transform="translate(28 96)">Team 1</text>
+    <g class="st4">
+      <text class="st9" transform="translate(28 146)">Tricks: </text>
+      <text class="st5" transform="translate(166.76 146)">${String(s.tricksTeam1 ?? 0)}</text>
+      <text class="st9" transform="translate(191.48 146)" xml:space="preserve"> Sets: </text>
+      <text class="st5" transform="translate(299.28 146)">${String(s.setsTeam1 ?? 0)}</text>
+    </g>
+    <text class="st10" transform="translate(818.93 96)">Team 2</text>
+    <g class="st4">
+      <text class="st11" transform="translate(676.01 146)">Tricks: </text>
+      <text class="st5" transform="translate(814.76 146)">${String(s.tricksTeam2 ?? 0)}</text>
+      <text class="st11" transform="translate(839.48 146)" xml:space="preserve"> Sets: </text>
+      <text class="st5" transform="translate(947.28 146)">${String(s.setsTeam2 ?? 0)}</text>
+    </g>
+  </g>
+  ${seatSpec.map((p,i)=>{
+    const uid = s.order[i];
+    const ring = teamColor(uid);
+    const isT = isTurn(i);
+    const ringClass = ring==='#3b82f6'?'st14':'st16';
+    const base = `<circle class="st17" cx="${p.x}" cy="${p.y}" r="${p.r}"/>\n  <circle class="${ringClass}" cx="${p.x}" cy="${p.y}" r="${(p.r+4).toFixed(2)}"/>`;
+    const turn = isT? `\n  <circle class=\"st15\" cx=\"${p.x}\" cy=\"${p.y}\" r=\"${(p.r+14.36).toFixed(2)}\"/>` : '';
+    return base+turn;
+  }).join('\n')}
+  <g id="plays">${playsSvg}</g>
+  ${lastSvg ? `<g id="last_trick">${lastSvg}</g>` : ''}
+</svg>`;
+  return Buffer.from(svg, 'utf8');
+}
+
 async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
   const img = await renderTableImage(s);
   const attachment = new AttachmentBuilder(img, { name: 'table.png' });
   const embed = new EmbedBuilder()
-    .setTitle('Hokm â ŮŰŘ˛ Ř¨Ř§Ř˛Ű')
+    .setTitle('Hokm ? ??? ????')
     .setColor(0x2f3136)
     .setImage('attachment://table.png');
   const openRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`hokm-open-hand-${s.guildId}-${s.channelId}`).setLabel('ŘŻŘłŘŞ ŮŮ').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`hokm-open-hand-${s.guildId}-${s.channelId}`).setLabel('??? ??').setStyle(ButtonStyle.Secondary)
   );
   // add hokm choose buttons when waiting for hakim to pick
   const rows: any[] = [openRow];
   if (s.state === 'choosing_hokm' && s.hakim) {
     const chooseRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('hokm-choose-S').setLabel('â ď¸ ŮžŰÚŠ').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('hokm-choose-H').setLabel('âĽď¸ ŘŻŮ').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('hokm-choose-D').setLabel('âŚď¸ ŘŽŘ´ŘŞ').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('hokm-choose-C').setLabel('âŁď¸ ÚŻŰŘ´ŮŰŘ˛').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('hokm-choose-S').setLabel('?? ???').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('hokm-choose-H').setLabel('?? ??').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('hokm-choose-D').setLabel('?? ???').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('hokm-choose-C').setLabel('?? ??????').setStyle(ButtonStyle.Success),
     );
-    embed.setDescription(`Ř­Ř§ÚŠŮ: <@${s.hakim}> â ŮŘˇŮŘ§Ů Ř­ÚŠŮ ŘąŘ§ Ř§ŮŘŞŘŽŘ§Ř¨ ÚŠŮ.`);
+    embed.setDescription(`????: <@${s.hakim}> ? ????? ??? ?? ?????? ??.`);
     rows.push(chooseRow);
   }
   if (s.tableMsgId) {
@@ -642,10 +1070,19 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
   let gameChannel: any = null;
   try { gameChannel = await (interaction.client as Client).channels.fetch(s.channelId).catch(()=>null); } catch {}
   if ((s.tricksTeam1||0) >= target || (s.tricksTeam2||0) >= target) {
-    // hand complete -> award a set
-    const winnerTeam = (s.tricksTeam1||0) >= target ? 't1' : 't2';
+    // hand complete -> award set(s) with koot rules
+    const t1Tr = s.tricksTeam1||0; const t2Tr = s.tricksTeam2||0;
+    const winnerTeam = t1Tr >= target ? 't1' : 't2';
+    const winnerTr = winnerTeam==='t1' ? t1Tr : t2Tr;
+    const loserTr = winnerTeam==='t1' ? t2Tr : t1Tr;
     s.setsTeam1 = s.setsTeam1 || 0; s.setsTeam2 = s.setsTeam2 || 0;
-    if (winnerTeam==='t1') s.setsTeam1++; else s.setsTeam2++;
+    let add = 1;
+    if (winnerTr === 7 && loserTr === 0) {
+      const hakimIsTeam1 = s.team1.includes(s.hakim!);
+      const winnerIsHakimTeam = (winnerTeam==='t1' && hakimIsTeam1) || (winnerTeam==='t2' && !hakimIsTeam1);
+      add = winnerIsHakimTeam ? 2 : 3; // koot=2, hakim-koot=3
+    }
+    if (winnerTeam==='t1') s.setsTeam1 += add; else s.setsTeam2 += add;
     const targetSets = s.targetSets ?? 1;
     if ((s.setsTeam1>=targetSets) || (s.setsTeam2>=targetSets)) {
       s.state = 'finished';
@@ -668,16 +1105,16 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
       // result embed
       if (gameChannel) {
         const t1Set = s.setsTeam1 ?? 0; const t2Set = s.setsTeam2 ?? 0;
-        const starter = s.ownerId ? `<@${s.ownerId}>` : 'â';
+        const starter = s.ownerId ? `<@${s.ownerId}>` : '?';
         const lines: string[] = [];
-        lines.push(`âšStarter: ${starter}`);
-        lines.push(`âšSets: [${s.targetSets ?? 1}]`);
-        lines.push('ââŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâ');
-        lines.push(`âšTeam 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} â¤ [${t1Set}]`);
-        lines.push('ââââââââââââââââââââ');
-        lines.push(`âšTeam 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} â¤ [${t2Set}]`);
-        lines.push('ââŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâ');
-        lines.push(`âšWinner: Team ${t1Set>t2Set?1:2} â`);
+        lines.push(`### ?Starter: ${starter}`);
+        lines.push(`### ?Sets: ${s.targetSets ?? 1}`);
+        lines.push('### ???????????????');
+        lines.push(`### ?Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ? ${t1Set}`);
+        lines.push('????????????????????');
+        lines.push(`### ?Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ? ${t2Set}`);
+        lines.push('### ???????????????');
+        lines.push(`### ?Winner: Team ${t1Set>t2Set?1:2} ?`);
         const emb = new EmbedBuilder().setDescription(lines.join('\n')).setColor(t1Set>t2Set?0x3b82f6:0xef4444);
         await gameChannel.send({ embeds: [emb] });
       }
@@ -687,20 +1124,29 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     s.deck = shuffle(makeDeck());
     s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
     s.hokm = undefined; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0; s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
-    // choose next hakim randomly (can be improved to winner-led)
-    s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
+    // choose next hakim: if current hakim's team won, keep; else clockwise next player
+    const hakimIdx = s.order.indexOf(s.hakim!);
+    const hakimIsTeam1 = s.team1.includes(s.hakim!);
+    const hakimTeamWon = (winnerTeam==='t1' && hakimIsTeam1) || (winnerTeam==='t2' && !hakimIsTeam1);
+    s.hakim = hakimTeamWon ? s.hakim! : s.order[(hakimIdx+1) % s.order.length];
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
     give(s.hakim, 5);
     s.state = 'choosing_hokm';
-    try { const user = await (interaction.client as Client).users.fetch(s.hakim); await user.send({ content: `ŘłŘŞ ŘŹŘŻŰŘŻ Ř´ŘąŮŘš Ř´ŘŻ. ŘŻŘłŘŞ Ř§ŮŮŰŮ Ř´ŮŘ§ (Űľ ÚŠŘ§ŘąŘŞ):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
-    if (gameChannel) await gameChannel.send({ content: `ŘłŘŞ ŘŹŘŻŰŘŻ Ř˘ŘşŘ§Ř˛ Ř´ŘŻ. Ř­Ř§ÚŠŮ: <@${s.hakim}> â ŮŘˇŮŘ§Ů Ř­ÚŠŮ ŘąŘ§ Ř§ŮŘŞŘŽŘ§Ř¨ ÚŠŮ.` });
+    try { const user = await (interaction.client as Client).users.fetch(s.hakim); await user.send({ content: `?? ???? ???? ??. ??? ????? ??? (? ????):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
+    if (gameChannel) {
+      const announceMsg = await gameChannel.send({ content: `?? ???? ???? ??. ????: <@${s.hakim}> ? ????? ??? ?? ?????? ??.` });
+      s.newSetAnnounceMsgId = announceMsg.id;
+    }
     if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
     await refreshAllDMs({ client: (interaction.client as Client) }, s);
+    if (isVirtualBot(s.hakim)) { await botChooseHokmAndStart(interaction.client as Client, gameChannel, s); }
     return;
   }
 
   if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
   await refreshAllDMs({ client: (interaction.client as Client) }, s);
+  // trigger bot auto-play if next turn is bot
+  await maybeBotAutoPlay(interaction.client as Client, s);
 }
 
 function handToString(hand: Card[]){ const bySuit: Record<Suit, Card[]> = {S:[],H:[],D:[],C:[]}; hand.forEach(c=>bySuit[c.s].push(c)); (Object.keys(bySuit) as Suit[]).forEach(s=>bySuit[s].sort((a,b)=>b.r-a.r));
@@ -1078,7 +1524,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     const id = interaction.customId;
     // Join/Leave
     if (id === 'hokm-join-t1' || id === 'hokm-join-t2' || id === 'hokm-leave') {
-      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'ŘŽŘˇŘ§Ű ŘłŘąŮŘą.', ephemeral: true }); return; }
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: '???? ????.', ephemeral: true }); return; }
       const s = ensureSession(interaction.guild.id, interaction.channel.id);
       const uid = interaction.user.id;
       // Remove from both teams first
@@ -1087,20 +1533,20 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       if (id === 'hokm-leave') {
         s.team1 = s.team1.filter(x=>x!==uid);
         s.team2 = s.team2.filter(x=>x!==uid);
-        await interaction.reply({ content: 'Ř§Ř˛ Ř§ŘŞŘ§Ů ŘŽŘ§ŘąŘŹ Ř´ŘŻŰ.', ephemeral: true });
+        await interaction.reply({ content: '?? ???? ???? ???.', ephemeral: true });
       } else {
         const target = id === 'hokm-join-t1' ? s.team1 : s.team2;
-      if (target.length >= 2) { await interaction.reply({ content: 'Ř§ŰŮ ŘŞŰŮ ŮžŘą Ř§ŘłŘŞ.', ephemeral: true }); return; }
+      if (target.length >= 2) { await interaction.reply({ content: '??? ??? ?? ???.', ephemeral: true }); return; }
       target.push(uid);
-        await interaction.reply({ content: `Ř¨Ů ŘŞŰŮ ${id.endsWith('t1')? '1':'2'} ŮžŰŮŘłŘŞŰ.`, ephemeral: true });
+        await interaction.reply({ content: `?? ??? ${id.endsWith('t1')? '1':'2'} ??????.`, ephemeral: true });
       }
       // Update control message as plain text (no embed)
       const contentText = controlListText(s);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('ŘŞŰŮ 1').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('ŘŞŰŮ 2').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('hokm-leave').setLabel('ŘŽŘąŮŘŹ').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-start').setLabel('Ř´ŘąŮŘš Ř¨Ř§Ř˛Ű').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('??? 1').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('??? 2').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-leave').setLabel('????').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-start').setLabel('???? ????').setStyle(ButtonStyle.Danger),
       );
       try {
         if (s.controlMsgId) {
@@ -1118,47 +1564,47 @@ client.on('interactionCreate', async (interaction: Interaction) => {
 
     // Start game button (owner only): let owner choose targetSets before starting
     if (id === 'hokm-start') {
-      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'ŘŽŘˇŘ§Ű ŘłŘąŮŘą.', ephemeral: true }); return; }
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: '???? ????.', ephemeral: true }); return; }
       const s = ensureSession(interaction.guild.id, interaction.channel.id);
-      if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'ŮŮŘˇ ŘłŘ§Ř˛ŮŘŻŮ Ř§ŘŞŘ§Ů ŮŰâŘŞŮŘ§ŮŘŻ Ř´ŘąŮŘš ÚŠŮŘŻ.', ephemeral: true }); return; }
-      if (s.state !== 'waiting') { await interaction.reply({ content: 'Ř§ŘŞŘ§Ů ŘŻŘą ŮŘśŘšŰŘŞ Ř´ŘąŮŘš ŮŰŘłŘŞ.', ephemeral: true }); return; }
-      if (s.team1.length !== 2 || s.team2.length !== 2) { await interaction.reply({ content: 'ŮŘą ŘŻŮ ŘŞŰŮ Ř¨Ř§ŰŘŻ Ű˛ ŮŮŘą ŘŻŘ§Ř´ŘŞŮ Ř¨Ř§Ř´ŮŘŻ.', ephemeral: true }); return; }
+      if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: '??? ?????? ???? ???????? ???? ???.', ephemeral: true }); return; }
+      if (s.state !== 'waiting') { await interaction.reply({ content: '???? ?? ????? ???? ????.', ephemeral: true }); return; }
+      if (s.team1.length !== 2 || s.team2.length !== 2) { await interaction.reply({ content: '?? ?? ??? ???? ? ??? ????? ?????.', ephemeral: true }); return; }
       // show ephemeral config for targetSets selection
       const current = s.targetSets ?? 1;
       const rowSets1 = new ActionRowBuilder<ButtonBuilder>();
       for (let n=1;n<=4;n++) rowSets1.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${n}`).setLabel(String(n)).setStyle(current===n?ButtonStyle.Primary:ButtonStyle.Secondary));
       const rowSets2 = new ActionRowBuilder<ButtonBuilder>();
       for (let n=5;n<=7;n++) rowSets2.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${n}`).setLabel(String(n)).setStyle(current===n?ButtonStyle.Primary:ButtonStyle.Secondary));
-      const rowGo = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId('hokm-start-go').setLabel('Ř´ŘąŮŘš').setStyle(ButtonStyle.Danger));
-      await interaction.reply({ content: `ŘŞŘšŘŻŘ§ŘŻ ŘłŘŞâŮŘ§Ű ŮŘ§Ř˛Ů Ř¨ŘąŘ§Ű Ř¨ŘąŘŻ ÚŠŘ§ŮŮ ŘąŘ§ Ř§ŮŘŞŘŽŘ§Ř¨ ÚŠŮ (ŮžŰŘ´âŮŘąŘś: ${current}). ŘłŮžŘł ÂŤŘ´ŘąŮŘšÂť ŘąŘ§ Ř¨Ř˛Ů.`, components: [rowSets1, rowSets2, rowGo], ephemeral: true });
+      const rowGo = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId('hokm-start-go').setLabel('????').setStyle(ButtonStyle.Danger));
+      await interaction.reply({ content: `????? ?????? ???? ???? ??? ???? ?? ?????? ?? (???????: ${current}). ??? ?????? ?? ???.`, components: [rowSets1, rowSets2, rowGo], ephemeral: true });
       return;
     }
 
     // Sets selection buttons
     if (id.startsWith('hokm-sets-')) {
-      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'ŘŽŘˇŘ§Ű ŘłŘąŮŘą.', ephemeral: true }); return; }
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: '???? ????.', ephemeral: true }); return; }
       const s = ensureSession(interaction.guild.id, interaction.channel.id);
-      if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'ŮŮŘˇ ŘłŘ§Ř˛ŮŘŻŮ Ř§ŘŞŘ§Ů ŮŰâŘŞŮŘ§ŮŘŻ ŘŞŮŘ¸ŰŮ ÚŠŮŘŻ.', ephemeral: true }); return; }
+      if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: '??? ?????? ???? ???????? ????? ???.', ephemeral: true }); return; }
       const n = parseInt(id.split('hokm-sets-')[1], 10);
-      if (!(n>=1 && n<=7)) { await interaction.reply({ content: 'Ř¨ŰŮ 1 ŘŞŘ§ 7 Ř§ŮŘŞŘŽŘ§Ř¨ ÚŠŮ.', ephemeral: true }); return; }
+      if (!(n>=1 && n<=7)) { await interaction.reply({ content: '??? 1 ?? 7 ?????? ??.', ephemeral: true }); return; }
       s.targetSets = n;
       // re-render ephemeral rows with active selection
       const rowSets1 = new ActionRowBuilder<ButtonBuilder>();
       for (let k=1;k<=4;k++) rowSets1.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${k}`).setLabel(String(k)).setStyle(n===k?ButtonStyle.Primary:ButtonStyle.Secondary));
       const rowSets2 = new ActionRowBuilder<ButtonBuilder>();
       for (let k=5;k<=7;k++) rowSets2.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${k}`).setLabel(String(k)).setStyle(n===k?ButtonStyle.Primary:ButtonStyle.Secondary));
-      const rowGo = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId('hokm-start-go').setLabel('Ř´ŘąŮŘš').setStyle(ButtonStyle.Danger));
-      await interaction.update({ content: `ŘŞŘšŘŻŘ§ŘŻ ŘłŘŞâŮŘ§: ${n}. Ř¨ŘąŘ§Ű Ř´ŘąŮŘš ÂŤŘ´ŘąŮŘšÂť ŘąŘ§ Ř¨Ř˛Ů.`, components: [rowSets1, rowSets2, rowGo] });
+      const rowGo = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId('hokm-start-go').setLabel('????').setStyle(ButtonStyle.Danger));
+      await interaction.update({ content: `????? ?????: ${n}. ???? ???? ?????? ?? ???.`, components: [rowSets1, rowSets2, rowGo] });
       return;
     }
 
     // Start after sets selection
     if (id === 'hokm-start-go') {
-      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'ŘŽŘˇŘ§Ű ŘłŘąŮŘą.', ephemeral: true }); return; }
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: '???? ????.', ephemeral: true }); return; }
       const s = ensureSession(interaction.guild.id, interaction.channel.id);
-      if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'ŮŮŘˇ ŘłŘ§Ř˛ŮŘŻŮ Ř§ŘŞŘ§Ů ŮŰâŘŞŮŘ§ŮŘŻ Ř´ŘąŮŘš ÚŠŮŘŻ.', ephemeral: true }); return; }
-      if (s.state !== 'waiting') { await interaction.reply({ content: 'Ř§ŘŞŘ§Ů ŘŻŘą ŮŘśŘšŰŘŞ Ř´ŘąŮŘš ŮŰŘłŘŞ.', ephemeral: true }); return; }
-      if (s.team1.length !== 2 || s.team2.length !== 2) { await interaction.reply({ content: 'ŮŘą ŘŻŮ ŘŞŰŮ Ř¨Ř§ŰŘŻ Ű˛ ŮŮŘą ŘŻŘ§Ř´ŘŞŮ Ř¨Ř§Ř´ŮŘŻ.', ephemeral: true }); return; }
+      if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: '??? ?????? ???? ???????? ???? ???.', ephemeral: true }); return; }
+      if (s.state !== 'waiting') { await interaction.reply({ content: '???? ?? ????? ???? ????.', ephemeral: true }); return; }
+      if (s.team1.length !== 2 || s.team2.length !== 2) { await interaction.reply({ content: '?? ?? ??? ???? ? ??? ????? ?????.', ephemeral: true }); return; }
       s.targetSets = s.targetSets ?? 1;
       s.targetTricks = s.targetTricks ?? 7;
       s.setsTeam1 = 0; s.setsTeam2 = 0;
@@ -1169,22 +1615,23 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
       give(s.hakim, 5);
       s.state = 'choosing_hokm';
-      try { const user = await interaction.client.users.fetch(s.hakim); await user.send({ content: `ŘłŘŞ ŘŹŘŻŰŘŻ Ř´ŘąŮŘš Ř´ŘŻ. ŘŻŘłŘŞ Ř§ŮŮŰŮ Ř´ŮŘ§ (Űľ ÚŠŘ§ŘąŘŞ):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
-      try { const chAny = interaction.channel as any; if (chAny && chAny.send) { await chAny.send({ content: `ŘłŘŞ ŘŹŘŻŰŘŻ Ř˘ŘşŘ§Ř˛ Ř´ŘŻ. Ř­Ř§ÚŠŮ: <@${s.hakim}> â ŮŘˇŮŘ§Ů Ř­ÚŠŮ ŘąŘ§ Ř§ŮŘŞŘŽŘ§Ř¨ ÚŠŮ.` }); } } catch {}
+      try { const user = await interaction.client.users.fetch(s.hakim); await user.send({ content: `?? ???? ???? ??. ??? ????? ??? (? ????):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
+      try { const chAny = interaction.channel as any; if (chAny && chAny.send) { await chAny.send({ content: `?? ???? ???? ??. ????: <@${s.hakim}> ? ????? ??? ?? ?????? ??.` }); } } catch {}
       if (interaction.guild) await refreshTableEmbed({ channel: interaction.channel as any }, s);
       await refreshAllDMs({ client: interaction.client }, s);
+      if (isVirtualBot(s.hakim)) { await botChooseHokmAndStart(interaction.client as Client, interaction.channel as any, s); }
       return;
     }
 
     // Suit choice buttons
     if (id.startsWith('hokm-choose-')) {
-      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'ŘŽŘˇŘ§Ű ŘłŘąŮŘą.', ephemeral: true }); return; }
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: '???? ????.', ephemeral: true }); return; }
       const s = ensureSession(interaction.guild.id, interaction.channel.id);
-      if (s.state !== 'choosing_hokm' || !s.hakim) { await interaction.reply({ content: 'Ř§ŮŘ§Ů ŮŮŘŞ Ř§ŮŘŞŘŽŘ§Ř¨ Ř­ÚŠŮ ŮŰŘłŘŞ.', ephemeral: true }); return; }
-      if (interaction.user.id !== s.hakim) { await interaction.reply({ content: 'ŮŮŘˇ Ř­Ř§ÚŠŮ ŮŰâŘŞŮŘ§ŮŘŻ Ř­ÚŠŮ ŘąŘ§ Ř§ŮŘŞŘŽŘ§Ř¨ ÚŠŮŘŻ.', ephemeral: true }); return; }
+      if (s.state !== 'choosing_hokm' || !s.hakim) { await interaction.reply({ content: '???? ??? ?????? ??? ????.', ephemeral: true }); return; }
+      if (interaction.user.id !== s.hakim) { await interaction.reply({ content: '??? ???? ???????? ??? ?? ?????? ???.', ephemeral: true }); return; }
       const suitKey = id.split('hokm-choose-')[1] as Suit;
       const suit: Suit | undefined = (['S','H','D','C'] as Suit[]).find(x=>x===suitKey);
-      if (!suit) { await interaction.reply({ content: 'ŘŽŘ§Ů ŮŘ§ŮŘšŘŞŘ¨Řą.', ephemeral: true }); return; }
+      if (!suit) { await interaction.reply({ content: '??? ???????.', ephemeral: true }); return; }
       s.hokm = suit;
       try { addHokmPick(s.guildId, s.hakim!, suit); saveHokmStats(); } catch {}
       // deal remaining to all to reach 13
@@ -1199,8 +1646,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
       s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
       // update or create table message
-      const tableEmbed = new EmbedBuilder().setTitle('Hokm â ŮŰŘ˛ Ř¨Ř§Ř˛Ű')
-        .setDescription(`Ř­ÚŠŮ: ${SUIT_EMOJI[s.hokm]} â ŮŮŘ¨ŘŞ: <@${s.order[s.turnIndex]}>`);
+      const tableEmbed = new EmbedBuilder().setTitle('Hokm ? ??? ????')
+        .setDescription(`???: ${SUIT_EMOJI[s.hokm]} ? ????: <@${s.order[s.turnIndex]}>`);
       try {
         if (s.tableMsgId) {
           const m = await (interaction.channel as any).messages.fetch(s.tableMsgId).catch(()=>null);
@@ -1208,21 +1655,31 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         }
       } catch {}
       await refreshTableEmbed({ channel: interaction.channel }, s);
+      // Ř­Ř°Ů ŮžŰŘ§Ů "ŘłŘŞ ŘŹŘŻŰŘŻ Ř˘ŘşŘ§Ř˛ Ř´ŘŻ"
+      if (s.newSetAnnounceMsgId) {
+        try {
+          const announceMsg = await (interaction.channel as any).messages.fetch(s.newSetAnnounceMsgId).catch(()=>null);
+          if (announceMsg) await announceMsg.delete().catch(()=>{});
+          s.newSetAnnounceMsgId = undefined;
+        } catch {}
+      }
       // no per-player channel hand messages; users open hand ephemerally via table button
-      await interaction.reply({ content: `Ř­ÚŠŮ Ř§ŮŘŞŘŽŘ§Ř¨ Ř´ŘŻ: ${SUIT_EMOJI[s.hokm]}. Ř¨Ř§Ř˛Ű Ř´ŘąŮŘš Ř´ŘŻ. Ř¨ŘąŘ§Ű ŘŻŰŘŻŮ ŘŻŘłŘŞ ŘŽŮŘŻŘ ŘąŮŰ ŘŻÚŠŮŮ "ŘŻŘłŘŞ ŮŮ" Ř˛ŰŘą ŮŰŘ˛ Ř¨Ř˛Ů.`, ephemeral: true });
+      await interaction.reply({ content: `??? ?????? ??: ${SUIT_EMOJI[s.hokm]}. ???? ???? ??. ???? ???? ??? ???? ??? ???? "??? ??" ??? ??? ???.`, ephemeral: true });
+      // trigger bot auto-play if first turn is a bot
+      await maybeBotAutoPlay(interaction.client as Client, s);
       return;
     }
 
     // Open Hand button (ephemeral per-user hand in channel)
     if (id.startsWith('hokm-open-hand-')) {
-      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'ŘŽŘˇŘ§Ű ŘłŘąŮŘą.', ephemeral: true }); return; }
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: '???? ????.', ephemeral: true }); return; }
       const parts = id.split('-'); // hokm-open-hand-gId-cId
       const gId = parts[3]; const cId = parts[4];
       const s = ensureSession(gId, cId);
       const uid = interaction.user.id;
       const hand = s.hands.get(uid) || [];
-      const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId);
-      const content = `Ř­ÚŠŮ: ${s.hokm?SUIT_EMOJI[s.hokm]:''} â ${uid===s.order[s.turnIndex??0]?'ŮŮŘ¨ŘŞ Ř´ŮŘ§ŘłŘŞ.':'ŮŮŘŞŘ¸Řą ŮŮŘ¨ŘŞ Ř¨ŮŘ§ŮŰŘŻ.'}`;
+      const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId, s.hokm);
+      const content = `???: ${s.hokm?SUIT_EMOJI[s.hokm]:''} ? ${uid===s.order[s.turnIndex??0]?'???? ?????.':'????? ???? ??????.'}`;
       await interaction.reply({ content, components: rows, ephemeral: true });
       return;
     }
@@ -1231,14 +1688,14 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     if (id.startsWith('hokm-hand-filter-')) {
       const parts = id.split('-'); // hokm-hand-filter-gId-cId-uid-FL
       const gId = parts[3]; const cId = parts[4]; const uid = parts[5]; const fl = parts[6] as any;
-      if (interaction.user.id !== uid) { await interaction.reply({ content: 'Ř§ŰŮ ŘŻÚŠŮŮ Ř¨ŘąŘ§Ű ŘŻŘłŘŞ Ř´ŮŘ§ ŮŰŘłŘŞ.', ephemeral: true }); return; }
+      if (interaction.user.id !== uid) { await interaction.reply({ content: '??? ???? ???? ??? ??? ????.', ephemeral: true }); return; }
       const key = `__hokm_dm_state_${gId}:${cId}:${uid}`;
       (global as any)[key] = { filter: fl, page: 0 };
       const s = ensureSession(gId, cId);
       if (interaction.guild) {
         const { rows, meta } = buildHandButtons(s, uid, { filter: fl, page: 0 });
         (global as any)[key] = { filter: meta.filter, page: meta.page };
-        const content = `Ř­ÚŠŮ: ${s.hokm?SUIT_EMOJI[s.hokm]:''} â ${uid===s.order[s.turnIndex??0]?'ŮŮŘ¨ŘŞ Ř´ŮŘ§ŘłŘŞ.':'ŮŮŘŞŘ¸Řą ŮŮŘ¨ŘŞ Ř¨ŮŘ§ŮŰŘŻ.'}\nŘŻŘłŘŞ Ř´ŮŘ§:\n${handToString(s.hands.get(uid) || [])}`;
+        const content = `???: ${s.hokm?SUIT_EMOJI[s.hokm]:''} ? ${uid===s.order[s.turnIndex??0]?'???? ?????.':'????? ???? ??????.'}\n??? ???:\n${handToString(s.hands.get(uid) || [])}`;
         await interaction.update({ content, components: rows });
       } else {
         await refreshPlayerDM({ client: interaction.client as Client }, s, uid);
@@ -1250,7 +1707,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     if (id.startsWith('hokm-hand-page-')) {
       const parts = id.split('-'); // hokm-hand-page-gId-cId-uid-page
       const gId = parts[3]; const cId = parts[4]; const uid = parts[5]; const page = parseInt(parts[6], 10) || 0;
-      if (interaction.user.id !== uid) { await interaction.reply({ content: 'Ř§ŰŮ ŘŻÚŠŮŮ Ř¨ŘąŘ§Ű ŘŻŘłŘŞ Ř´ŮŘ§ ŮŰŘłŘŞ.', ephemeral: true }); return; }
+      if (interaction.user.id !== uid) { await interaction.reply({ content: '??? ???? ???? ??? ??? ????.', ephemeral: true }); return; }
       const key = `__hokm_dm_state_${gId}:${cId}:${uid}`;
       const prev = (global as any)[key] || { filter: 'ALL', page: 0 };
       (global as any)[key] = { filter: prev.filter || 'ALL', page };
@@ -1258,7 +1715,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       if (interaction.guild) {
         const { rows, meta } = buildHandButtons(s, uid, { filter: (prev.filter||'ALL') as any, page });
         (global as any)[key] = { filter: meta.filter, page: meta.page };
-        const content = `Ř­ÚŠŮ: ${s.hokm?SUIT_EMOJI[s.hokm]:''} â ${uid===s.order[s.turnIndex??0]?'ŮŮŘ¨ŘŞ Ř´ŮŘ§ŘłŘŞ.':'ŮŮŘŞŘ¸Řą ŮŮŘ¨ŘŞ Ř¨ŮŘ§ŮŰŘŻ.'}\nŘŻŘłŘŞ Ř´ŮŘ§:\n${handToString(s.hands.get(uid) || [])}`;
+        const content = `???: ${s.hokm?SUIT_EMOJI[s.hokm]:''} ? ${uid===s.order[s.turnIndex??0]?'???? ?????.':'????? ???? ??????.'}\n??? ???:\n${handToString(s.hands.get(uid) || [])}`;
         await interaction.update({ content, components: rows });
       } else {
         await refreshPlayerDM({ client: interaction.client as Client }, s, uid);
@@ -1284,22 +1741,22 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         if (chAny?.isThread && chAny.parentId) { cId = chAny.parentId; }
         if (!gId && chAny?.guildId) { gId = chAny.guildId; }
       }
-      if (!gId || !cId) { await interaction.reply({ content: 'ŘŽŘˇŘ§Ű ÚŠŘ§ŮŘ§Ů Ř¨Ř§Ř˛Ű.', ephemeral: true }); return; }
+      if (!gId || !cId) { await interaction.reply({ content: '???? ????? ????.', ephemeral: true }); return; }
       const s = ensureSession(gId, cId);
-      if (s.state !== 'playing' || s.turnIndex==null) { await interaction.reply({ content: 'Ř¨Ř§Ř˛Ű ŘŻŘą ŘŹŘąŰŘ§Ů ŮŰŘłŘŞ.', ephemeral: true }); return; }
-      if (interaction.user.id !== uid) { await interaction.reply({ content: 'Ř§ŰŮ ŘŻÚŠŮŮ Ř¨ŘąŘ§Ű ŘŻŘłŘŞ Ř´ŮŘ§ ŮŰŘłŘŞ.', ephemeral: true }); return; }
-      if (s.order[s.turnIndex] !== uid) { await interaction.reply({ content: 'Ř§ŮŘ§Ů ŮŮŘ¨ŘŞ Ř´ŮŘ§ ŮŰŘłŘŞ.', ephemeral: true }); return; }
+      if (s.state !== 'playing' || s.turnIndex==null) { await interaction.reply({ content: '???? ?? ????? ????.', ephemeral: true }); return; }
+      if (interaction.user.id !== uid) { await interaction.reply({ content: '??? ???? ???? ??? ??? ????.', ephemeral: true }); return; }
+      if (s.order[s.turnIndex] !== uid) { await interaction.reply({ content: '???? ???? ??? ????.', ephemeral: true }); return; }
       const hand = s.hands.get(uid) || [];
       const card: Card = { s: suit, r: rank };
       const idx = hand.findIndex(c=>sameCard(c, card));
-      if (idx === -1) { await interaction.reply({ content: 'Ř§ŰŮ ÚŠŘ§ŘąŘŞ ŘŻŘą ŘŻŘłŘŞ Ř´ŮŘ§ ŮŰŘłŘŞ.', ephemeral: true }); return; }
+      if (idx === -1) { await interaction.reply({ content: '??? ???? ?? ??? ??? ????.', ephemeral: true }); return; }
       // follow-suit
       if (!s.table || s.table.length === 0) {
         s.leadSuit = card.s;
       } else {
         const lead = s.leadSuit!;
         const hasLead = hand.some(c=>c.s===lead);
-        if (hasLead && card.s !== lead) { await interaction.reply({ content: `Ř¨Ř§ŰŘŻ ŘŽŘ§Ů Ř´ŘąŮŘš (${SUIT_EMOJI[lead]}) ŘąŘ§ ŘŻŮŘ¨Ř§Ů ÚŠŮŰŘŻ.`, ephemeral: true }); return; }
+        if (hasLead && card.s !== lead) { await interaction.reply({ content: `???? ??? ???? (${SUIT_EMOJI[lead]}) ?? ????? ????.`, ephemeral: true }); return; }
       }
       // play
       hand.splice(idx,1); s.hands.set(uid, hand);
@@ -1307,8 +1764,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       s.turnIndex = (s.turnIndex + 1) % s.order.length;
       // update the ephemeral hand panel dynamically
       {
-        const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId);
-        const content = `Ř­ÚŠŮ: ${s.hokm?SUIT_EMOJI[s.hokm]:''} â ${uid===s.order[s.turnIndex??0]?'ŮŮŘ¨ŘŞ Ř´ŮŘ§ŘłŘŞ.':'ŮŮŘŞŘ¸Řą ŮŮŘ¨ŘŞ Ř¨ŮŘ§ŮŰŘŻ.'}`;
+        const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId, s.hokm);
+        const content = `???: ${s.hokm?SUIT_EMOJI[s.hokm]:''} ? ${uid===s.order[s.turnIndex??0]?'???? ?????.':'????? ???? ??????.'}`;
         try { await interaction.update({ content, components: rows }); } catch { await interaction.reply({ content, components: rows, ephemeral: true }); }
       }
       // update table only (hands are private via ephemeral)
@@ -1320,6 +1777,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       // check trick resolve
       if (s.table.length === 4) {
         await resolveTrickAndContinue(interaction, s);
+      } else {
+        // trigger bot if next turn is bot
+        await maybeBotAutoPlay(interaction.client as Client, s);
       }
       return;
     }
@@ -1361,7 +1821,7 @@ client.on('messageCreate', async (msg: Message) => {
     if (!target) target = msg.author;
     const map = computeTotalsUpToNow(msg.guildId!, target.id);
     if (!map || map.size === 0) {
-      await msg.reply({ content: 'ŘŻŘ§ŘŻŮâŘ§Ű Ř¨ŘąŘ§Ű Ř§ŰŮ ÚŠŘ§ŘąŘ¨Řą ŰŘ§ŮŘŞ ŮŘ´ŘŻ.' });
+      await msg.reply({ content: '??????? ???? ??? ????? ???? ???.' });
       return;
     }
     const rawEntries = Array.from(map.entries()).filter(([pid]) => pid !== target!.id);
@@ -1373,7 +1833,7 @@ client.on('messageCreate', async (msg: Message) => {
       } catch {}
     }
     if (entries.length === 0) {
-      await msg.reply({ content: 'ŮŰÚ ŘŻŮŘłŘŞ ŘşŰŘą Ř¨Ř§ŘŞŰ ŮžŰŘŻŘ§ ŮŘ´ŘŻ.' });
+      await msg.reply({ content: '??? ???? ??? ???? ???? ???.' });
       return;
     }
     entries.sort((a, b) => b[1] - a[1]);
@@ -1389,78 +1849,78 @@ client.on('messageCreate', async (msg: Message) => {
     const lines: string[] = [];
     top.forEach(([pid, ms], i) => {
       const mention = `<@${pid}>`;
-      lines.push(`${i + 1}. ${mention} â ${fmt(ms)}`);
+      lines.push(`${i + 1}. ${mention} ? ${fmt(ms)}`);
     });
     const embed = new EmbedBuilder()
-      .setTitle('ŘŻŮŘłŘŞŘ§Ů')
+      .setTitle('friends')
       .setDescription(lines.join('\n'))
       .setColor(0x2f3136);
     await msg.reply({ embeds: [embed] });
     return;
   }
 
-  // .best â top 20 Hokm winners (by wins)
+  // .best ? top 20 Hokm winners (by wins)
   if (isCmd('best')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const gId = msg.guildId!;
     const stats = hokmStats.get(gId);
-    if (!stats || stats.size === 0) { await msg.reply({ content: 'ŘŻŘą Ř§ŰŮ ŘłŘąŮŘą Ř¨Ř§Ř˛Ű Ř§ŮŘŹŘ§Ů ŮŘ´ŘŻŮ Ř§ŘłŘŞ.' }); return; }
+    if (!stats || stats.size === 0) { await msg.reply({ content: '?? ??? ???? ???? ????? ???? ???.' }); return; }
     const entries = Array.from(stats.entries()) as Array<[string, HokmUserStat]>;
     const arr = entries
       .filter(([, st]) => ((st?.games)||0) > 0)
       .sort((a: [string, HokmUserStat], b: [string, HokmUserStat]) => ((b[1].wins||0) - (a[1].wins||0)) || ((b[1].games||0) - (a[1].games||0)))
       .slice(0, 20);
-    if (arr.length === 0) { await msg.reply({ content: 'ŘŻŘą Ř§ŰŮ ŘłŘąŮŘą Ř¨Ř§Ř˛Ű Ř§ŮŘŹŘ§Ů ŮŘ´ŘŻŮ Ř§ŘłŘŞ.' }); return; }
+    if (arr.length === 0) { await msg.reply({ content: '?? ??? ???? ???? ????? ???? ???.' }); return; }
     const server = msg.guild.name;
     const lines: string[] = [];
-    lines.push(`âľ ${server} ŮŰŘłŘŞ Ř¨ŘąŮŘŻÚŻŘ§Ů:`);
-    lines.push('ââŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâ');
+    lines.push(`## ? ${server} WINNER LIST:`);
+    lines.push('### ???????????????????');
     let idx = 0;
     for (const [uid, st] of arr) {
       idx++;
       const rank = String(idx).padStart(2, '0');
-      lines.push(`âĄ ${rank} - <@${uid}> âśď¸Ř¨Ř§Ř˛ŰâŮŘ§: ${st.games||0} đŤŘ¨ŘąŘŻ: ${st.wins||0}`);
+      lines.push(`### ? ${rank} - <@${uid}> ??Games : ${st.games||0} ??WIN: ${st.wins||0}`);
     }
-    lines.push('ââŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâ');
+    lines.push('### ???????????????????');
     const embedBest = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
     await msg.reply({ embeds: [embedBest] });
     return;
   }
 
-  // .bazikon â show user's Hokm stats
+  // .bazikon ? show user's Hokm stats
   if (isCmd('bazikon')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const gId = msg.guildId!;
     const targetIds = await resolveTargetIds(msg, content, '.bazikon');
     const targetId = targetIds[0] || msg.author.id;
     const stMap = hokmStats.get(gId);
     const st: HokmUserStat = stMap?.get(targetId) || { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} };
-    if (!st.games) { await msg.reply({ content: 'Ř§ŰŮ ÚŠŘ§ŘąŘ¨Řą Ř¨Ř§Ř˛Ű Ř§ŮŘŹŘ§Ů ŮŘŻŘ§ŘŻŮ Ř§ŘłŘŞ.' }); return; }
+    if (!st.games) { await msg.reply({ content: '??? ????? ???? ????? ????? ???.' }); return; }
     let bestMate: string | null = null; let bestWins = 0;
     for (const [uid, w] of Object.entries((st.teammateWins||{}) as Record<string, number>)) {
       const val = Number(w)||0;
       if (val > bestWins) { bestWins = val; bestMate = uid; }
     }
-    const mateText = bestMate ? `<@${bestMate}> (${bestWins} WIN)` : 'â';
+    const mateText = bestMate ? `<@${bestMate}> (${bestWins} WIN)` : '?';
     const picks = (st.hokmPicks || {}) as Partial<Record<Suit, number>>;
     const suitOrder: Suit[] = ['C','S','D','H'];
     const sortedSuits = suitOrder.sort((a,b)=> (picks[b]||0) - (picks[a]||0));
-    const favArray = sortedSuits.filter(su => (picks[su]||0) > 0).map(su => SUIT_EMOJI[su as Suit].replace('ď¸',''));
-    const favText = `[${favArray.join(',')}]`;
+    const favArray = sortedSuits.filter(su => (picks[su]||0) > 0).map(su => SUIT_EMOJI[su as Suit]);
+    const favText = favArray.join(' ');
     const lines: string[] = [];
-    lines.push(`âľ <@${targetId}> Ř˘ŮŘ§Řą:`);
-    lines.push('ââŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâ');
-    lines.push(`âśď¸Ř¨Ř§Ř˛ŰâŮŘ§: ${st.games||0}`);
-    lines.push(`đŤŘ¨ŘąŘŻ: ${st.wins||0}`);
-    lines.push(`âĽď¸Ř¨ŮŘŞŘąŰŮ ŮŮŘŞŰŮŰ: ${mateText}`);
-    lines.push(`đĄ Ř­ÚŠŮ ŮŘ­Ř¨ŮŘ¨: ${favText}`);
-    lines.push('ââŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâŹâ');
+    lines.push(`## ? <@${targetId}> Stats:`);
+    lines.push('### ????????????????');
+    lines.push(`### ?? Games : ${st.games||0}`);
+    lines.push(`### ?? WIN: ${st.wins||0}`);
+    lines.push(`### ?? Best Teamate: ${mateText}`);
+    lines.push(`### ?? Favorite hokm: ${favText}`);
+    lines.push('### ????????????????');
     const embedBaz = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
     await msg.reply({ embeds: [embedBaz] });
     return;
   }
 
-  // .topfriend â list top 10 pairs with most co-voice time (exclude bots)
+  // .topfriend ? list top 10 pairs with most co-voice time (exclude bots)
   if (isCmd('topfriend')) {
     const gId = msg.guildId!;
 
@@ -1498,7 +1958,7 @@ client.on('messageCreate', async (msg: Message) => {
 
     // Nothing to report
     if (agg.size === 0) {
-      await msg.reply({ content: 'ŮŰÚ Ř˛ŮŘŹŰ ŰŘ§ŮŘŞ ŮŘ´ŘŻ.' });
+      await msg.reply({ content: '??? ???? ???? ???.' });
       return;
     }
 
@@ -1524,109 +1984,139 @@ client.on('messageCreate', async (msg: Message) => {
       try { if (!m2) m2 = await msg.guild?.members.fetch(p.b).catch(() => null) || null; } catch {}
       if (!m1 || !m2) continue;
       if (m1.user.bot || m2.user.bot) continue;
-      lines.push(`${lines.length + 1}. <@${p.a}> + <@${p.b}> â ${fmt(p.ms)}`);
+      lines.push(`${lines.length + 1}. <@${p.a}> + <@${p.b}> ? ${fmt(p.ms)}`);
     }
 
     if (lines.length === 0) {
-      await msg.reply({ content: 'ŮŰÚ Ř˛ŮŘŹ ŘşŰŘą Ř¨Ř§ŘŞŰ ŰŘ§ŮŘŞ ŮŘ´ŘŻ.' });
+      await msg.reply({ content: '??? ??? ??? ???? ???? ???.' });
       return;
     }
 
     const embed = new EmbedBuilder()
-      .setTitle('Ř¨ŮŘŞŘąŰŮ ŘŻŮŘłŘŞŘ§Ů')
+      .setTitle('top friends')
       .setDescription(lines.join('\n'))
       .setColor(0x2f3136);
     await msg.reply({ embeds: [embed] });
     return;
   }
 
-  // .new â create room with join buttons
+  // .new ? create room with join buttons
   if (isCmd('new')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     // reset session
     s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'waiting'; s.ownerId = msg.author.id; s.tableMsgId = undefined;
     const contentText = controlListText(s);
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('ŘŞŰŮ 1').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('ŘŞŰŮ 2').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('hokm-leave').setLabel('ŘŽŘąŮŘŹ').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('hokm-start').setLabel('Ř´ŘąŮŘš Ř¨Ř§Ř˛Ű').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('??? 1').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('??? 2').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('hokm-leave').setLabel('????').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('hokm-start').setLabel('???? ????').setStyle(ButtonStyle.Danger),
     );
     const sent = await msg.reply({ content: contentText, components: [row] });
     s.controlMsgId = sent.id;
     return;
   }
 
-  // .a1 @user â owner assigns user to Team 1
+  // .a1 @user ? owner assigns user to Team 1
   if (isCmd('a1')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
-    if (s.state !== 'waiting') { await msg.reply('ŮŮŘˇ ŮŘ¨Ů Ř§Ř˛ Ř´ŘąŮŘš Ř¨Ř§Ř˛Ű ŮŘ§Ř¨Ů Ř§ŮŘŹŘ§Ů Ř§ŘłŘŞ.'); return; }
-    if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('ŮŮŘˇ ŘłŘ§Ř˛ŮŘŻŮ Ř§ŘŞŘ§Ů ŮŰâŘŞŮŘ§ŮŘŻ Ř§ŘšŘśŘ§ ŘąŘ§ Ř§ŘśŘ§ŮŮ ÚŠŮŘŻ.'); return; }
+    if (s.state !== 'waiting') { await msg.reply('??? ??? ?? ???? ???? ???? ????? ???.'); return; }
+    if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('??? ?????? ???? ???????? ???? ?? ????? ???.'); return; }
+    const raw = content.slice(3).trim();
+    if (/^bot\b/i.test(raw)) {
+      const added = addBotToTeam(s, 1);
+      const contentText = controlListText(s);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('??? 1').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('??? 2').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-leave').setLabel('????').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-start').setLabel('???? ????').setStyle(ButtonStyle.Danger),
+      );
+      try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
+      const replyMsg = await msg.reply({ content: added? `Bot ?? ??? 1 ?????? ?? (${added.id.replace('BOT','Bot')}).` : '????? ?????? Bot ?? ??? 1 ???? ?????.' });
+      setTimeout(() => replyMsg.delete().catch(()=>{}), 2500);
+      return;
+    }
     const targets = await resolveTargetIds(msg, content, '.a1');
-    if (targets.length === 0) { await msg.reply('Ř§ŘłŘŞŮŘ§ŘŻŮ: `.a1 @user1 @user2` ŰŘ§ ŘąŰŮžŮŘ§Ű/Ř˘ŰŘŻŰ'); return; }
+    if (targets.length === 0) { await msg.reply('???????: `.a1 @user1 @user2` ?? `.a1 bot`'); return; }
     const added: string[] = []; const skipped: string[] = [];
     for (const uid of targets) {
-      try { const u = await msg.client.users.fetch(uid); if (u.bot) { skipped.push(`<@${uid}> (bot)`); continue; } } catch { skipped.push(`<@${uid}> (ŮŘ§ŮŘšŘŞŘ¨Řą)`); continue; }
-      if (s.team1.includes(uid)) { skipped.push(`<@${uid}> (ŮŘ¨ŮŘ§Ů ŘŞŰŮ 1)`); continue; }
+      try { const u = await msg.client.users.fetch(uid); if (u.bot) { skipped.push(`<@${uid}> (bot)`); continue; } } catch { skipped.push(`<@${uid}> (???????)`); continue; }
+      if (s.team1.includes(uid)) { skipped.push(`<@${uid}> (????? ??? 1)`); continue; }
       s.team1 = s.team1.filter(x=>x!==uid); s.team2 = s.team2.filter(x=>x!==uid);
-      if (s.team1.length >= 2) { skipped.push(`<@${uid}> (ŘŞŰŮ 1 ŮžŘą Ř§ŘłŘŞ)`); continue; }
+      if (s.team1.length >= 2) { skipped.push(`<@${uid}> (??? 1 ?? ???)`); continue; }
       s.team1.push(uid); added.push(`<@${uid}>`);
     }
     const contentText = controlListText(s);
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('ŘŞŰŮ 1').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('ŘŞŰŮ 2').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('hokm-leave').setLabel('ŘŽŘąŮŘŹ').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('hokm-start').setLabel('Ř´ŘąŮŘš Ř¨Ř§Ř˛Ű').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('??? 1').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('??? 2').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('hokm-leave').setLabel('????').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('hokm-start').setLabel('???? ????').setStyle(ButtonStyle.Danger),
     );
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
-    await msg.reply({ content: `Ř§ŮŘ˛ŮŘŻŮ Ř´ŘŻ: ${added.join(' , ') || 'â'}` });
+    await msg.reply({ content: `?????? ??: ${added.join(' , ') || '?'}` });
     return;
   }
 
-  // .a2 @user â owner assigns user to Team 2
+  // .a2 @user ? owner assigns user to Team 2
   if (isCmd('a2')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
-    if (s.state !== 'waiting') { await msg.reply('ŮŮŘˇ ŮŘ¨Ů Ř§Ř˛ Ř´ŘąŮŘš Ř¨Ř§Ř˛Ű ŮŘ§Ř¨Ů Ř§ŮŘŹŘ§Ů Ř§ŘłŘŞ.'); return; }
-    if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('ŮŮŘˇ ŘłŘ§Ř˛ŮŘŻŮ Ř§ŘŞŘ§Ů ŮŰâŘŞŮŘ§ŮŘŻ Ř§ŘšŘśŘ§ ŘąŘ§ Ř§ŘśŘ§ŮŮ ÚŠŮŘŻ.'); return; }
+    if (s.state !== 'waiting') { await msg.reply('??? ??? ?? ???? ???? ???? ????? ???.'); return; }
+    if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('??? ?????? ???? ???????? ???? ?? ????? ???.'); return; }
+    const raw = content.slice(3).trim();
+    if (/^bot\b/i.test(raw)) {
+      const added = addBotToTeam(s, 2);
+      const contentText = controlListText(s);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('??? 1').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('??? 2').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-leave').setLabel('????').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-start').setLabel('???? ????').setStyle(ButtonStyle.Danger),
+      );
+      try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
+      const replyMsg = await msg.reply({ content: added? `Bot ?? ??? 2 ?????? ?? (${added.id.replace('BOT','Bot')}).` : '????? ?????? Bot ?? ??? 2 ???? ?????.' });
+      setTimeout(() => replyMsg.delete().catch(()=>{}), 2500);
+      return;
+    }
     const targets = await resolveTargetIds(msg, content, '.a2');
-    if (targets.length === 0) { await msg.reply('Ř§ŘłŘŞŮŘ§ŘŻŮ: `.a2 @user1 @user2` ŰŘ§ ŘąŰŮžŮŘ§Ű/Ř˘ŰŘŻŰ'); return; }
+    if (targets.length === 0) { await msg.reply('???????: `.a2 @user1 @user2` ?? `.a2 bot`'); return; }
     const added: string[] = []; const skipped: string[] = [];
     for (const uid of targets) {
-      try { const u = await msg.client.users.fetch(uid); if (u.bot) { skipped.push(`<@${uid}> (bot)`); continue; } } catch { skipped.push(`<@${uid}> (ŮŘ§ŮŘšŘŞŘ¨Řą)`); continue; }
-      if (s.team2.includes(uid)) { skipped.push(`<@${uid}> (ŮŘ¨ŮŘ§Ů ŘŞŰŮ 2)`); continue; }
+      try { const u = await msg.client.users.fetch(uid); if (u.bot) { skipped.push(`<@${uid}> (bot)`); continue; } } catch { skipped.push(`<@${uid}> (???????)`); continue; }
+      if (s.team2.includes(uid)) { skipped.push(`<@${uid}> (????? ??? 2)`); continue; }
       s.team1 = s.team1.filter(x=>x!==uid); s.team2 = s.team2.filter(x=>x!==uid);
-      if (s.team2.length >= 2) { skipped.push(`<@${uid}> (ŘŞŰŮ 2 ŮžŘą Ř§ŘłŘŞ)`); continue; }
+      if (s.team2.length >= 2) { skipped.push(`<@${uid}> (??? 2 ?? ???)`); continue; }
       s.team2.push(uid); added.push(`<@${uid}>`);
     }
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('ŘŞŰŮ 1').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('ŘŞŰŮ 2').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('hokm-leave').setLabel('ŘŽŘąŮŘŹ').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('hokm-start').setLabel('Ř´ŘąŮŘš Ř¨Ř§Ř˛Ű').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('??? 1').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('??? 2').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('hokm-leave').setLabel('????').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('hokm-start').setLabel('???? ????').setStyle(ButtonStyle.Danger),
     );
     const contentText = controlListText(s);
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
     {
       const lines: string[] = [];
-      lines.push(`Ř§ŮŘ˛ŮŘŻŮ Ř´ŘŻ: ${added.join(' , ') || 'â'}`);
-      if (skipped.length > 0) lines.push(`ŮŘ§ŘŻŰŘŻŮ: ${skipped.join(' , ')}`);
+      lines.push(`?????? ??: ${added.join(' , ') || '?'}`);
+      if (skipped.length > 0) lines.push(`??????: ${skipped.join(' , ')}`);
       await msg.reply({ content: lines.join('\n') });
     }
     return;
   }
 
-  // .r â owner removes a user from teams
+  // .r ? owner removes a user from teams
   if (isCmd('r')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
-    if (s.state !== 'waiting') { await msg.reply('ŮŮŘˇ ŮŘ¨Ů Ř§Ř˛ Ř´ŘąŮŘš Ř¨Ř§Ř˛Ű ŮŘ§Ř¨Ů Ř§ŮŘŹŘ§Ů Ř§ŘłŘŞ.'); return; }
-    if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('ŮŮŘˇ ŘłŘ§Ř˛ŮŘŻŮ Ř§ŘŞŘ§Ů ŮŰâŘŞŮŘ§ŮŘŻ Ř§ŘšŘśŘ§ ŘąŘ§ Ř­Ř°Ů ÚŠŮŘŻ.'); return; }
+    if (s.state !== 'waiting') { await msg.reply('??? ??? ?? ???? ???? ???? ????? ???.'); return; }
+    if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('??? ?????? ???? ???????? ???? ?? ??? ???.'); return; }
     const targets = await resolveTargetIds(msg, content, '.r');
-    if (targets.length === 0) { await msg.reply('Ř§ŘłŘŞŮŘ§ŘŻŮ: `.r @user1 @user2` ŰŘ§ ŘąŰŮžŮŘ§Ű/Ř˘ŰŘŻŰ'); return; }
+    if (targets.length === 0) { await msg.reply('???????: `.r @user1 @user2` ?? ??????/????'); return; }
     const removed: string[] = []; const notIn: string[] = [];
     for (const uid of targets) {
       const inAny = s.team1.includes(uid) || s.team2.includes(uid);
@@ -1636,41 +2126,42 @@ client.on('messageCreate', async (msg: Message) => {
     }
     const contentText = controlListText(s);
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('ŘŞŰŮ 1').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('ŘŞŰŮ 2').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('hokm-leave').setLabel('ŘŽŘąŮŘŹ').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('hokm-start').setLabel('Ř´ŘąŮŘš Ř¨Ř§Ř˛Ű').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('??? 1').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('??? 2').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('hokm-leave').setLabel('????').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('hokm-start').setLabel('???? ????').setStyle(ButtonStyle.Danger),
     );
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
     {
       const lines: string[] = [];
-      lines.push(`Ř­Ř°Ů Ř´ŘŻ: ${removed.join(' , ') || 'â'}`);
-      if (notIn.length > 0) lines.push(`ŮŘ§ŮŮŘŹŮŘŻ: ${notIn.join(' , ')}`);
-      await msg.reply({ content: lines.join('\n') });
+      lines.push(`??? ??: ${removed.join(' , ') || '?'}`);
+      if (notIn.length > 0) lines.push(`???????: ${notIn.join(' , ')}`);
+      const replyMsg = await msg.reply({ content: lines.join('\n') });
+      setTimeout(() => replyMsg.delete().catch(()=>{}), 2500);
     }
     return;
   }
 
-  // .end â owner ends the room and deletes control/table messages
+  // .end ? owner ends the room and deletes control/table messages
   if (isCmd('end')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
-    if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('ŮŮŘˇ ŘłŘ§Ř˛ŮŘŻŮ Ř§ŘŞŘ§Ů ŮŰâŘŞŮŘ§ŮŘŻ ŮžŘ§ŰŘ§Ů ŘŻŮŘŻ.'); return; }
+    if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('??? ?????? ???? ???????? ????? ???.'); return; }
     // delete control and table messages if exist
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.delete().catch(()=>{}); } } catch {}
     try { if (s.tableMsgId) { const m2 = await (msg.channel as any).messages.fetch(s.tableMsgId).catch(()=>null); if (m2) await m2.delete().catch(()=>{}); } } catch {}
     // clear session
     s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'finished'; s.controlMsgId = undefined; s.tableMsgId = undefined;
-    await msg.reply('Ř§ŘŞŘ§Ů ŮžŘ§ŰŘ§Ů ŰŘ§ŮŘŞ.');
+    await msg.reply('???? ????? ????.');
     return;
   }
 
-  // .reset â owner resets the room and redeals (like fresh start with current teams)
+  // .reset ? owner resets the room and redeals (like fresh start with current teams)
   if (isCmd('reset')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
-    if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('ŮŮŘˇ ŘłŘ§Ř˛ŮŘŻŮ Ř§ŘŞŘ§Ů ŮŰâŘŞŮŘ§ŮŘŻ ŘąŰŘłŘŞ ÚŠŮŘŻ.'); return; }
-    if (s.team1.length !== 2 || s.team2.length !== 2) { await msg.reply('Ř¨ŘąŘ§Ű ŘąŰŘłŘŞŘ ŮŘą ŘŻŮ ŘŞŰŮ Ř¨Ř§ŰŘŻ Ű˛ ŮŮŘą ŘŻŘ§Ř´ŘŞŮ Ř¨Ř§Ř´ŮŘŻ.'); return; }
+    if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('??? ?????? ???? ???????? ???? ???.'); return; }
+    if (s.team1.length !== 2 || s.team2.length !== 2) { await msg.reply('???? ????? ?? ?? ??? ???? ? ??? ????? ?????.'); return; }
     // reinitialize game state
     s.order = [s.team1[0], s.team2[0], s.team1[1], s.team2[1]];
     s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
@@ -1680,25 +2171,25 @@ client.on('messageCreate', async (msg: Message) => {
     give(s.hakim, 5);
     s.hokm = undefined; s.tableMsgId = undefined;
     s.state = 'choosing_hokm';
-    try { const user = await msg.client.users.fetch(s.hakim); await user.send({ content: `Ř¨Ř§Ř˛Ű ŘąŰŘłŘŞ Ř´ŘŻ. ŘŻŘłŘŞ Ř§ŮŮŰŮ Ř´ŮŘ§ (Űľ ÚŠŘ§ŘąŘŞ):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
+    try { const user = await msg.client.users.fetch(s.hakim); await user.send({ content: `???? ???? ??. ??? ????? ??? (? ????):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
     // update control list if exists
     if (s.controlMsgId) {
       const contentText = controlListText(s);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('ŘŞŰŮ 1').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('ŘŞŰŮ 2').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('hokm-leave').setLabel('ŘŽŘąŮŘŹ').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-start').setLabel('Ř´ŘąŮŘš Ř¨Ř§Ř˛Ű').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('??? 1').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('??? 2').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-leave').setLabel('????').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-start').setLabel('???? ????').setStyle(ButtonStyle.Danger),
       );
       try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } catch {}
     }
-    await msg.reply({ content: `ŘąŰŘłŘŞ Ř´ŘŻ. Ř­Ř§ÚŠŮ: <@${s.hakim}> â ŮŘˇŮŘ§Ů Ř¨Ř§ ".hokm hokm <ŘŽŘ§Ů>" Ř­ÚŠŮ ŘąŘ§ Ř§ŮŘŞŘŽŘ§Ř¨ ÚŠŮ.` });
+    await msg.reply({ content: `???? ??. ????: <@${s.hakim}> ? ????? ?? ".hokm hokm <???>" ??? ?? ?????? ??.` });
     return;
   }
 
-  // .list â recreate control list if waiting; otherwise re-render table
+  // .list ? recreate control list if waiting; otherwise re-render table
   if (isCmd('list')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state === 'waiting') {
       // delete previous control message if exists
@@ -1708,10 +2199,10 @@ client.on('messageCreate', async (msg: Message) => {
       }
       const contentText = controlListText(s);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('ŘŞŰŮ 1').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('ŘŞŰŮ 2').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('hokm-leave').setLabel('ŘŽŘąŮŘŹ').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-start').setLabel('Ř´ŘąŮŘš Ř¨Ř§Ř˛Ű').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('??? 1').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('??? 2').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-leave').setLabel('????').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-start').setLabel('???? ????').setStyle(ButtonStyle.Danger),
       );
       const sent = await msg.reply({ content: contentText, components: [row] });
       s.controlMsgId = sent.id;
@@ -1721,9 +2212,37 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .miz â ŮžŘ§ÚŠâŘłŘ§Ř˛Ű ŮžŰŘ§Ů ŮŰŘ˛ ŮŘšŮŰ Ů ŮŮŘ§ŰŘ´ ŘŻŮŘ¨Ř§ŘąŮ ŮŰŘ˛ ŘŻŘą ÚŮŮ
+  // .tablepng ? ????? ??? ??? ???? ??????/????
+  if (isCmd('tablepng')) {
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    try {
+      const buffer = await renderTableImage(s);
+      const attachment = new AttachmentBuilder(buffer, { name: 'hokm-table.png' });
+      await msg.reply({ files: [attachment] });
+    } catch {
+      await msg.reply({ content: '??? ?? ???? ????? ???.' });
+    }
+    return;
+  }
+
+  // .tablesvg ? ????? ????? ???? ??? ?? ????????? ????????
+  if (isCmd('tablesvg')) {
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    try {
+      const svgBuf = await renderTableSVG(s);
+      const attachment = new AttachmentBuilder(svgBuf, { name: 'hokm-table.svg' });
+      await msg.reply({ files: [attachment] });
+    } catch {
+      await msg.reply({ content: '??? ?? ???? SVG ???.' });
+    }
+    return;
+  }
+
+  // .miz ? ???????? ???? ??? ???? ? ????? ?????? ??? ?? ???
   if (isCmd('miz')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.tableMsgId) {
       try {
@@ -1736,19 +2255,19 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .hokm start â start game; optional N sets to win match
+  // .hokm start ? start game; optional N sets to win match
   if (isSubCmd('hokm','start')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
-    if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('ŮŮŘˇ ŘłŘ§Ř˛ŮŘŻŮ Ř§ŘŞŘ§Ů ŮŰâŘŞŮŘ§ŮŘŻ Ř¨Ř§Ř˛Ű ŘąŘ§ Ř´ŘąŮŘš ÚŠŮŘŻ.'); return; }
-    if (s.state !== 'waiting') { await msg.reply('Ř§ŘŞŘ§Ů ŘŻŘą ŮŘśŘšŰŘŞ Ř´ŘąŮŘš ŮŰŘłŘŞ.'); return; }
-    if (s.team1.length !== 2 || s.team2.length !== 2) { await msg.reply('ŮŘą ŘŻŮ ŘŞŰŮ Ř¨Ř§ŰŘŻ Ű˛ ŮŮŘą ŘŻŘ§Ř´ŘŞŮ Ř¨Ř§Ř´ŮŘŻ.'); return; }
+    if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('??? ?????? ???? ???????? ???? ?? ???? ???.'); return; }
+    if (s.state !== 'waiting') { await msg.reply('???? ?? ????? ???? ????.'); return; }
+    if (s.team1.length !== 2 || s.team2.length !== 2) { await msg.reply('?? ?? ??? ???? ? ??? ????? ?????.'); return; }
     // parse optional target sets (full hands)
     const m = content.match(/^\.hokm start(?:\s+(\d+))?/);
     let targetSets = 1;
     if (m && m[1]) {
       const n = parseInt(m[1], 10);
-      if (Number.isNaN(n) || n < 1 || n > 7) { await msg.reply('ŘšŘŻŘŻ ŮŘšŘŞŘ¨Řą Ř¨ŰŮ 1 ŘŞŘ§ 7 ŮŘ§ŘąŘŻ ÚŠŮŰŘŻ. ŮŘŤŘ§Ů: `.hokm start 3`'); return; }
+      if (Number.isNaN(n) || n < 1 || n > 7) { await msg.reply('??? ????? ??? 1 ?? 7 ???? ????. ????: `.hokm start 3`'); return; }
       targetSets = n;
     }
     s.targetSets = targetSets; // number of sets to win
@@ -1763,17 +2282,17 @@ client.on('messageCreate', async (msg: Message) => {
     give(s.hakim, 5);
     s.state = 'choosing_hokm';
     // DM hakim hand
-    try { const user = await msg.client.users.fetch(s.hakim); await user.send({ content: `ŘŻŘłŘŞ Ř§ŮŮŰŮ Ř´ŮŘ§ (Űľ ÚŠŘ§ŘąŘŞ):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
+    try { const user = await msg.client.users.fetch(s.hakim); await user.send({ content: `??? ????? ??? (? ????):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
     // Show suit selection panel in channel
     {
-      const embed = new EmbedBuilder().setTitle('Hokm â Ř§ŮŘŞŘŽŘ§Ř¨ Ř­ÚŠŮ')
-        .setDescription(`ŘŞŰŮ 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')}\nŘŞŰŮ 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')}\nŘ­Ř§ÚŠŮ: <@${s.hakim}> â ŮŘˇŮŘ§Ů Ř­ÚŠŮ ŘąŘ§ Ř§ŮŘŞŘŽŘ§Ř¨ ÚŠŮ.`)
+      const embed = new EmbedBuilder().setTitle('Hokm ? ?????? ???')
+        .setDescription(`??? 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')}\n??? 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')}\n????: <@${s.hakim}> ? ????? ??? ?? ?????? ??.`)
         .setColor(0x5865F2);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-choose-S').setLabel('â ď¸ ŮžŰÚŠ').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-choose-H').setLabel('âĽď¸ ŘŻŮ').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('hokm-choose-D').setLabel('âŚď¸ ŘŽŘ´ŘŞ').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-choose-C').setLabel('âŁď¸ ÚŻŰŘ´ŮŰŘ˛').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-choose-S').setLabel('?? ???').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-choose-H').setLabel('?? ??').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('hokm-choose-D').setLabel('?? ???').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-choose-C').setLabel('?? ??????').setStyle(ButtonStyle.Success),
       );
       let msgObj = null as any;
       try {
@@ -1787,19 +2306,19 @@ client.on('messageCreate', async (msg: Message) => {
         s.tableMsgId = msgObj.id;
       }
     }
-    await msg.reply({ content: `Ř¨Ř§Ř˛Ű Ř˘ŘşŘ§Ř˛ Ř´ŘŻ. ŮŘŻŮ ŘłŘŞâŮŘ§: ${s.targetSets} (ŮŘą ŘłŘŞ = Űˇ ŘŻŘłŘŞ). Ř­Ř§ÚŠŮ: <@${s.hakim}> â Ř§Ř˛ ŘŻÚŠŮŮâŮŘ§Ű ŮŰŘ˛ Ř¨ŘąŘ§Ű Ř§ŮŘŞŘŽŘ§Ř¨ Ř­ÚŠŮ Ř§ŘłŘŞŮŘ§ŘŻŮ ÚŠŮ.` });
+    await msg.reply({ content: `???? ???? ??. ??? ?????: ${s.targetSets} (?? ?? = ? ???). ????: <@${s.hakim}> ? ?? ???????? ??? ???? ?????? ??? ??????? ??.` });
     return;
   }
 
-  // .hokm hokm <suit> â hakim chooses trump; then deal remaining to all and DM hands
+  // .hokm hokm <suit> ? hakim chooses trump; then deal remaining to all and DM hands
   if (isSubCmd('hokm','hokm')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
-    if (s.state !== 'choosing_hokm' || !s.hakim) { await msg.reply('Ř§ŮŘ§Ů ŮŮŘŞ Ř§ŮŘŞŘŽŘ§Ř¨ Ř­ÚŠŮ ŮŰŘłŘŞ.'); return; }
-    if (msg.author.id !== s.hakim) { await msg.reply('ŮŮŘˇ Ř­Ř§ÚŠŮ ŮŰâŘŞŮŘ§ŮŘŻ Ř­ÚŠŮ ŘąŘ§ Ř§ŮŘŞŘŽŘ§Ř¨ ÚŠŮŘŻ.'); return; }
+    if (s.state !== 'choosing_hokm' || !s.hakim) { await msg.reply('???? ??? ?????? ??? ????.'); return; }
+    if (msg.author.id !== s.hakim) { await msg.reply('??? ???? ???????? ??? ?? ?????? ???.'); return; }
     const arg = content.replace('.hokm hokm', '').trim();
     const suit = parseSuit(arg);
-    if (!suit) { await msg.reply('ŘŽŘ§Ů ŮŘ§ŮŘšŘŞŘ¨Řą. ÚŻŘ˛ŰŮŮâŮŘ§: â ď¸ ŮžŰÚŠŘ âĽď¸ ŘŻŮŘ âŚď¸ ŘŽŘ´ŘŞŘ âŁď¸ ÚŻŰŘ´ŮŰŘ˛'); return; }
+    if (!suit) { await msg.reply('??? ???????. ????????: ?? ???? ?? ??? ?? ???? ?? ??????'); return; }
     s.hokm = suit;
     // deal remaining to all to reach 13
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
@@ -1818,70 +2337,70 @@ client.on('messageCreate', async (msg: Message) => {
     s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
     // DM all hands
     for (const uid of s.order) {
-      try { const user = await msg.client.users.fetch(uid); await user.send({ content: `Ř­ÚŠŮ: ${SUIT_EMOJI[s.hokm]}\nŘŻŘłŘŞ Ř´ŮŘ§:\n${handToString(s.hands.get(uid)!)}\nŮŮŘ¨ŘŞ Ř˘ŘşŘ§Ř˛ Ř¨Ř§ Ř­Ř§ÚŠŮ <@${s.hakim}>` }); } catch {}
+      try { const user = await msg.client.users.fetch(uid); await user.send({ content: `???: ${SUIT_EMOJI[s.hokm]}\n??? ???:\n${handToString(s.hands.get(uid)!)}\n???? ???? ?? ???? <@${s.hakim}>` }); } catch {}
     }
-    await msg.reply({ content: `Ř­ÚŠŮ Ř§ŮŘŞŘŽŘ§Ř¨ Ř´ŘŻ: ${SUIT_EMOJI[s.hokm]} â ŮŮŘ¨ŘŞ Ř˘ŘşŘ§Ř˛ Ř¨Ř§ Ř­Ř§ÚŠŮ <@${s.hakim}>. Ř¨Ř§ ".hokm play <ÚŠŘ§ŘąŘŞ>" Ř¨Ř§Ř˛Ű ÚŠŮŰŘŻ. ŮŘŤŘ§Ů: .hokm play A${SUIT_EMOJI['S']}` });
+    await msg.reply({ content: `??? ?????? ??: ${SUIT_EMOJI[s.hokm]} ? ???? ???? ?? ???? <@${s.hakim}>. ?? ".hokm play <????>" ???? ????. ????: .hokm play A${SUIT_EMOJI['S']}` });
     return;
   }
 
-  // .hokm hand â DM your hand
+  // .hokm hand ? DM your hand
   if (isSubCmd('hokm','hand')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
-    if (s.state === 'waiting') { await msg.reply('Ř¨Ř§Ř˛Ű Ř´ŘąŮŘš ŮŘ´ŘŻŮ Ř§ŘłŘŞ.'); return; }
+    if (s.state === 'waiting') { await msg.reply('???? ???? ???? ???.'); return; }
     const hand = s.hands.get(msg.author.id);
-    if (!hand) { await msg.reply('Ř´ŮŘ§ ŘŻŘą Ř§ŰŮ Ř¨Ř§Ř˛Ű ŮŰŘłŘŞŰŘŻ.'); return; }
-    try { await msg.author.send({ content: `ŘŻŘłŘŞ Ř´ŮŘ§:\n${handToString(hand)}` }); await msg.reply({ content: 'Ř¨Ů ŮžŰŘ§ŮâŮŘ§Ű ŘŽŘľŮŘľŰâŘ§ŘŞ Ř§ŘąŘłŘ§Ů Ř´ŘŻ.' }); } catch {
-      await msg.reply('Ř§ŮÚŠŘ§Ů Ř§ŘąŘłŘ§Ů ŮžŰŘ§Ů ŘŽŘľŮŘľŰ Ř¨Ů Ř´ŮŘ§ ŮŘŹŮŘŻ ŮŘŻŘ§ŘąŘŻ.');
+    if (!hand) { await msg.reply('??? ?? ??? ???? ??????.'); return; }
+    try { await msg.author.send({ content: `??? ???:\n${handToString(hand)}` }); await msg.reply({ content: '?? ???????? ???????? ????? ??.' }); } catch {
+      await msg.reply('????? ????? ???? ????? ?? ??? ???? ?????.');
     }
     return;
   }
 
-  // .hokm table â show teams and current state (with table/tricks)
+  // .hokm table ? show teams and current state (with table/tricks)
   if (isSubCmd('hokm','table')) {
-    if (!msg.guild) { await msg.reply('ŮŮŘˇ ŘŻŘ§ŘŽŮ ŘłŘąŮŘą.'); return; }
+    if (!msg.guild) { await msg.reply('??? ???? ????.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     const parts: string[] = [];
-    parts.push(`ŘŞŰŮ 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || 'â'}`);
-    parts.push(`ŘŞŰŮ 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || 'â'}`);
-    parts.push(`Ř­Ř§ÚŠŮ: ${s.hakim?`<@${s.hakim}>`:'â'}`);
-    parts.push(`Ř­ÚŠŮ: ${s.hokm?SUIT_EMOJI[s.hokm]:'â'}`);
-    parts.push(`ŮŘŻŮ ŘŻŘłŘŞâŮŘ§: ${s.targetTricks ?? 7}`);
+    parts.push(`??? 1: ${s.team1.map(u=>`<@${u}>`).join(' , ') || '?'}`);
+    parts.push(`??? 2: ${s.team2.map(u=>`<@${u}>`).join(' , ') || '?'}`);
+    parts.push(`????: ${s.hakim?`<@${s.hakim}>`:'?'}`);
+    parts.push(`???: ${s.hokm?SUIT_EMOJI[s.hokm]:'?'}`);
+    parts.push(`??? ??????: ${s.targetTricks ?? 7}`);
     if (s.state === 'playing') {
-      parts.push(`Ř¨ŘąŘŻ ŘŻŘłŘŞâŮŘ§ â ŘŞŰŮ1: ${s.tricksTeam1 ?? 0} | ŘŞŰŮ2: ${s.tricksTeam2 ?? 0}`);
+      parts.push(`??? ?????? ? ???1: ${s.tricksTeam1 ?? 0} | ???2: ${s.tricksTeam2 ?? 0}`);
       const tableLines: string[] = [];
       if (s.table && s.table.length) {
         for (const p of s.table) tableLines.push(`<@${p.userId}>: ${cardStr(p.card)}`);
-        parts.push(`ŮŰŘ˛:
+        parts.push(`???:
 ${tableLines.join('\n')}`);
       } else {
-        parts.push('ŮŰŘ˛: â');
+        parts.push('???: ?');
       }
       const next = s.turnIndex!=null ? s.order[s.turnIndex] : undefined;
-      if (next) parts.push(`ŮŮŘ¨ŘŞ: <@${next}>`);
+      if (next) parts.push(`????: <@${next}>`);
     }
-    parts.push(`ŮŘśŘšŰŘŞ: ${s.state}`);
-    const embed = new EmbedBuilder().setTitle('Hokm â ŮŘśŘšŰŘŞ ŮŰŘ˛').setDescription(parts.join('\n')).setColor(0x2f3136);
+    parts.push(`?????: ${s.state}`);
+    const embed = new EmbedBuilder().setTitle('Hokm ? ????? ???').setDescription(parts.join('\n')).setColor(0x2f3136);
     await msg.reply({ embeds: [embed] });
     return;
   }
 
-  // .komak â help
+  // .komak ? help
   if (isCmd('komak')) {
     const lines: string[] = [
-      'â˘ .t <ŮŘŻŘŞ> [ŘŻŮŰŮ] â ŘŞŮŘ¸ŰŮ ŘŞŘ§ŰŮŘą. ŮŮŮŮŮ: `.t 10m` ŰŘ§ `.t 60 [ŘŻŮŰŮ]`',
-      'â˘ .e <ŘŤŘ§ŮŰŮ> â Ř§ŮŘ˛ŮŘŻŮ ÚŮŘŻ ŘŤŘ§ŮŰŮ Ř¨Ů Ř˘ŘŽŘąŰŮ ŘŞŘ§ŰŮŘą ŘŽŮŘŻŘŞ. ŮŮŮŮŮ: `.e 30`',
-      'â˘ .friend [@ÚŠŘ§ŘąŘ¨Řą|Ř˘ŰŘŻŰ] â ŮŮŘ§ŰŘ´ ŰąŰ° ŮŮŘąŮ Ř¨ŘąŘŞŘą ÚŠŮ Ř¨ŰŘ´ŘŞŘąŰŮ ŮŮâŘ­ŘśŮŘąŰ ŮŰŘł Ř¨Ř§ ÚŠŘ§ŘąŘ¨Řą ŮŘŻŮ ŘąŘ§ ŘŻŘ§Ř´ŘŞŮâŘ§ŮŘŻ (Ř¨ŘŻŮŮ ŘąŘ¨Ř§ŘŞâŮŘ§).',
-      'â˘ .topfriend â ŮŮŘ§ŰŘ´ ŰąŰ° Ř˛ŮŘŹ Ř¨ŘąŘŞŘą Ř¨Ř§ Ř¨ŰŘ´ŘŞŘąŰŮ ŮŮâŘ­ŘśŮŘąŰ ŘŻŘą ŮŰŘł (Ř¨ŘŻŮŮ ŘąŘ¨Ř§ŘŞâŮŘ§).',
-      'â˘ .ll [@ÚŠŘ§ŘąŘ¨Řą|Ř˘ŰŘŻŰ] â ŮŘ­Ř§ŘłŘ¨Ů Ů ŘłŘ§ŘŽŘŞ ŘŞŘľŮŰŘą ŘŻŘąŘľŘŻ ŘšŘ´Ů Ř¨ŰŮ Ř´ŮŘ§ Ů ÚŠŘ§ŘąŘ¨Řą ŮŘŻŮ.',
-      'â˘ .llset @user1 @user2 <0..100> â ŮŮŘˇ ŮŘŻŰŘąŘ§Ů: ŘŞŮŘ¸ŰŮ ŘŻŘąŘľŘŻ ŘŤŘ§Ř¨ŘŞ ŘšŘ´Ů Ř¨ŘąŘ§Ű ŘŻŮ ÚŠŘ§ŘąŘ¨Řą.',
-      'â˘ .llunset @user1 @user2 â ŮŮŘˇ ŮŘŻŰŘąŘ§Ů: Ř­Ř°Ů ŘŞŮŘ¸ŰŮ ŘŤŘ§Ř¨ŘŞ ŘŻŘąŘľŘŻ ŘšŘ´Ů.',
-      'â˘ .av [@ÚŠŘ§ŘąŘ¨Řą|Ř˘ŰŘŻŰ] â ŮŮŘ§ŰŘ´ Ř˘ŮŘ§ŘŞŘ§Řą ÚŠŘ§ŘąŘ¨Řą (Ř¨Ř§ ŮŰŮÚŠ).',
-      'â˘ .ba [@ÚŠŘ§ŘąŘ¨Řą|Ř˘ŰŘŻŰ] â ŮŮŘ§ŰŘ´ Ř¨ŮŘą ÚŠŘ§ŘąŘ¨Řą (Ř§ÚŻŘą ŘŻŘ§Ř´ŘŞŮ Ř¨Ř§Ř´ŘŻ).',
-      'â˘ Slash: /timer set|list|cancel â ŘŞŘ§ŰŮŘą Ř¨Ř§ Ř§ŰŮŘŞŘąŮŰŘł Ř§ŘłŮŘ´âÚŠŘ§ŮŮŘŻ (ŘŤŘ¨ŘŞ Ř¨Ř§ `npm run register:commands`).',
+      '? .t <???> [????] ? ????? ?????. ?????: `.t 10m` ?? `.t 60 [????]`',
+      '? .e <?????> ? ?????? ??? ????? ?? ????? ????? ????. ?????: `.e 30`',
+      '? .friend [@?????|????] ? ????? ?? ???? ???? ?? ??????? ???????? ??? ?? ????? ??? ?? ????????? (???? ???????).',
+      '? .topfriend ? ????? ?? ??? ???? ?? ??????? ???????? ?? ??? (???? ???????).',
+      '? .ll [@?????|????] ? ?????? ? ???? ????? ???? ??? ??? ??? ? ????? ???.',
+      '? .llset @user1 @user2 <0..100> ? ??? ??????: ????? ???? ???? ??? ???? ?? ?????.',
+      '? .llunset @user1 @user2 ? ??? ??????: ??? ????? ???? ???? ???.',
+      '? .av [@?????|????] ? ????? ?????? ????? (?? ????).',
+      '? .ba [@?????|????] ? ????? ??? ????? (??? ????? ????).',
+      '? Slash: /timer set|list|cancel ? ????? ?? ???????? ?????????? (??? ?? `npm run register:commands`).',
     ];
     const embed = new EmbedBuilder()
-      .setTitle('ŘąŘ§ŮŮŮŘ§Ű ŘŻŘłŘŞŮŘąŘ§ŘŞ')
+      .setTitle('??????? ???????')
       .setDescription(lines.join('\n'))
       .setColor(0x2f3136);
     await msg.reply({ embeds: [embed] });
@@ -1936,7 +2455,7 @@ ${tableLines.join('\n')}`);
     try { user = await user.fetch(); } catch {}
     const banner = user.bannerURL({ size: 1024, extension: 'png' });
     if (!banner) {
-      await msg.reply({ content: 'Ř§ŰŮ ÚŠŘ§ŘąŘ¨Řą Ř¨ŮŘąŰ ŘŞŮŘ¸ŰŮ ŮÚŠŘąŘŻŮ Ř§ŘłŘŞ.' });
+      await msg.reply({ content: '??? ????? ???? ????? ????? ???.' });
       return;
     }
     let display = user.username;
@@ -1953,17 +2472,17 @@ ${tableLines.join('\n')}`);
   }
 
 
-  // .llset â admin only
+  // .llset ? admin only
   if (isCmd('llset')) {
     const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
     if (!isAdmin) {
-      await msg.reply({ content: 'ŮŮŘˇ ŮŘŻŰŘąŘ§Ů ŮŰâŘŞŮŘ§ŮŮŘŻ Ř§Ř˛ Ř§ŰŮ ŘŻŘłŘŞŮŘą Ř§ŘłŘŞŮŘ§ŘŻŮ ÚŠŮŮŘŻ.' });
+      await msg.reply({ content: '??? ?????? ????????? ?? ??? ????? ??????? ????.' });
       return;
     }
     const arg = content.slice(6).trim();
     const parts = arg.split(/\s+/).filter(Boolean);
     if (parts.length < 3 && msg.mentions.users.size < 2) {
-      await msg.reply({ content: 'Ř§ŘłŘŞŮŘ§ŘŻŮ: `.llset @user1 @user2 89` ŰŘ§ Ř¨Ř§ Ř˘ŰŘŻŰ ŘŻŮ ÚŠŘ§ŘąŘ¨Řą Ů ŘšŘŻŘŻ Ř¨ŰŮ 0 ŘŞŘ§ 100.' });
+      await msg.reply({ content: '???????: `.llset @user1 @user2 89` ?? ?? ???? ?? ????? ? ??? ??? 0 ?? 100.' });
       return;
     }
     let u1 = msg.mentions.users.at(0) || null;
@@ -1977,7 +2496,7 @@ ${tableLines.join('\n')}`);
     }
     const p = Number(pStr);
     if (!u1 || !u2 || !Number.isInteger(p) || p < 0 || p > 100) {
-      await msg.reply({ content: 'ŮŘąŮŘŻŰ ŮŘ§ŮŘšŘŞŘ¨Řą. ŘšŘŻŘŻ Ř¨Ř§ŰŘŻ Ř¨ŰŮ 0 ŘŞŘ§ 100 Ř¨Ř§Ř´ŘŻ Ů ŘŻŮ ÚŠŘ§ŘąŘ¨Řą ŮŘ´ŘŽŘľ Ř´ŮŮŘŻ.' });
+      await msg.reply({ content: '????? ???????. ??? ???? ??? 0 ?? 100 ???? ? ?? ????? ???? ????.' });
       return;
     }
     const gId = msg.guildId!;
@@ -1985,21 +2504,21 @@ ${tableLines.join('\n')}`);
     m.set(loveKey(u1.id, u2.id), p);
     loveOverrides.set(gId, m);
     saveLoveOverrides();
-    await msg.reply({ content: `ŘŻŘąŘľŘŻ ŘšŘ´Ů Ř¨ŰŮ <@${u1.id}> Ů <@${u2.id}> ŘąŮŰ ${p}% ŘŞŮŘ¸ŰŮ Ř´ŘŻ.` });
+    await msg.reply({ content: `???? ??? ??? <@${u1.id}> ? <@${u2.id}> ??? ${p}% ????? ??.` });
     return;
   }
 
-  // .llunset â admin only
+  // .llunset ? admin only
   if (isCmd('llunset')) {
     const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
     if (!isAdmin) {
-      await msg.reply({ content: 'ŮŮŘˇ ŮŘŻŰŘąŘ§Ů ŮŰâŘŞŮŘ§ŮŮŘŻ Ř§Ř˛ Ř§ŰŮ ŘŻŘłŘŞŮŘą Ř§ŘłŘŞŮŘ§ŘŻŮ ÚŠŮŮŘŻ.' });
+      await msg.reply({ content: '??? ?????? ????????? ?? ??? ????? ??????? ????.' });
       return;
     }
     const arg = content.slice(8).trim();
     const parts = arg.split(/\s+/).filter(Boolean);
     if (parts.length < 2 && msg.mentions.users.size < 2) {
-      await msg.reply({ content: 'Ř§ŘłŘŞŮŘ§ŘŻŮ: `.llunset @user1 @user2` ŰŘ§ Ř¨Ř§ Ř˘ŰŘŻŰ ŘŻŮ ÚŠŘ§ŘąŘ¨Řą.' });
+      await msg.reply({ content: '???????: `.llunset @user1 @user2` ?? ?? ???? ?? ?????.' });
       return;
     }
     let u1 = msg.mentions.users.at(0) || null;
@@ -2011,7 +2530,7 @@ ${tableLines.join('\n')}`);
       if (!u2 && b && /^\d+$/.test(b)) { try { u2 = await msg.client.users.fetch(b); } catch {} }
     }
     if (!u1 || !u2) {
-      await msg.reply({ content: 'ŘŻŮ ÚŠŘ§ŘąŘ¨Řą ŘąŘ§ ŮŘ´ŘŽŘľ ÚŠŮŰŘŻ.' });
+      await msg.reply({ content: '?? ????? ?? ???? ????.' });
       return;
     }
     const gId = msg.guildId!;
@@ -2021,7 +2540,7 @@ ${tableLines.join('\n')}`);
       if (m.size === 0) loveOverrides.delete(gId); else loveOverrides.set(gId, m);
       saveLoveOverrides();
     }
-    await msg.reply({ content: `ŘŞŮŘ¸ŰŮ ŘŤŘ§Ř¨ŘŞ Ř¨ŰŮ <@${u1.id}> Ů <@${u2.id}> Ř­Ř°Ů Ř´ŘŻ.` });
+    await msg.reply({ content: `????? ???? ??? <@${u1.id}> ? <@${u2.id}> ??? ??.` });
     return;
   }
 
@@ -2179,7 +2698,7 @@ ${tableLines.join('\n')}`);
       return;
     } catch (err) {
       console.error('Error in .ll command:', err);
-      await msg.reply({ content: 'ŘŽŘˇŘ§ ŘŻŘą ŘłŘ§ŘŽŘŞ ŘŞŘľŮŰŘą ŘšŘ´Ů. ŮŘˇŮŘ§Ů ÚŠŮŰ Ř¨ŘšŘŻ ŘŻŮŘ¨Ř§ŘąŮ ŘŞŮŘ§Ř´ ÚŠŮŰŘŻ.' });
+      await msg.reply({ content: '??? ?? ???? ????? ???. ????? ??? ??? ?????? ???? ????.' });
       return;
     } finally {
       llInFlight.delete(msg.id);
@@ -2190,17 +2709,17 @@ ${tableLines.join('\n')}`);
   if (isCmd('e')) {
     const arg = content.slice(2).trim();
     if (!arg || !/^\d+$/.test(arg)) {
-      await msg.reply({ content: 'Ř§ŘłŘŞŮŘ§ŘŻŮ: `.e 30` (Ř§ŮŘ˛ŮŘŻŮ ŘŤŘ§ŮŰŮ Ř¨Ů Ř˘ŘŽŘąŰŮ ŘŞŘ§ŰŮŘą Ř´ŮŘ§)' });
+      await msg.reply({ content: '???????: `.e 30` (?????? ????? ?? ????? ????? ???)' });
       return;
     }
     const sec = Number(arg);
     if (sec <= 0) {
-      await msg.reply({ content: 'ŘšŘŻŘŻ ŮŘšŘŞŘ¨Řą ŮŘ§ŘąŘŻ ÚŠŮŰŘŻ (Ř¨Ř˛ŘąÚŻŘŞŘą Ř§Ř˛ 0).' });
+      await msg.reply({ content: '??? ????? ???? ???? (?????? ?? 0).' });
       return;
     }
     const t = await timerManager.extendLast(msg.guildId!, msg.author.id, sec * 1000);
     if (!t) {
-      await msg.reply({ content: 'ŘŞŘ§ŰŮŘą ŮŘšŘ§ŮŰ Ř¨ŘąŘ§Ű Ř´ŮŘ§ ŰŘ§ŮŘŞ ŮŘ´ŘŻ.' });
+      await msg.reply({ content: '????? ????? ???? ??? ???? ???.' });
       return;
     }
     return;
@@ -2210,7 +2729,7 @@ ${tableLines.join('\n')}`);
 
   const args = content.slice(2).trim();
   if (!args) {
-    await msg.reply({ content: 'Ř§ŘłŘŞŮŘ§ŘŻŮ: `.t 10m [ŘŻŮŰŮ]` ŰŘ§ `.t 60 [ŘŻŮŰŮ]` (ŘšŘŻŘŻ = ŘŤŘ§ŮŰŮ)' });
+    await msg.reply({ content: '???????: `.t 10m [????]` ?? `.t 60 [????]` (??? = ?????)' });
     return;
   }
 
@@ -2218,7 +2737,7 @@ ${tableLines.join('\n')}`);
   const reason = rest.join(' ').trim() || null;
   const durationMs = parseDuration(first);
   if (!durationMs || durationMs < 1000) {
-    await msg.reply({ content: 'ŮŘŻŘŞ Ř˛ŮŘ§Ů ŮŘ§ŮŘšŘŞŘ¨Řą. ŮŮŮŮŮ: 10m ŰŘ§ 2h ŰŘ§ 60 (ŘŤŘ§ŮŰŮ)' });
+    await msg.reply({ content: '??? ???? ???????. ?????: 10m ?? 2h ?? 60 (?????)' });
     return;
   }
 
