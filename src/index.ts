@@ -158,17 +158,16 @@ function chooseBotCard(hand: Card[], s: HokmSession): Card {
   const botId = s.order[s.turnIndex!]; const pos = table.length;
   const botTeam = s.team1.includes(botId)?1:2;
   const beatCard = (a: Card, b: Card)=>{ if(a.s===b.s) return a.r>b.r; if(a.s===trump&&b.s!==trump) return true; return false; };
-  const minCard = (arr: Card[])=> arr.sort((a,b)=>a.r-b.r)[0];
-  const maxCard = (arr: Card[])=> arr.sort((a,b)=>b.r-a.r)[0];
+  const minCard = (arr: Card[])=> [...arr].sort((a,b)=>a.r-b.r)[0];
+  const maxCard = (arr: Card[])=> [...arr].sort((a,b)=>b.r-a.r)[0];
   const countBySuit = (h: Card[])=>{ const m=new Map<Suit,number>(); h.forEach(c=>m.set(c.s,(m.get(c.s)||0)+1)); return m; };
-  const minNonTrump = (h: Card[])=>{ const nt=h.filter(c=>c.s!==trump); if(!nt.length) return minCard(h); const cnt=countBySuit(nt); return minCard(nt.sort((a,b)=>(cnt.get(a.s)||0)-(cnt.get(b.s)||0)||a.r-b.r)); };
-  const teammate = (i: number)=>{ const uid=s.order[i]; return (s.team1.includes(uid)?1:2)===botTeam; };
+  const minNonTrump = (h: Card[])=>{ const nt=h.filter(c=>c.s!==trump); if(!nt.length) return minCard(h); const cnt=countBySuit(nt); return minCard([...nt].sort((a,b)=>(cnt.get(a.s)||0)-(cnt.get(b.s)||0)||a.r-b.r)); };
+  const teammate = (tableIdx: number)=>{ const seatIdx=(s.leaderIndex!+tableIdx)%4; const uid=s.order[seatIdx]; return (s.team1.includes(uid)?1:2)===botTeam; };
   const getWinner = ()=>{ if(!table.length) return -1; let w=0,wc=table[0].card; for(let i=1;i<table.length;i++){ if(beatCard(table[i].card,wc)){ w=i; wc=table[i].card; }} return w; };
   const isPlayed = (su: Suit, rk: number)=> s.lastTrick?.some(t=>t.card.s===su&&t.card.r===rk) || table.some(t=>t.card.s===su&&t.card.r===rk);
   const isAcePlayed = (su: Suit)=> isPlayed(su,14);
   const isKingPlayed = (su: Suit)=> isPlayed(su,13);
   
-  // Position 0: Leading
   if (pos===0) {
     const aces = legal.filter(c=>c.r===14&&c.s!==trump);
     if (aces.length) return minCard(aces);
@@ -181,7 +180,6 @@ function chooseBotCard(hand: Card[], s: HokmSession): Card {
   
   const lead = s.leadSuit!; const follow = legal.filter(c=>c.s===lead); const canFollow = follow.length>0;
   
-  // Position 3: Fourth player
   if (pos===3) {
     const w = getWinner(); const mateWins = teammate(w);
     if (canFollow) {
@@ -203,15 +201,13 @@ function chooseBotCard(hand: Card[], s: HokmSession): Card {
     }
   }
   
-  // Position 1: Second player
   if (pos===1) {
-    const c0 = table[0].card; const mate0 = teammate(0);
+    const c0 = table[0].card;
     if (canFollow) {
       if (c0.r===14) return minCard(follow);
       if (c0.r===13) {
         const ace = follow.find(c=>c.r===14);
-        if (ace) return ace;
-        return minCard(follow);
+        return ace || minCard(follow);
       }
       const ace = follow.find(c=>c.r===14);
       if (ace) return ace;
@@ -225,31 +221,21 @@ function chooseBotCard(hand: Card[], s: HokmSession): Card {
       return minCard(follow);
     } else {
       const trumps = legal.filter(c=>c.s===trump);
-      if (!trumps.length) return minNonTrump(legal);
-      return minCard(trumps);
+      return trumps.length? minCard(trumps) : minNonTrump(legal);
     }
   }
   
-  // Position 2: Third player (most complex)
   if (pos===2) {
     const c0=table[0].card, c1=table[1].card;
-    const mate0=teammate(0), mate1=teammate(1);
-    const mateIdx = mate0?0:1;
-    const oppIdx = mate0?1:0;
+    const mate0=teammate(0);
     const mateCard = mate0?c0:c1;
     const oppCard = mate0?c1:c0;
     const w = getWinner(); const mateWins = teammate(w);
     
     if (canFollow) {
       if (mateCard.r===14) return minCard(follow);
-      if (mateCard.r===13 && !mateWins) {
-        const ace = follow.find(c=>c.r===14);
-        if (!ace) return minCard(follow);
-      }
       if (mateCard.r===13 && mateWins) return minCard(follow);
-      
       if (mateWins) return minCard(follow);
-      
       const ace = follow.find(c=>c.r===14);
       if (ace) return ace;
       const king = follow.find(c=>c.r===13);
@@ -262,18 +248,13 @@ function chooseBotCard(hand: Card[], s: HokmSession): Card {
       }
       return minCard(follow);
     } else {
-      if (mateCard.r===14) return minNonTrump(legal);
-      if (mateCard.r===13 && isAcePlayed(lead)) return minNonTrump(legal);
-      if (mateWins && c1.s!==trump) return minNonTrump(legal);
-      
+      if (mateCard.r===14 || (mateCard.r===13&&isAcePlayed(lead))) return minNonTrump(legal);
+      if (mateWins && oppCard.s!==trump) return minNonTrump(legal);
       const trumps = legal.filter(c=>c.s===trump);
       if (!trumps.length) return minNonTrump(legal);
-      
-      const wc = table[w].card;
-      if (wc.s===trump && !mateWins) {
-        const better = trumps.filter(c=>c.r>wc.r);
-        if (better.length) return minCard(better);
-        return minNonTrump(legal);
+      if (oppCard.s===trump) {
+        const better = trumps.filter(c=>c.r>oppCard.r);
+        return better.length? minCard(better) : minNonTrump(legal);
       }
       if (mateCard.r>=12 && !isAcePlayed(lead)) return minNonTrump(legal);
       return minCard(trumps);
