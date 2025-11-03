@@ -154,27 +154,67 @@ function legalMovesFor(hand: Card[], s: HokmSession): Card[] {
   return follow.length? follow : hand.slice();
 }
 function chooseBotCard(hand: Card[], s: HokmSession): Card {
-  const lead = s.leadSuit; const trump = s.hokm!;
-  const legal = legalMovesFor(hand, s);
-  // If following suit, try minimal winning, else lowest
-  const table = s.table || [];
-  const beatCard = (a: Card, b: Card)=>{
-    if (a.s===b.s) return a.r>b.r;
-    if (a.s===trump && b.s!==trump) return true;
-    return false;
-  };
-  if (table.length>0) {
-    let best = table[0].card;
-    for (let i=1;i<table.length;i++) if (beatCard(table[i].card, best)) best = table[i].card;
-    const winners = legal.filter(c=>beatCard(c, best));
-    if (winners.length) return winners.sort((a,b)=>a.r-b.r)[0];
-    return legal.sort((a,b)=>a.r-b.r)[0];
-  } else {
-    // leading: avoid trump early, play mid-low non-trump if possible
-    const nonTrump = legal.filter(c=>c.s!==trump);
-    if (nonTrump.length) return nonTrump.sort((a,b)=>a.r-b.r)[0];
-    return legal.sort((a,b)=>a.r-b.r)[0];
+  const trump = s.hokm!; const table = s.table || []; const legal = legalMovesFor(hand, s);
+  const botId = s.order[s.turnIndex!]; const pos = table.length;
+  const botTeam = s.team1.includes(botId)?1:2;
+  const beatCard = (a: Card, b: Card)=>{ if (a.s===b.s) return a.r>b.r; if (a.s===trump&&b.s!==trump) return true; return false; };
+  const minCard = (arr: Card[])=> arr.sort((a,b)=>a.r-b.r)[0];
+  const maxCard = (arr: Card[])=> arr.sort((a,b)=>b.r-a.r)[0];
+  const countBySuit = (h: Card[])=>{ const m = new Map<Suit,number>(); h.forEach(c=>m.set(c.s,(m.get(c.s)||0)+1)); return m; };
+  const minNonTrump = (h: Card[])=>{ const nt = h.filter(c=>c.s!==trump); if(!nt.length) return minCard(h); const cnt = countBySuit(nt); return minCard(nt.sort((a,b)=>(cnt.get(a.s)||0)-(cnt.get(b.s)||0)||a.r-b.r)); };
+  const teammate = (i: number)=>{ const uid = s.order[i]; return (s.team1.includes(uid)?1:2)===botTeam; };
+  const getWinner = ()=>{ if(!table.length) return -1; let w=0,wc=table[0].card; for(let i=1;i<table.length;i++){ if(beatCard(table[i].card,wc)){ w=i; wc=table[i].card; }} return w; };
+  const isAcePlayed = (su: Suit)=> s.lastTrick?.some(t=>t.card.s===su&&t.card.r===14) || table.some(t=>t.card.s===su&&t.card.r===14);
+  if (pos===0) {
+    const aces = legal.filter(c=>c.r===14&&c.s!==trump);
+    if (aces.length) return minCard(aces);
+    const kings = legal.filter(c=>c.r===13&&c.s!==trump&&isAcePlayed(c.s));
+    if (kings.length) return minCard(kings);
+    return minNonTrump(legal);
   }
+  const lead = s.leadSuit!; const follow = legal.filter(c=>c.s===lead); const canFollow = follow.length>0;
+  if (pos===3) {
+    const w = getWinner(); const mateWins = teammate(w);
+    if (canFollow) {
+      if (mateWins) return minCard(follow);
+      const winners = follow.filter(c=>beatCard(c,table[w].card));
+      if (winners.length) return minCard(winners);
+      return minCard(follow);
+    } else {
+      if (mateWins) return minNonTrump(legal);
+      const trumps = legal.filter(c=>c.s===trump);
+      if (!trumps.length) return minNonTrump(legal);
+      const wc = table[w].card;
+      if (wc.s===trump) { const better = trumps.filter(c=>c.r>wc.r); return better.length? minCard(better) : minNonTrump(legal); }
+      return minCard(trumps);
+    }
+  }
+  if (pos===1||pos===2) {
+    const opp0 = table[0].card; const mate0 = teammate(0);
+    if (canFollow) {
+      if (opp0.r===14) return minCard(follow);
+      if (opp0.r===13&&!isAcePlayed(lead)) { const ace = follow.find(c=>c.r===14); return ace||minCard(follow); }
+      if (mate0&&pos===2) { const w=getWinner(); if(teammate(w)) return minCard(follow); }
+      const better = follow.filter(c=>c.r>opp0.r);
+      if (better.length) {
+        const noK = better.filter(c=>c.r!==13);
+        if (noK.length) return maxCard(noK);
+        if (isAcePlayed(lead)) return maxCard(better);
+        return minCard(follow);
+      }
+      return minCard(follow);
+    } else {
+      if (mate0&&(opp0.r===14||(opp0.r===13&&isAcePlayed(lead)))) return minNonTrump(legal);
+      if (pos===2) { const w=getWinner(); if(teammate(w)&&table[w].card.s!==trump) return minNonTrump(legal); }
+      const trumps = legal.filter(c=>c.s===trump);
+      if (!trumps.length) return minNonTrump(legal);
+      const w = getWinner(); const wc = table[w].card;
+      if (wc.s===trump&&!teammate(w)) { const better = trumps.filter(c=>c.r>wc.r); return better.length? minCard(better) : minNonTrump(legal); }
+      if (mate0&&!isAcePlayed(lead)&&opp0.r>=12) return minNonTrump(legal);
+      return minCard(trumps);
+    }
+  }
+  return minCard(legal);
 }
 async function maybeBotAutoPlay(client: Client, s: HokmSession) {
   if (s.state!=='playing' || s.turnIndex==null) return;
@@ -335,13 +375,32 @@ function parseCardToken(tok: string): Card | null {
 function sameCard(a: Card, b: Card){ return a.s===b.s && a.r===b.r; }
 
 // ====== UI helpers for interactive Hokm ======
-function sortHand(hand: Card[]): Card[] { return [...hand].sort((a,b)=> a.s===b.s ? b.r-a.r : ['S','H','D','C'].indexOf(a.s)-['S','H','D','C'].indexOf(b.s)); }
+function sortHand(hand: Card[], hokm?: Suit): Card[] {
+  if (!hokm) return [...hand].sort((a,b)=> a.s===b.s ? b.r-a.r : ['S','H','D','C'].indexOf(a.s)-['S','H','D','C'].indexOf(b.s));
+  const sameColor = (s: Suit)=>{
+    if (s===hokm) return 0;
+    if ((s==='H'&&hokm==='D')||(s==='D'&&hokm==='H')) return 1;
+    if ((s==='S'&&hokm==='C')||(s==='C'&&hokm==='S')) return 1;
+    return 2;
+  };
+  const countMap = new Map<Suit,number>();
+  hand.forEach(c=>countMap.set(c.s, (countMap.get(c.s)||0)+1));
+  return [...hand].sort((a,b)=>{
+    const colorA = sameColor(a.s); const colorB = sameColor(b.s);
+    if (colorA!==colorB) return colorA-colorB;
+    if (colorA===0) return b.r-a.r;
+    const cA = countMap.get(a.s)||0; const cB = countMap.get(b.s)||0;
+    if (cA!==cB) return cB-cA;
+    if (a.s===b.s) return b.r-a.r;
+    return ['S','H','D','C'].indexOf(a.s)-['S','H','D','C'].indexOf(b.s);
+  });
+}
 function suitName(s: Suit){ return s==='S'?'♠️ پیک':s==='H'?'♥️ دل':s==='D'?'♦️ خشت':'♣️ گیشنیز'; }
 
 function buildHandButtons(s: HokmSession, userId: string, opts?: { filter?: Suit|'ALL'; page?: number }): { rows: ActionRowBuilder<ButtonBuilder>[]; meta: { filter: string; page: number; totalPages: number } } {
   const filter = (opts?.filter ?? 'ALL') as Suit|'ALL';
   const page = opts?.page ?? 0;
-  const hand = sortHand(s.hands.get(userId) || []);
+  const hand = sortHand(s.hands.get(userId) || [], s.hokm);
   const filtered = filter==='ALL' ? hand : hand.filter(c=>c.s===filter);
   const perPage = 10; // 2 rows of 5 buttons
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
