@@ -44,6 +44,14 @@ async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSessio
   const suit = botPickHokm(s);
   s.hokm = suit;
   try { addHokmPick(s.guildId, s.hakim!, suit); saveHokmStats(); } catch {}
+  // delete the announce message if present (bot hakim chose immediately)
+  try {
+    if (s.newSetAnnounceMsgId && channel?.messages?.fetch) {
+      const am = await channel.messages.fetch(s.newSetAnnounceMsgId).catch(()=>null);
+      if (am) await am.delete().catch(()=>{});
+      s.newSetAnnounceMsgId = undefined;
+    }
+  } catch {}
   const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
   for (const uid of s.order) {
     const need = 13 - (s.hands.get(uid)?.length || 0);
@@ -1652,6 +1660,14 @@ client.on('interactionCreate', async (interaction: Interaction) => {
           if (m) await m.edit({ embeds: [tableEmbed] });
         }
       } catch {}
+      // also delete text announce if present (human hakim)
+      if (s.newSetAnnounceMsgId) {
+        try {
+          const am = await (interaction.channel as any).messages.fetch(s.newSetAnnounceMsgId).catch(()=>null);
+          if (am) await am.delete().catch(()=>{});
+          s.newSetAnnounceMsgId = undefined;
+        } catch {}
+      }
       await refreshTableEmbed({ channel: interaction.channel }, s);
       // delete the announce message if present
       if (s.newSetAnnounceMsgId) {
@@ -2113,6 +2129,28 @@ client.on('messageCreate', async (msg: Message) => {
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را حذف کند.'); return; }
+    // special: remove virtual bots with `.r bot`
+    const rawArg = content.slice(2);
+    if (/^\s*bot/i.test(rawArg)) {
+      const before1 = [...s.team1];
+      const before2 = [...s.team2];
+      s.team1 = s.team1.filter(u=>!isVirtualBot(u));
+      s.team2 = s.team2.filter(u=>!isVirtualBot(u));
+      const removedBots: string[] = [];
+      for (const u of before1) if (isVirtualBot(u) && !s.team1.includes(u)) removedBots.push(`<@${u.replace('BOT','Bot')}>`);
+      for (const u of before2) if (isVirtualBot(u) && !s.team2.includes(u)) removedBots.push(`<@${u.replace('BOT','Bot')}>`);
+      const contentText = controlListText(s);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
+      );
+      try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
+      const replyMsg = await msg.reply({ content: `حذف شد: ${removedBots.join(' , ') || '—'}` });
+      setTimeout(()=>replyMsg.delete().catch(()=>{}), 2500);
+      return;
+    }
     const targets = await resolveTargetIds(msg, content, '.r');
     if (targets.length === 0) { await msg.reply('استفاده: `.r @user1 @user2` یا ریپلای/آیدی'); return; }
     const removed: string[] = []; const notIn: string[] = [];
@@ -2318,6 +2356,14 @@ client.on('messageCreate', async (msg: Message) => {
     const suit = parseSuit(arg);
     if (!suit) { await msg.reply('خال نامعتبر. گزینه‌ها: ♠️ پیک، ♥️ دل، ♦️ خشت، ♣️ گیشنیز'); return; }
     s.hokm = suit;
+    // delete any pending announce message now that hokm is chosen
+    try {
+      if (s.newSetAnnounceMsgId) {
+        const am = await (msg.channel as any).messages.fetch(s.newSetAnnounceMsgId).catch(()=>null);
+        if (am) await am.delete().catch(()=>{});
+        s.newSetAnnounceMsgId = undefined;
+      }
+    } catch {}
     // deal remaining to all to reach 13
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
     for (const uid of s.order) {
