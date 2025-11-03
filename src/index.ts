@@ -131,6 +131,7 @@ interface HokmSession {
   controlMsgId?: string; // message with join buttons
   tableMsgId?: string; // live table embed message id
   playerDMMsgIds?: Map<string, string>; // userId -> DM message id
+  newSetAnnounceMsgId?: string; // message ID of "ست جدید آغاز شد" to delete after hokm chosen
   // Phase 2
   leaderIndex?: number; // index into order for current trick leader
   turnIndex?: number; // index into order whose turn it is now
@@ -235,7 +236,18 @@ function chooseBotCard(hand: Card[], s: HokmSession): Card {
     if (canFollow) {
       if (mateCard.r===14) return minCard(follow);
       if (mateCard.r===13 && mateWins) return minCard(follow);
-      if (mateWins) return minCard(follow);
+      if (mateWins) {
+        // فقط اگر یار A یا K یا Q (12+) بازی کرده برش نزن
+        if (mateCard.r >= 12) return minCard(follow);
+        // در غیر این صورت برش بزن اگر می‌تونی
+        const wc = table[w].card;
+        const better = follow.filter(c=>beatCard(c,wc));
+        if (better.length) {
+          const noK = better.filter(c=>c.r!==13);
+          return noK.length? maxCard(noK) : minCard(follow);
+        }
+        return minCard(follow);
+      }
       const ace = follow.find(c=>c.r===14);
       if (ace) return ace;
       const king = follow.find(c=>c.r===13);
@@ -1113,7 +1125,10 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     give(s.hakim, 5);
     s.state = 'choosing_hokm';
     try { const user = await (interaction.client as Client).users.fetch(s.hakim); await user.send({ content: `ست جدید شروع شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
-    if (gameChannel) await gameChannel.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
+    if (gameChannel) {
+      const announceMsg = await gameChannel.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
+      s.newSetAnnounceMsgId = announceMsg.id;
+    }
     if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
     await refreshAllDMs({ client: (interaction.client as Client) }, s);
     if (isVirtualBot(s.hakim)) { await botChooseHokmAndStart(interaction.client as Client, gameChannel, s); }
@@ -1593,7 +1608,13 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       give(s.hakim, 5);
       s.state = 'choosing_hokm';
       try { const user = await interaction.client.users.fetch(s.hakim); await user.send({ content: `ست جدید شروع شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
-      try { const chAny = interaction.channel as any; if (chAny && chAny.send) { await chAny.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` }); } } catch {}
+      try {
+        const chAny = interaction.channel as any;
+        if (chAny && chAny.send) {
+          const announceMsg = await chAny.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
+          s.newSetAnnounceMsgId = announceMsg.id;
+        }
+      } catch {}
       if (interaction.guild) await refreshTableEmbed({ channel: interaction.channel as any }, s);
       await refreshAllDMs({ client: interaction.client }, s);
       if (isVirtualBot(s.hakim)) { await botChooseHokmAndStart(interaction.client as Client, interaction.channel as any, s); }
@@ -1632,6 +1653,14 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         }
       } catch {}
       await refreshTableEmbed({ channel: interaction.channel }, s);
+      // delete the announce message if present
+      if (s.newSetAnnounceMsgId) {
+        try {
+          const am = await (interaction.channel as any).messages.fetch(s.newSetAnnounceMsgId).catch(()=>null);
+          if (am) await am.delete().catch(()=>{});
+          s.newSetAnnounceMsgId = undefined;
+        } catch {}
+      }
       // no per-player channel hand messages; users open hand ephemerally via table button
       await interaction.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]}. بازی شروع شد. برای دیدن دست خود، روی دکمه "دست من" زیر میز بزن.`, ephemeral: true });
       // trigger bot auto-play if first turn is a bot
@@ -2004,7 +2033,8 @@ client.on('messageCreate', async (msg: Message) => {
         new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
       );
       try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
-      await msg.reply({ content: added? `Bot به تیم 1 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 1 وجود ندارد.' });
+      const replyMsg = await msg.reply({ content: added? `Bot به تیم 1 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 1 وجود ندارد.' });
+      setTimeout(() => replyMsg.delete().catch(()=>{}), 2500);
       return;
     }
     const targets = await resolveTargetIds(msg, content, '.a1');
@@ -2046,7 +2076,8 @@ client.on('messageCreate', async (msg: Message) => {
         new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
       );
       try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
-      await msg.reply({ content: added? `Bot به تیم 2 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 2 وجود ندارد.' });
+      const replyMsg = await msg.reply({ content: added? `Bot به تیم 2 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 2 وجود ندارد.' });
+      setTimeout(() => replyMsg.delete().catch(()=>{}), 2500);
       return;
     }
     const targets = await resolveTargetIds(msg, content, '.a2');
@@ -2103,7 +2134,8 @@ client.on('messageCreate', async (msg: Message) => {
       const lines: string[] = [];
       lines.push(`حذف شد: ${removed.join(' , ') || '—'}`);
       if (notIn.length > 0) lines.push(`ناموجود: ${notIn.join(' , ')}`);
-      await msg.reply({ content: lines.join('\n') });
+      const replyMsg = await msg.reply({ content: lines.join('\n') });
+      setTimeout(() => replyMsg.delete().catch(()=>{}), 2500);
     }
     return;
   }
