@@ -44,6 +44,8 @@ async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSessio
   const suit = botPickHokm(s);
   s.hokm = suit;
   try { addHokmPick(s.guildId, s.hakim!, suit); saveHokmStats(); } catch {}
+  // Clear card order cache so cards are re-sorted with hokm
+  clearHandOrderCache(s);
   // delete the announce message if present (bot hakim chose immediately)
   try {
     if (s.newSetAnnounceMsgId && channel?.messages?.fetch) {
@@ -460,22 +462,54 @@ function sameCard(a: Card, b: Card){ return a.s===b.s && a.r===b.r; }
 // ====== UI helpers for interactive Hokm ======
 function sortHand(hand: Card[], hokm?: Suit): Card[] {
   if (!hokm) return [...hand].sort((a,b)=> a.s===b.s ? b.r-a.r : ['S','H','D','C'].indexOf(a.s)-['S','H','D','C'].indexOf(b.s));
-  const sameColor = (s: Suit)=>{
-    if (s===hokm) return 0;
-    if ((s==='H'&&hokm==='D')||(s==='D'&&hokm==='H')) return 1;
-    if ((s==='S'&&hokm==='C')||(s==='C'&&hokm==='S')) return 1;
-    return 2;
+  
+  // Determine same color relationship
+  const sameColor = (s: Suit): boolean => {
+    if (s === hokm) return false; // hokm is not "same color", it's hokm itself
+    if ((s==='H'&&hokm==='D')||(s==='D'&&hokm==='H')) return true;
+    if ((s==='S'&&hokm==='C')||(s==='C'&&hokm==='S')) return true;
+    return false;
   };
+  
+  // Count cards per suit
   const countMap = new Map<Suit,number>();
   hand.forEach(c=>countMap.set(c.s, (countMap.get(c.s)||0)+1));
+  
   return [...hand].sort((a,b)=>{
-    const colorA = sameColor(a.s); const colorB = sameColor(b.s);
-    if (colorA!==colorB) return colorA-colorB;
-    if (colorA===0) return b.r-a.r;
-    const cA = countMap.get(a.s)||0; const cB = countMap.get(b.s)||0;
-    if (cA!==cB) return cB-cA;
-    if (a.s===b.s) return b.r-a.r;
-    return ['S','H','D','C'].indexOf(a.s)-['S','H','D','C'].indexOf(b.s);
+    const aIsHokm = a.s === hokm;
+    const bIsHokm = b.s === hokm;
+    const aIsSameColor = !aIsHokm && sameColor(a.s);
+    const bIsSameColor = !bIsHokm && sameColor(b.s);
+    
+    // 1. Hokm suit comes first
+    if (aIsHokm && !bIsHokm) return -1;
+    if (!aIsHokm && bIsHokm) return 1;
+    
+    // 2. Same color suit comes second
+    if (aIsSameColor && !bIsSameColor && !bIsHokm) return -1;
+    if (!aIsSameColor && bIsSameColor && !aIsHokm) return 1;
+    
+    // 3. Within hokm suit: sort by rank descending
+    if (aIsHokm && bIsHokm) return b.r - a.r;
+    
+    // 4. Within same color suit: sort by rank descending
+    if (aIsSameColor && bIsSameColor) {
+      if (a.s === b.s) return b.r - a.r;
+      // Different same-color suits: maintain order
+      return ['S','H','D','C'].indexOf(a.s) - ['S','H','D','C'].indexOf(b.s);
+    }
+    
+    // 5. Within other (non-hokm, non-same-color) suits: sort by count descending, then rank
+    if (!aIsHokm && !bIsHokm && !aIsSameColor && !bIsSameColor) {
+      const cA = countMap.get(a.s)||0;
+      const cB = countMap.get(b.s)||0;
+      if (cA !== cB) return cB - cA; // Higher count first
+      if (a.s === b.s) return b.r - a.r; // Same suit: rank descending
+      return ['S','H','D','C'].indexOf(a.s) - ['S','H','D','C'].indexOf(b.s);
+    }
+    
+    // Fallback: maintain original order
+    return 0;
   });
 }
 function suitName(s: Suit){ return s==='S'?'♠️ پیک':s==='H'?'♥️ دل':s==='D'?'♦️ خشت':'♣️ گیشنیز'; }
@@ -1707,6 +1741,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       if (!suit) { await interaction.reply({ content: 'خال نامعتبر.', ephemeral: true }); return; }
       s.hokm = suit;
       try { addHokmPick(s.guildId, s.hakim!, suit); saveHokmStats(); } catch {}
+      // Clear card order cache so cards are re-sorted with hokm
+      clearHandOrderCache(s);
       // deal remaining to all to reach 13
       const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
       for (const uid of s.order) {
@@ -2411,6 +2447,8 @@ client.on('messageCreate', async (msg: Message) => {
     const suit = parseSuit(arg);
     if (!suit) { await msg.reply('خال نامعتبر. گزینه‌ها: ♠️ پیک، ♥️ دل، ♦️ خشت، ♣️ گیشنیز'); return; }
     s.hokm = suit;
+    // Clear card order cache so cards are re-sorted with hokm
+    clearHandOrderCache(s);
     // delete any pending announce message now that hokm is chosen
     try {
       if (s.newSetAnnounceMsgId) {
