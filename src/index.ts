@@ -123,6 +123,22 @@ function controlListText(s: HokmSession): string {
     sep,
   ].join('\n');
 }
+
+function buildControlButtons(): ActionRowBuilder<ButtonBuilder>[] {
+  const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
+  );
+  const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('hokm-bot-add-t1').setLabel('🤖 بات 1').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('hokm-bot-add-t2').setLabel('🤖 بات 2').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('hokm-bot-remove-t1').setLabel('❌ حذف بات 1').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('hokm-bot-remove-t2').setLabel('❌ حذف بات 2').setStyle(ButtonStyle.Secondary),
+  );
+  return [row1, row2];
+}
 interface HokmSession {
   channelId: string;
   guildId: string;
@@ -530,14 +546,39 @@ async function refreshAllDMs(ctx: { client: Client }, s: HokmSession) {
   for (const uid of s.order) { if (!isVirtualBot(uid)) await refreshPlayerDM(ctx, s, uid); }
 }
 
-function buildHandRowsSimple(hand: Card[], userId: string, gId: string, cId: string, hokm?: Suit): ActionRowBuilder<ButtonBuilder>[] {
+function clearHandOrderCache(s: HokmSession) {
+  // Clear cached suit order for all players when starting a new set/game
+  for (const uid of s.order) {
+    const orderKey = `__hokm_suit_order_${s.guildId}:${s.channelId}:${uid}`;
+    delete (global as any)[orderKey];
+  }
+}
+
+function buildHandRowsSimple(hand: Card[], userId: string, gId: string, cId: string, hokm?: Suit, initialOrder?: Suit[]): ActionRowBuilder<ButtonBuilder>[] {
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
-  const items = sortHand(hand, hokm);
-  for (let r=0; r<3; r++) {
-    const slice = items.slice(r*5, r*5+5);
-    if (!slice.length) break;
+  // Group by suit
+  const bySuit: Record<Suit, Card[]> = { S: [], H: [], D: [], C: [] };
+  hand.forEach(c => bySuit[c.s].push(c));
+  // Sort each suit descending
+  (Object.keys(bySuit) as Suit[]).forEach(s => {
+    bySuit[s].sort((a, b) => b.r - a.r);
+  });
+  
+  // Determine suit order: if initialOrder provided, use it; else use suits with cards in S,H,D,C order
+  let suitOrder: Suit[];
+  if (initialOrder && initialOrder.length > 0) {
+    suitOrder = initialOrder;
+  } else {
+    // First time: only include suits that have cards
+    suitOrder = (['S', 'H', 'D', 'C'] as Suit[]).filter(s => bySuit[s].length > 0);
+  }
+  
+  // Create one row per suit in the fixed order (even if empty now)
+  for (const s of suitOrder) {
+    const cards = bySuit[s];
+    if (cards.length === 0) continue; // skip empty suits but keep order
     const row = new ActionRowBuilder<ButtonBuilder>();
-    for (const c of slice) {
+    for (const c of cards) {
       row.addComponents(new ButtonBuilder().setCustomId(`hokm-play-${gId}-${cId}-${userId}-${c.s}-${c.r}`).setLabel(cardStr(c)).setStyle(ButtonStyle.Secondary));
     }
     rows.push(row);
@@ -1123,6 +1164,7 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     // prepare next hand in same match
     s.deck = shuffle(makeDeck());
     s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
+    clearHandOrderCache(s); // Clear cached suit order for new set
     s.hokm = undefined; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0; s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
     // choose next hakim: if current hakim's team won, keep; else clockwise next player
     const hakimIdx = s.order.indexOf(s.hakim!);
@@ -1527,9 +1569,6 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
       const s = ensureSession(interaction.guild.id, interaction.channel.id);
       const uid = interaction.user.id;
-      // Remove from both teams first
-      s.team1 = s.team1.filter(x=>x!==uid);
-      s.team2 = s.team2.filter(x=>x!==uid);
       if (id === 'hokm-leave') {
         s.team1 = s.team1.filter(x=>x!==uid);
         s.team2 = s.team2.filter(x=>x!==uid);
@@ -1542,64 +1581,51 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       }
       // Update control message as plain text (no embed)
       const contentText = controlListText(s);
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
-      );
-      try {
-        if (s.controlMsgId) {
-          const m = await (interaction.channel as any).messages.fetch(s.controlMsgId).catch(()=>null);
-          if (m) { await m.edit({ content: contentText, components: [row] }); return; }
+      const rows = buildControlButtons();
+      try { if (s.controlMsgId) { const m = await (interaction.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
+      return;
+    }
+
+    // Bot management buttons
+    if (id === 'hokm-bot-add-t1' || id === 'hokm-bot-add-t2' || id === 'hokm-bot-remove-t1' || id === 'hokm-bot-remove-t2') {
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
+      const s = ensureSession(interaction.guild.id, interaction.channel.id);
+      if (s.state !== 'waiting') { await interaction.reply({ content: 'فقط قبل از شروع بازی می‌توانید بات اضافه/حذف کنید.', ephemeral: true }); return; }
+      if (s.ownerId && interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'فقط سازنده اتاق می‌تواند بات اضافه/حذف کند.', ephemeral: true }); return; }
+      
+      if (id === 'hokm-bot-add-t1') {
+        const added = addBotToTeam(s, 1);
+        await interaction.reply({ content: added ? `Bot به تیم 1 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 1 وجود ندارد (تیم پر است یا بات‌های موجود تمام شده‌اند).', ephemeral: true });
+      } else if (id === 'hokm-bot-add-t2') {
+        const added = addBotToTeam(s, 2);
+        await interaction.reply({ content: added ? `Bot به تیم 2 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 2 وجود ندارد (تیم پر است یا بات‌های موجود تمام شده‌اند).', ephemeral: true });
+      } else if (id === 'hokm-bot-remove-t1') {
+        const botInTeam = s.team1.find(u => isVirtualBot(u));
+        if (botInTeam) {
+          s.team1 = s.team1.filter(u => u !== botInTeam);
+          await interaction.reply({ content: `${botInTeam.replace('BOT','Bot')} از تیم 1 حذف شد.`, ephemeral: true });
+        } else {
+          await interaction.reply({ content: 'هیچ باتی در تیم 1 وجود ندارد.', ephemeral: true });
         }
-      } catch {}
-      // If missing, create new control message
-      try {
-        const sent = await (interaction.channel as any).send({ content: contentText, components: [row] });
-        s.controlMsgId = sent.id;
-      } catch {}
+      } else if (id === 'hokm-bot-remove-t2') {
+        const botInTeam = s.team2.find(u => isVirtualBot(u));
+        if (botInTeam) {
+          s.team2 = s.team2.filter(u => u !== botInTeam);
+          await interaction.reply({ content: `${botInTeam.replace('BOT','Bot')} از تیم 2 حذف شد.`, ephemeral: true });
+        } else {
+          await interaction.reply({ content: 'هیچ باتی در تیم 2 وجود ندارد.', ephemeral: true });
+        }
+      }
+      
+      // Update control message
+      const contentText = controlListText(s);
+      const rows = buildControlButtons();
+      try { if (s.controlMsgId) { const m = await (interaction.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
       return;
     }
 
-    // Start game button (owner only): let owner choose targetSets before starting
+    // Start button → 4 teams ready → init hands and start choosing hokm
     if (id === 'hokm-start') {
-      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
-      const s = ensureSession(interaction.guild.id, interaction.channel.id);
-      if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'فقط سازنده اتاق می‌تواند شروع کند.', ephemeral: true }); return; }
-      if (s.state !== 'waiting') { await interaction.reply({ content: 'اتاق در وضعیت شروع نیست.', ephemeral: true }); return; }
-      if (s.team1.length !== 2 || s.team2.length !== 2) { await interaction.reply({ content: 'هر دو تیم باید ۲ نفر داشته باشند.', ephemeral: true }); return; }
-      // show ephemeral config for targetSets selection
-      const current = s.targetSets ?? 1;
-      const rowSets1 = new ActionRowBuilder<ButtonBuilder>();
-      for (let n=1;n<=4;n++) rowSets1.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${n}`).setLabel(String(n)).setStyle(current===n?ButtonStyle.Primary:ButtonStyle.Secondary));
-      const rowSets2 = new ActionRowBuilder<ButtonBuilder>();
-      for (let n=5;n<=7;n++) rowSets2.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${n}`).setLabel(String(n)).setStyle(current===n?ButtonStyle.Primary:ButtonStyle.Secondary));
-      const rowGo = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId('hokm-start-go').setLabel('شروع').setStyle(ButtonStyle.Danger));
-      await interaction.reply({ content: `تعداد ست‌های لازم برای برد کامل را انتخاب کن (پیش‌فرض: ${current}). سپس «شروع» را بزن.`, components: [rowSets1, rowSets2, rowGo], ephemeral: true });
-      return;
-    }
-
-    // Sets selection buttons
-    if (id.startsWith('hokm-sets-')) {
-      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
-      const s = ensureSession(interaction.guild.id, interaction.channel.id);
-      if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'فقط سازنده اتاق می‌تواند تنظیم کند.', ephemeral: true }); return; }
-      const n = parseInt(id.split('hokm-sets-')[1], 10);
-      if (!(n>=1 && n<=7)) { await interaction.reply({ content: 'بین 1 تا 7 انتخاب کن.', ephemeral: true }); return; }
-      s.targetSets = n;
-      // re-render ephemeral rows with active selection
-      const rowSets1 = new ActionRowBuilder<ButtonBuilder>();
-      for (let k=1;k<=4;k++) rowSets1.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${k}`).setLabel(String(k)).setStyle(n===k?ButtonStyle.Primary:ButtonStyle.Secondary));
-      const rowSets2 = new ActionRowBuilder<ButtonBuilder>();
-      for (let k=5;k<=7;k++) rowSets2.addComponents(new ButtonBuilder().setCustomId(`hokm-sets-${k}`).setLabel(String(k)).setStyle(n===k?ButtonStyle.Primary:ButtonStyle.Secondary));
-      const rowGo = new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId('hokm-start-go').setLabel('شروع').setStyle(ButtonStyle.Danger));
-      await interaction.update({ content: `تعداد ست‌ها: ${n}. برای شروع «شروع» را بزن.`, components: [rowSets1, rowSets2, rowGo] });
-      return;
-    }
-
-    // Start after sets selection
-    if (id === 'hokm-start-go') {
       if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
       const s = ensureSession(interaction.guild.id, interaction.channel.id);
       if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'فقط سازنده اتاق می‌تواند شروع کند.', ephemeral: true }); return; }
@@ -1612,6 +1638,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
       s.deck = shuffle(makeDeck());
       s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
+      clearHandOrderCache(s); // Clear cached suit order for new game
       const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
       give(s.hakim, 5);
       s.state = 'choosing_hokm';
@@ -1692,7 +1719,24 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const s = ensureSession(gId, cId);
       const uid = interaction.user.id;
       const hand = s.hands.get(uid) || [];
-      const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId, s.hokm);
+      
+      // Check if user has cards
+      if (hand.length === 0) {
+        const msg = s.state === 'choosing_hokm' ? 'شما هنوز کارتی ندارید. فقط حاکم در این مرحله کارت دارد.' : 'شما کارتی ندارید.';
+        await interaction.reply({ content: msg, ephemeral: true });
+        return;
+      }
+      
+      // Store or retrieve initial suit order for this user
+      const orderKey = `__hokm_suit_order_${gId}:${cId}:${uid}`;
+      let initialOrder = (global as any)[orderKey] as Suit[] | undefined;
+      if (!initialOrder) {
+        // First time showing hand: determine order based on current suits
+        initialOrder = (['S', 'H', 'D', 'C'] as Suit[]).filter(s => hand.some(c => c.s === s));
+        (global as any)[orderKey] = initialOrder;
+      }
+      
+      const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId, s.hokm, initialOrder);
       const content = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:''} — ${uid===s.order[s.turnIndex??0]?'نوبت شماست.':'منتظر نوبت بمانید.'}`;
       await interaction.reply({ content, components: rows, ephemeral: true });
       return;
@@ -2021,13 +2065,8 @@ client.on('messageCreate', async (msg: Message) => {
     // reset session
     s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'waiting'; s.ownerId = msg.author.id; s.tableMsgId = undefined;
     const contentText = controlListText(s);
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
-    );
-    const sent = await msg.reply({ content: contentText, components: [row] });
+    const rows = buildControlButtons();
+    const sent = await msg.reply({ content: contentText, components: rows });
     s.controlMsgId = sent.id;
     return;
   }
@@ -2042,13 +2081,8 @@ client.on('messageCreate', async (msg: Message) => {
     if (/^bot\b/i.test(raw)) {
       const added = addBotToTeam(s, 1);
       const contentText = controlListText(s);
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
-      );
-      try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
+      const rows = buildControlButtons();
+      try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
       const replyMsg = await msg.reply({ content: added? `Bot به تیم 1 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 1 وجود ندارد.' });
       setTimeout(() => replyMsg.delete().catch(()=>{}), 2500);
       return;
@@ -2064,13 +2098,8 @@ client.on('messageCreate', async (msg: Message) => {
       s.team1.push(uid); added.push(`<@${uid}>`);
     }
     const contentText = controlListText(s);
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
-    );
-    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
+    const rows = buildControlButtons();
+    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
     await msg.reply({ content: `افزوده شد: ${added.join(' , ') || '—'}` });
     return;
   }
@@ -2085,13 +2114,8 @@ client.on('messageCreate', async (msg: Message) => {
     if (/^bot\b/i.test(raw)) {
       const added = addBotToTeam(s, 2);
       const contentText = controlListText(s);
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
-      );
-      try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
+      const rows = buildControlButtons();
+      try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
       const replyMsg = await msg.reply({ content: added? `Bot به تیم 2 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 2 وجود ندارد.' });
       setTimeout(() => replyMsg.delete().catch(()=>{}), 2500);
       return;
@@ -2106,14 +2130,9 @@ client.on('messageCreate', async (msg: Message) => {
       if (s.team2.length >= 2) { skipped.push(`<@${uid}> (تیم 2 پر است)`); continue; }
       s.team2.push(uid); added.push(`<@${uid}>`);
     }
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
-    );
     const contentText = controlListText(s);
-    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
+    const rows = buildControlButtons();
+    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
     {
       const lines: string[] = [];
       lines.push(`افزوده شد: ${added.join(' , ') || '—'}`);
@@ -2140,13 +2159,8 @@ client.on('messageCreate', async (msg: Message) => {
       for (const u of before1) if (isVirtualBot(u) && !s.team1.includes(u)) removedBots.push(`<@${u.replace('BOT','Bot')}>`);
       for (const u of before2) if (isVirtualBot(u) && !s.team2.includes(u)) removedBots.push(`<@${u.replace('BOT','Bot')}>`);
       const contentText = controlListText(s);
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
-      );
-      try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
+      const rows = buildControlButtons();
+      try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
       const replyMsg = await msg.reply({ content: `حذف شد: ${removedBots.join(' , ') || '—'}` });
       setTimeout(()=>replyMsg.delete().catch(()=>{}), 2500);
       return;
@@ -2161,13 +2175,8 @@ client.on('messageCreate', async (msg: Message) => {
       if (inAny) removed.push(`<@${uid}>`); else notIn.push(`<@${uid}>`);
     }
     const contentText = controlListText(s);
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
-    );
-    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } } catch {}
+    const rows = buildControlButtons();
+    try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
     {
       const lines: string[] = [];
       lines.push(`حذف شد: ${removed.join(' , ') || '—'}`);
@@ -2203,6 +2212,7 @@ client.on('messageCreate', async (msg: Message) => {
     s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
     s.deck = shuffle(makeDeck());
     s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
+    clearHandOrderCache(s); // Clear cached suit order for reset
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
     give(s.hakim, 5);
     s.hokm = undefined; s.tableMsgId = undefined;
@@ -2211,13 +2221,8 @@ client.on('messageCreate', async (msg: Message) => {
     // update control list if exists
     if (s.controlMsgId) {
       const contentText = controlListText(s);
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
-      );
-      try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: [row] }); } catch {}
+      const rows = buildControlButtons();
+      try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } catch {}
     }
     await msg.reply({ content: `ریست شد. حاکم: <@${s.hakim}> — لطفاً با ".hokm hokm <خال>" حکم را انتخاب کن.` });
     return;
@@ -2234,13 +2239,8 @@ client.on('messageCreate', async (msg: Message) => {
         s.controlMsgId = undefined;
       }
       const contentText = controlListText(s);
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
-      );
-      const sent = await msg.reply({ content: contentText, components: [row] });
+      const rows = buildControlButtons();
+      const sent = await msg.reply({ content: contentText, components: rows });
       s.controlMsgId = sent.id;
     } else {
       try { await refreshTableEmbed({ channel: msg.channel }, s); } catch {}
@@ -2313,6 +2313,7 @@ client.on('messageCreate', async (msg: Message) => {
     s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
     s.deck = shuffle(makeDeck());
     s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
+    clearHandOrderCache(s); // Clear cached suit order for new game
     // deal 5 to hakim
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
     give(s.hakim, 5);
