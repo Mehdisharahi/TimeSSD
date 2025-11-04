@@ -300,32 +300,63 @@ async function maybeBotAutoPlay(client: Client, s: HokmSession) {
   const uid = s.order[s.turnIndex];
   if (!isVirtualBot(uid)) return;
   const hand = s.hands.get(uid) || [];
-  if (hand.length===0) return;
-  // schedule a short delay
+  if (hand.length===0) {
+    console.error(`[BOT ERROR] Bot ${uid} has no cards in hand! State: ${s.state}, Turn: ${s.turnIndex}`);
+    return;
+  }
+  // Reduced delay for faster bot play (300ms instead of 500ms)
   setTimeout(async () => {
     try {
+      // Re-verify state hasn't changed
+      if (s.state!=='playing' || s.turnIndex==null) return;
+      if (s.order[s.turnIndex] !== uid) return; // Turn changed
+      
+      const currentHand = s.hands.get(uid) || [];
+      if (currentHand.length === 0) {
+        console.error(`[BOT ERROR] Bot ${uid} hand is empty at play time!`);
+        return;
+      }
+      
       // compute legal card
-      const card = chooseBotCard(hand, s);
+      const card = chooseBotCard(currentHand, s);
+      if (!card) {
+        console.error(`[BOT ERROR] Bot ${uid} could not choose a card!`);
+        return;
+      }
+      
       // play
-      const idx = hand.findIndex(c=>c.s===card.s && c.r===card.r);
-      if (idx<0) return;
-      hand.splice(idx,1); s.hands.set(uid, hand);
-      s.table = s.table || []; s.table.push({ userId: uid, card });
+      const idx = currentHand.findIndex(c=>c.s===card.s && c.r===card.r);
+      if (idx<0) {
+        console.error(`[BOT ERROR] Bot ${uid} card not found in hand!`);
+        return;
+      }
+      currentHand.splice(idx,1); 
+      s.hands.set(uid, currentHand);
+      s.table = s.table || []; 
+      s.table.push({ userId: uid, card });
       if (!s.leadSuit) s.leadSuit = card.s;
       const nextTurn = ((s.turnIndex ?? 0) + 1) % s.order.length;
       s.turnIndex = nextTurn;
-      // render table
-      let ch: any = null; try { ch = await client.channels.fetch(s.channelId).catch(()=>null); } catch {}
-      if (ch) await refreshTableEmbed({ channel: ch }, s);
-      // resolve trick if needed
+      
+      // Only render if we're at end of trick or if it's a human's turn next
+      const shouldRender = s.table.length === 4 || !isVirtualBot(s.order[s.turnIndex]);
+      if (shouldRender) {
+        let ch: any = null; 
+        try { ch = await client.channels.fetch(s.channelId).catch(()=>null); } catch {}
+        if (ch) await refreshTableEmbed({ channel: ch }, s);
+      }
+      
+      // resolve trick if complete
       if (s.table.length === 4) {
-        // fabricate a minimal Interaction-like for resolveTrickAndContinue
         await resolveTrickAndContinue({ client } as any, s);
       } else {
-        await maybeBotAutoPlay(client, s);
+        // Continue with next bot (non-recursive for better performance)
+        setImmediate(() => maybeBotAutoPlay(client, s));
       }
-    } catch {}
-  }, 500);
+    } catch (err) {
+      console.error('[BOT ERROR] Exception in maybeBotAutoPlay:', err);
+    }
+  }, 300); // Faster bot response
 }
 
 // Bot hakim chooses hokm (trump) based on the initial 5-card hand).
@@ -571,7 +602,12 @@ async function refreshPlayerDM(ctx: { client: Client }, s: HokmSession, userId: 
 }
 
 async function refreshAllDMs(ctx: { client: Client }, s: HokmSession) {
-  for (const uid of s.order) { if (!isVirtualBot(uid)) await refreshPlayerDM(ctx, s, uid); }
+  // Only refresh DMs for human players, skip bots
+  const humanPlayers = s.order.filter(uid => !isVirtualBot(uid));
+  // Refresh in parallel for better performance
+  await Promise.all(humanPlayers.map(uid => refreshPlayerDM(ctx, s, uid).catch(err => {
+    console.error(`[DM ERROR] Failed to refresh DM for ${uid}:`, err);
+  })));
 }
 
 function clearHandOrderCache(s: HokmSession) {
@@ -1192,6 +1228,16 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
 }
 
 async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession) {
+  // Validate state
+  if (!s.table || s.table.length !== 4) {
+    console.error(`[TRICK ERROR] Invalid table state: ${s.table?.length} cards`);
+    return;
+  }
+  if (!s.leadSuit || !s.hokm) {
+    console.error(`[TRICK ERROR] Missing lead suit or hokm`);
+    return;
+  }
+  
   // determine winner with same logic as text command
   const lead = s.leadSuit!; const trump = s.hokm!;
   let winnerIdxInTrick = 0; let winnerCard = s.table![0].card;
@@ -1273,15 +1319,34 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
       return;
     }
     // prepare next hand in same match
+    console.log(`[NEW SET] Starting new set. Current score: Team1=${s.setsTeam1}, Team2=${s.setsTeam2}`);
     s.deck = shuffle(makeDeck());
-    s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
+    s.hands.clear(); 
+    s.order.forEach(u=>s.hands.set(u, []));
     clearHandOrderCache(s); // Clear cached suit order for new set
-    s.hokm = undefined; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0; s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
+    s.hokm = undefined; 
+    s.table = []; 
+    s.leadSuit = null; 
+    s.tricksTeam1 = 0; 
+    s.tricksTeam2 = 0; 
+    s.lastTrick = undefined;
+    s.tricksByPlayer = new Map(); 
+    s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
+    s.turnIndex = undefined;
+    s.leaderIndex = undefined;
+    
     // choose next hakim: if current hakim's team won, keep; else clockwise next player
     const hakimIdx = s.order.indexOf(s.hakim!);
-    const hakimIsTeam1 = s.team1.includes(s.hakim!);
-    const hakimTeamWon = (winnerTeam==='t1' && hakimIsTeam1) || (winnerTeam==='t2' && !hakimIsTeam1);
-    s.hakim = hakimTeamWon ? s.hakim! : s.order[(hakimIdx+1) % s.order.length];
+    if (hakimIdx < 0) {
+      console.error(`[NEW SET ERROR] Current hakim not in order!`);
+      s.hakim = s.order[0]; // fallback
+    } else {
+      const hakimIsTeam1 = s.team1.includes(s.hakim!);
+      const hakimTeamWon = (winnerTeam==='t1' && hakimIsTeam1) || (winnerTeam==='t2' && !hakimIsTeam1);
+      s.hakim = hakimTeamWon ? s.hakim! : s.order[(hakimIdx+1) % s.order.length];
+    }
+    
+    console.log(`[NEW SET] New hakim: ${s.hakim}`);
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
     give(s.hakim, 5);
     s.state = 'choosing_hokm';
@@ -1296,8 +1361,11 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     return;
   }
 
-  if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
-  await refreshAllDMs({ client: (interaction.client as Client) }, s);
+  // Parallel render for better performance
+  const renderPromises = [];
+  if (gameChannel) renderPromises.push(refreshTableEmbed({ channel: gameChannel }, s));
+  renderPromises.push(refreshAllDMs({ client: (interaction.client as Client) }, s));
+  await Promise.all(renderPromises);
   // trigger bot auto-play if next turn is bot
   await maybeBotAutoPlay(interaction.client as Client, s);
 }
@@ -1845,11 +1913,26 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const gId = parts[3]; const cId = parts[4];
       const s = ensureSession(gId, cId);
       const uid = interaction.user.id;
+      
+      // Check if user is in the game
+      if (!s.order.includes(uid)) {
+        await interaction.reply({ content: 'شما در این بازی نیستید.', ephemeral: true });
+        return;
+      }
+      
       const hand = s.hands.get(uid) || [];
       
       // Check if user has cards
       if (hand.length === 0) {
-        const msg = s.state === 'choosing_hokm' ? 'شما هنوز کارتی ندارید. فقط حاکم در این مرحله کارت دارد.' : 'شما کارتی ندارید.';
+        let msg = 'شما کارتی ندارید.';
+        if (s.state === 'choosing_hokm') {
+          msg = 'شما هنوز کارتی ندارید. فقط حاکم در این مرحله کارت دارد.';
+        } else if (s.state === 'waiting') {
+          msg = 'بازی هنوز شروع نشده است.';
+        } else if (s.state === 'finished') {
+          msg = 'بازی پایان یافته است.';
+        }
+        console.error(`[HAND ERROR] User ${uid} has no cards. State: ${s.state}, Order: ${s.order.length}`);
         await interaction.reply({ content: msg, ephemeral: true });
         return;
       }
