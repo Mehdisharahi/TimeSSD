@@ -46,14 +46,8 @@ async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSessio
   try { addHokmPick(s.guildId, s.hakim!, suit); saveHokmStats(); } catch {}
   // Clear card order cache so cards are re-sorted with hokm
   clearHandOrderCache(s);
-  // delete the announce message if present (bot hakim chose immediately)
-  try {
-    if (s.newSetAnnounceMsgId && channel?.messages?.fetch) {
-      const am = await channel.messages.fetch(s.newSetAnnounceMsgId).catch(()=>null);
-      if (am) await am.delete().catch(()=>{});
-      s.newSetAnnounceMsgId = undefined;
-    }
-  } catch {}
+  // Schedule announce message deletion after 2.5 seconds
+  await scheduleAnnounceMessageDeletion(channel, s);
   const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
   for (const uid of s.order) {
     const need = 13 - (s.hands.get(uid)?.length || 0);
@@ -585,6 +579,21 @@ function clearHandOrderCache(s: HokmSession) {
   for (const uid of s.order) {
     const orderKey = `__hokm_card_order_${s.guildId}:${s.channelId}:${uid}`;
     delete (global as any)[orderKey];
+  }
+}
+
+async function scheduleAnnounceMessageDeletion(channel: any, s: HokmSession) {
+  // Schedule automatic deletion of announce message after 2.5 seconds
+  if (s.newSetAnnounceMsgId) {
+    const msgId = s.newSetAnnounceMsgId;
+    setTimeout(async () => {
+      try {
+        if (channel?.messages?.fetch) {
+          const am = await channel.messages.fetch(msgId).catch(()=>null);
+          if (am) await am.delete().catch(()=>{});
+        }
+      } catch {}
+    }, 2500);
   }
 }
 
@@ -1639,28 +1648,23 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       if (s.ownerId && interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'فقط سازنده اتاق می‌تواند بات اضافه/حذف کند.', ephemeral: true }); return; }
       
       if (id === 'hokm-bot-add-t1') {
-        const added = addBotToTeam(s, 1);
-        await interaction.reply({ content: added ? `Bot به تیم 1 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 1 وجود ندارد (تیم پر است یا بات‌های موجود تمام شده‌اند).', ephemeral: true });
+        addBotToTeam(s, 1);
       } else if (id === 'hokm-bot-add-t2') {
-        const added = addBotToTeam(s, 2);
-        await interaction.reply({ content: added ? `Bot به تیم 2 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 2 وجود ندارد (تیم پر است یا بات‌های موجود تمام شده‌اند).', ephemeral: true });
+        addBotToTeam(s, 2);
       } else if (id === 'hokm-bot-remove-t1') {
         const botInTeam = s.team1.find(u => isVirtualBot(u));
         if (botInTeam) {
           s.team1 = s.team1.filter(u => u !== botInTeam);
-          await interaction.reply({ content: `${botInTeam.replace('BOT','Bot')} از تیم 1 حذف شد.`, ephemeral: true });
-        } else {
-          await interaction.reply({ content: 'هیچ باتی در تیم 1 وجود ندارد.', ephemeral: true });
         }
       } else if (id === 'hokm-bot-remove-t2') {
         const botInTeam = s.team2.find(u => isVirtualBot(u));
         if (botInTeam) {
           s.team2 = s.team2.filter(u => u !== botInTeam);
-          await interaction.reply({ content: `${botInTeam.replace('BOT','Bot')} از تیم 2 حذف شد.`, ephemeral: true });
-        } else {
-          await interaction.reply({ content: 'هیچ باتی در تیم 2 وجود ندارد.', ephemeral: true });
         }
       }
+      
+      // Acknowledge interaction without showing message
+      await interaction.deferUpdate();
       
       // Update control message
       const contentText = controlListText(s);
@@ -1763,23 +1767,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
           if (m) await m.edit({ embeds: [tableEmbed] });
         }
       } catch {}
-      // also delete text announce if present (human hakim)
-      if (s.newSetAnnounceMsgId) {
-        try {
-          const am = await (interaction.channel as any).messages.fetch(s.newSetAnnounceMsgId).catch(()=>null);
-          if (am) await am.delete().catch(()=>{});
-          s.newSetAnnounceMsgId = undefined;
-        } catch {}
-      }
+      // Schedule announce message deletion after 2.5 seconds
+      await scheduleAnnounceMessageDeletion(interaction.channel, s);
       await refreshTableEmbed({ channel: interaction.channel }, s);
-      // delete the announce message if present
-      if (s.newSetAnnounceMsgId) {
-        try {
-          const am = await (interaction.channel as any).messages.fetch(s.newSetAnnounceMsgId).catch(()=>null);
-          if (am) await am.delete().catch(()=>{});
-          s.newSetAnnounceMsgId = undefined;
-        } catch {}
-      }
       // no per-player channel hand messages; users open hand ephemerally via table button
       await interaction.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]}. بازی شروع شد. برای دیدن دست خود، روی دکمه "دست من" زیر میز بزن.`, ephemeral: true });
       // trigger bot auto-play if first turn is a bot
@@ -2021,17 +2011,25 @@ client.on('messageCreate', async (msg: Message) => {
     const stMap = hokmStats.get(gId);
     const st: HokmUserStat = stMap?.get(targetId) || { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} };
     if (!st.games) { await msg.reply({ content: 'این کاربر بازی انجام نداده است.' }); return; }
+    
+    // Best teammate (exclude bots)
     let bestMate: string | null = null; let bestWins = 0;
     for (const [uid, w] of Object.entries((st.teammateWins||{}) as Record<string, number>)) {
+      if (isVirtualBot(uid)) continue; // Skip bots
       const val = Number(w)||0;
       if (val > bestWins) { bestWins = val; bestMate = uid; }
     }
     const mateText = bestMate ? `<@${bestMate}> (${bestWins} WIN)` : '—';
+    
+    // Favorite hokm (only show suit(s) with most picks)
     const picks = (st.hokmPicks || {}) as Partial<Record<Suit, number>>;
     const suitOrder: Suit[] = ['C','S','D','H'];
     const sortedSuits = suitOrder.sort((a,b)=> (picks[b]||0) - (picks[a]||0));
-    const favArray = sortedSuits.filter(su => (picks[su]||0) > 0).map(su => SUIT_EMOJI[su as Suit]);
-    const favText = favArray.join(' ');
+    const maxPicks = picks[sortedSuits[0]] || 0;
+    const favArray = maxPicks > 0 
+      ? sortedSuits.filter(su => picks[su] === maxPicks).map(su => SUIT_EMOJI[su as Suit])
+      : [];
+    const favText = favArray.length > 0 ? favArray.join(' ') : '—';
     const lines: string[] = [];
     lines.push(`## ✵ <@${targetId}> Stats:`);
     lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
@@ -2449,14 +2447,8 @@ client.on('messageCreate', async (msg: Message) => {
     s.hokm = suit;
     // Clear card order cache so cards are re-sorted with hokm
     clearHandOrderCache(s);
-    // delete any pending announce message now that hokm is chosen
-    try {
-      if (s.newSetAnnounceMsgId) {
-        const am = await (msg.channel as any).messages.fetch(s.newSetAnnounceMsgId).catch(()=>null);
-        if (am) await am.delete().catch(()=>{});
-        s.newSetAnnounceMsgId = undefined;
-      }
-    } catch {}
+    // Schedule announce message deletion after 2.5 seconds
+    await scheduleAnnounceMessageDeletion(msg.channel, s);
     // deal remaining to all to reach 13
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
     for (const uid of s.order) {
