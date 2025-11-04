@@ -1635,14 +1635,40 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       return;
     }
 
-    // Start button → 4 teams ready → init hands and start choosing hokm
+    // Start button → 4 teams ready → ask for number of sets
     if (id === 'hokm-start') {
       if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
       const s = ensureSession(interaction.guild.id, interaction.channel.id);
       if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'فقط سازنده اتاق می‌تواند شروع کند.', ephemeral: true }); return; }
       if (s.state !== 'waiting') { await interaction.reply({ content: 'اتاق در وضعیت شروع نیست.', ephemeral: true }); return; }
       if (s.team1.length !== 2 || s.team2.length !== 2) { await interaction.reply({ content: 'هر دو تیم باید ۲ نفر داشته باشند.', ephemeral: true }); return; }
-      s.targetSets = s.targetSets ?? 1;
+      
+      // Show set selection buttons (7 options in 2 rows)
+      const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('hokm-sets-1').setLabel('1 ست').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-sets-2').setLabel('2 ست').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('hokm-sets-3').setLabel('3 ست').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('hokm-sets-4').setLabel('4 ست').setStyle(ButtonStyle.Primary),
+      );
+      const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('hokm-sets-5').setLabel('5 ست').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-sets-6').setLabel('6 ست').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('hokm-sets-7').setLabel('7 ست').setStyle(ButtonStyle.Danger),
+      );
+      await interaction.reply({ content: 'چند دست می‌خواهید بازی کنید؟', components: [row1, row2], ephemeral: true });
+      return;
+    }
+    
+    // Set selection buttons
+    if (id.startsWith('hokm-sets-')) {
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
+      const s = ensureSession(interaction.guild.id, interaction.channel.id);
+      if (!s.ownerId || interaction.user.id !== s.ownerId) { await interaction.reply({ content: 'فقط سازنده اتاق می‌تواند شروع کند.', ephemeral: true }); return; }
+      if (s.state !== 'waiting') { await interaction.reply({ content: 'اتاق در وضعیت شروع نیست.', ephemeral: true }); return; }
+      if (s.team1.length !== 2 || s.team2.length !== 2) { await interaction.reply({ content: 'هر دو تیم باید ۲ نفر داشته باشند.', ephemeral: true }); return; }
+      
+      const numSets = parseInt(id.split('-')[2]);
+      s.targetSets = numSets;
       s.targetTricks = s.targetTricks ?? 7;
       s.setsTeam1 = 0; s.setsTeam2 = 0;
       s.order = [s.team1[0], s.team2[0], s.team1[1], s.team2[1]];
@@ -1653,6 +1679,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
       give(s.hakim, 5);
       s.state = 'choosing_hokm';
+      
+      await interaction.update({ content: `بازی با ${numSets} ست شروع شد!`, components: [] });
+      
       try { const user = await interaction.client.users.fetch(s.hakim); await user.send({ content: `ست جدید شروع شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
       try {
         const chAny = interaction.channel as any;
@@ -2344,32 +2373,31 @@ client.on('messageCreate', async (msg: Message) => {
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
     give(s.hakim, 5);
     s.state = 'choosing_hokm';
-    // DM hakim hand
-    try { const user = await msg.client.users.fetch(s.hakim); await user.send({ content: `دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
-    // Show suit selection panel in channel
-    {
-      const embed = new EmbedBuilder().setTitle('Hokm — انتخاب حکم')
-        .setDescription(`تیم 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')}\nتیم 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')}\nحاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.`)
-        .setColor(0x5865F2);
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('hokm-choose-S').setLabel('♠️ پیک').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('hokm-choose-H').setLabel('♥️ دل').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('hokm-choose-D').setLabel('♦️ خشت').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('hokm-choose-C').setLabel('♣️ گیشنیز').setStyle(ButtonStyle.Success),
-      );
-      let msgObj = null as any;
+    
+    if (isVirtualBot(s.hakim)) {
+      // Bot is hakim: auto-choose hokm and start
+      await msg.reply({ content: `بازی آغاز شد (${s.targetSets} ست). حاکم: <@${s.hakim}> (بات) — در حال انتخاب حکم...` });
+      await botChooseHokmAndStart(msg.client as Client, msg.channel, s);
+    } else {
+      // Human is hakim: send DM and show table with hokm choice buttons
+      try { 
+        const user = await msg.client.users.fetch(s.hakim); 
+        await user.send({ content: `دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); 
+      } catch {}
+      
+      // Create announce message
       try {
-        if (s.tableMsgId) {
-          const m = await (msg.channel as any).messages.fetch(s.tableMsgId).catch(()=>null);
-          if (m) { await m.edit({ embeds: [embed], components: [row] }); msgObj = m; }
+        const chAny = msg.channel as any;
+        if (chAny && chAny.send) {
+          const announceMsg = await chAny.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
+          s.newSetAnnounceMsgId = announceMsg.id;
         }
       } catch {}
-      if (!msgObj) {
-        msgObj = await (msg.channel as any).send({ embeds: [embed], components: [row] });
-        s.tableMsgId = msgObj.id;
-      }
+      
+      // Show table with hokm choice buttons
+      await refreshTableEmbed({ channel: msg.channel }, s);
+      await msg.reply({ content: `بازی آغاز شد (${s.targetSets} ست). حاکم: <@${s.hakim}> — از دکمه‌های زیر میز حکم را انتخاب کن.` });
     }
-    await msg.reply({ content: `بازی آغاز شد. هدف ست‌ها: ${s.targetSets} (هر ست = ۷ دست). حاکم: <@${s.hakim}> — از دکمه‌های میز برای انتخاب حکم استفاده کن.` });
     return;
   }
 
