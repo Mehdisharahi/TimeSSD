@@ -834,12 +834,61 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     // Crown for hakim (on top edge of avatar)
     if (isHakim) {
       ctx.save();
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.font = `${emojiFontAvailable ? '32px' : '32px'} 'Noto Color Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', Arial`;
-      ctx.fillStyle = '#FFD700';
-      // Position crown on top edge of avatar (half inside, half outside)
-      ctx.fillText('👑', avX, avY - avR);
+      // Crown dimensions and position
+      const crownW = avR * 0.8; // width of crown base
+      const crownH = avR * 0.5; // height of crown
+      const crownX = avX; // center x
+      const crownY = avY - avR - crownH * 0.3; // position on top edge (half visible)
+      
+      // Draw crown with gradient
+      const gradient = ctx.createLinearGradient(crownX - crownW/2, crownY - crownH/2, crownX + crownW/2, crownY + crownH/2);
+      gradient.addColorStop(0, '#FFD700'); // gold top
+      gradient.addColorStop(0.5, '#FFA500'); // orange middle
+      gradient.addColorStop(1, '#FF8C00'); // dark orange bottom
+      
+      ctx.fillStyle = gradient;
+      ctx.strokeStyle = '#B8860B'; // dark gold outline
+      ctx.lineWidth = 2;
+      
+      // Draw crown shape
+      ctx.beginPath();
+      // Base of crown (bottom rectangle)
+      const baseY = crownY + crownH/4;
+      const baseH = crownH/3;
+      // Five points of crown (zigzag top)
+      const points = 5;
+      const pointW = crownW / (points - 1);
+      
+      // Start from bottom left
+      ctx.moveTo(crownX - crownW/2, baseY + baseH);
+      ctx.lineTo(crownX - crownW/2, baseY);
+      
+      // Draw zigzag peaks
+      for (let i = 0; i < points; i++) {
+        const px = crownX - crownW/2 + i * pointW;
+        const py = (i % 2 === 0) ? crownY - crownH/2 : baseY;
+        ctx.lineTo(px, py);
+      }
+      
+      // Complete the base
+      ctx.lineTo(crownX + crownW/2, baseY);
+      ctx.lineTo(crownX + crownW/2, baseY + baseH);
+      ctx.closePath();
+      
+      // Fill and stroke
+      ctx.fill();
+      ctx.stroke();
+      
+      // Add highlights (small circles on peaks)
+      ctx.fillStyle = '#FFFF00'; // bright yellow
+      for (let i = 0; i < points; i += 2) {
+        const px = crownX - crownW/2 + i * pointW;
+        const py = crownY - crownH/2;
+        ctx.beginPath();
+        ctx.arc(px, py, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
       ctx.restore();
     }
     // tricks badge (square) centered below avatar
