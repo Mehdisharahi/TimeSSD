@@ -126,10 +126,10 @@ function controlListText(s: HokmSession): string {
 
 function buildControlButtons(): ActionRowBuilder<ButtonBuilder>[] {
   const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع بازی').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1 🔵').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2 🔴').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج 🔙').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع 🏁').setStyle(ButtonStyle.Danger),
   );
   const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId('hokm-bot-add-t1').setLabel('🤖 بات 1').setStyle(ButtonStyle.Primary),
@@ -547,38 +547,45 @@ async function refreshAllDMs(ctx: { client: Client }, s: HokmSession) {
 }
 
 function clearHandOrderCache(s: HokmSession) {
-  // Clear cached suit order for all players when starting a new set/game
+  // Clear cached card order for all players when starting a new set/game
   for (const uid of s.order) {
-    const orderKey = `__hokm_suit_order_${s.guildId}:${s.channelId}:${uid}`;
+    const orderKey = `__hokm_card_order_${s.guildId}:${s.channelId}:${uid}`;
     delete (global as any)[orderKey];
   }
 }
 
-function buildHandRowsSimple(hand: Card[], userId: string, gId: string, cId: string, hokm?: Suit, initialOrder?: Suit[]): ActionRowBuilder<ButtonBuilder>[] {
+function buildHandRowsSimple(hand: Card[], userId: string, gId: string, cId: string, hokm?: Suit): ActionRowBuilder<ButtonBuilder>[] {
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
-  // Group by suit
-  const bySuit: Record<Suit, Card[]> = { S: [], H: [], D: [], C: [] };
-  hand.forEach(c => bySuit[c.s].push(c));
-  // Sort each suit descending
-  (Object.keys(bySuit) as Suit[]).forEach(s => {
-    bySuit[s].sort((a, b) => b.r - a.r);
-  });
   
-  // Determine suit order: if initialOrder provided, use it; else use suits with cards in S,H,D,C order
-  let suitOrder: Suit[];
-  if (initialOrder && initialOrder.length > 0) {
-    suitOrder = initialOrder;
+  // Cache key for storing initial card order per player
+  const orderKey = `__hokm_card_order_${gId}:${cId}:${userId}`;
+  
+  let sortedHand: Card[];
+  const cached = (global as any)[orderKey] as Card[] | undefined;
+  
+  if (cached && cached.length > 0) {
+    // Use cached order: filter cards that still exist in hand and preserve order
+    sortedHand = cached.filter(cachedCard => 
+      hand.some(c => c.s === cachedCard.s && c.r === cachedCard.r)
+    );
+    // Add any new cards that weren't in cache (shouldn't happen normally)
+    const cachedSet = new Set(sortedHand.map(c => `${c.s}${c.r}`));
+    const newCards = hand.filter(c => !cachedSet.has(`${c.s}${c.r}`));
+    if (newCards.length > 0) {
+      sortedHand = [...sortedHand, ...sortHand(newCards, hokm)];
+    }
   } else {
-    // First time: only include suits that have cards
-    suitOrder = (['S', 'H', 'D', 'C'] as Suit[]).filter(s => bySuit[s].length > 0);
+    // First time: sort and cache the order
+    sortedHand = sortHand(hand, hokm);
+    (global as any)[orderKey] = [...sortedHand]; // Deep copy for cache
   }
   
-  // Create one row per suit in the fixed order (even if empty now)
-  for (const s of suitOrder) {
-    const cards = bySuit[s];
-    if (cards.length === 0) continue; // skip empty suits but keep order
+  // Build rows of 5 cards each
+  for (let r = 0; r < 5; r++) {
+    const slice = sortedHand.slice(r * 5, r * 5 + 5);
+    if (!slice.length) break;
     const row = new ActionRowBuilder<ButtonBuilder>();
-    for (const c of cards) {
+    for (const c of slice) {
       row.addComponents(new ButtonBuilder().setCustomId(`hokm-play-${gId}-${cId}-${userId}-${c.s}-${c.r}`).setLabel(cardStr(c)).setStyle(ButtonStyle.Secondary));
     }
     rows.push(row);
@@ -1727,16 +1734,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         return;
       }
       
-      // Store or retrieve initial suit order for this user
-      const orderKey = `__hokm_suit_order_${gId}:${cId}:${uid}`;
-      let initialOrder = (global as any)[orderKey] as Suit[] | undefined;
-      if (!initialOrder) {
-        // First time showing hand: determine order based on current suits
-        initialOrder = (['S', 'H', 'D', 'C'] as Suit[]).filter(s => hand.some(c => c.s === s));
-        (global as any)[orderKey] = initialOrder;
-      }
-      
-      const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId, s.hokm, initialOrder);
+      const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId, s.hokm);
       const content = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:''} — ${uid===s.order[s.turnIndex??0]?'نوبت شماست.':'منتظر نوبت بمانید.'}`;
       await interaction.reply({ content, components: rows, ephemeral: true });
       return;
