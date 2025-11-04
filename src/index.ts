@@ -126,16 +126,16 @@ function controlListText(s: HokmSession): string {
 
 function buildControlButtons(): ActionRowBuilder<ButtonBuilder>[] {
   const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('تیم 1 🔵').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('تیم 2 🔴').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('hokm-leave').setLabel('خروج 🔙').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('hokm-start').setLabel('شروع 🏁').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('hokm-join-t1').setLabel('🔵 تیم 1').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('hokm-join-t2').setLabel('🔴 تیم 2').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('hokm-leave').setLabel('🔙 خروج').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('hokm-start').setLabel('🏁 شروع').setStyle(ButtonStyle.Danger),
   );
   const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId('hokm-bot-add-t1').setLabel('🤖 بات 1').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('hokm-bot-add-t2').setLabel('🤖 بات 2').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('hokm-bot-remove-t1').setLabel('❌ حذف بات 1').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('hokm-bot-remove-t2').setLabel('❌ حذف بات 2').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('hokm-bot-remove-t1').setLabel('❌ حذف 1').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('hokm-bot-remove-t2').setLabel('❌ حذف 2').setStyle(ButtonStyle.Secondary),
   );
   return [row1, row2];
 }
@@ -1581,9 +1581,13 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         s.team2 = s.team2.filter(x=>x!==uid);
         await interaction.reply({ content: 'از اتاق خارج شدی.', ephemeral: true });
       } else {
+        // First remove from both teams to prevent duplicates
+        s.team1 = s.team1.filter(x=>x!==uid);
+        s.team2 = s.team2.filter(x=>x!==uid);
+        
         const target = id === 'hokm-join-t1' ? s.team1 : s.team2;
-      if (target.length >= 2) { await interaction.reply({ content: 'این تیم پر است.', ephemeral: true }); return; }
-      target.push(uid);
+        if (target.length >= 2) { await interaction.reply({ content: 'این تیم پر است.', ephemeral: true }); return; }
+        target.push(uid);
         await interaction.reply({ content: `به تیم ${id.endsWith('t1')? '1':'2'} پیوستی.`, ephemeral: true });
       }
       // Update control message as plain text (no embed)
@@ -2215,14 +2219,38 @@ client.on('messageCreate', async (msg: Message) => {
     give(s.hakim, 5);
     s.hokm = undefined; s.tableMsgId = undefined;
     s.state = 'choosing_hokm';
-    try { const user = await msg.client.users.fetch(s.hakim); await user.send({ content: `بازی ریست شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
+    
     // update control list if exists
     if (s.controlMsgId) {
       const contentText = controlListText(s);
       const rows = buildControlButtons();
       try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } catch {}
     }
-    await msg.reply({ content: `ریست شد. حاکم: <@${s.hakim}> — لطفاً با ".hokm hokm <خال>" حکم را انتخاب کن.` });
+    
+    if (isVirtualBot(s.hakim)) {
+      // Bot is hakim: auto-choose hokm and start
+      await msg.reply({ content: `ریست شد. حاکم: <@${s.hakim}> (بات) — در حال انتخاب حکم...` });
+      await botChooseHokmAndStart(msg.client as Client, msg.channel, s);
+    } else {
+      // Human is hakim: send DM and show table with hokm choice buttons
+      try { 
+        const user = await msg.client.users.fetch(s.hakim); 
+        await user.send({ content: `بازی ریست شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); 
+      } catch {}
+      
+      // Create announce message
+      try {
+        const chAny = msg.channel as any;
+        if (chAny && chAny.send) {
+          const announceMsg = await chAny.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
+          s.newSetAnnounceMsgId = announceMsg.id;
+        }
+      } catch {}
+      
+      // Show table with hokm choice buttons
+      await refreshTableEmbed({ channel: msg.channel }, s);
+      await msg.reply({ content: `ریست شد. حاکم: <@${s.hakim}> — از دکمه‌های زیر میز حکم را انتخاب کن.` });
+    }
     return;
   }
 
