@@ -782,7 +782,7 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   const nameFont = `${ssdFontAvailable? '22px '+ssdFontFamily : '22px Arial'}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  function drawSeatLabel(i: number, uid?: string, name?: string, avatar?: any, isTurn?: boolean, playerTricks?: number) {
+  function drawSeatLabel(i: number, uid?: string, name?: string, avatar?: any, isTurn?: boolean, playerTricks?: number, isHakim?: boolean) {
     const seat = seats[i];
     // avatar radius from SVG seat circle to keep proportions
     const avR = seat.r;
@@ -831,6 +831,17 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
       ctx.stroke();
     }
     ctx.restore();
+    // Crown for hakim (on top edge of avatar)
+    if (isHakim) {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `${emojiFontAvailable ? '32px' : '32px'} 'Noto Color Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', Arial`;
+      ctx.fillStyle = '#FFD700';
+      // Position crown on top edge of avatar (half inside, half outside)
+      ctx.fillText('👑', avX, avY - avR);
+      ctx.restore();
+    }
     // tricks badge (square) centered below avatar
     if (typeof playerTricks === 'number') {
       const bx = avX; // center x under avatar
@@ -905,7 +916,8 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
     const mv = await getMemberVisual(s.guildId, uid);
     const isTurn = s.turnIndex!=null && s.order[s.turnIndex] === uid;
     const pTricks = s.tricksByPlayer?.get(uid) ?? 0;
-    drawSeatLabel(i, uid, mv.tag, mv.img, isTurn, pTricks);
+    const isHakim = uid === s.hakim;
+    drawSeatLabel(i, uid, mv.tag, mv.img, isTurn, pTricks, isHakim);
     const play = (s.table||[]).find(t=>t.userId===uid);
     if (play) {
       // fixed positions to match SVG
@@ -2292,7 +2304,15 @@ client.on('messageCreate', async (msg: Message) => {
     
     if (isVirtualBot(s.hakim)) {
       // Bot is hakim: auto-choose hokm and start
-      await msg.reply({ content: `ریست شد. حاکم: <@${s.hakim}> (بات) — در حال انتخاب حکم...` });
+      // Create announce message (will be deleted after 2.5s)
+      try {
+        const chAny = msg.channel as any;
+        if (chAny && chAny.send) {
+          const announceMsg = await chAny.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
+          s.newSetAnnounceMsgId = announceMsg.id;
+        }
+      } catch {}
+      await refreshTableEmbed({ channel: msg.channel }, s);
       await botChooseHokmAndStart(msg.client as Client, msg.channel, s);
     } else {
       // Human is hakim: send DM and show table with hokm choice buttons
@@ -2410,7 +2430,15 @@ client.on('messageCreate', async (msg: Message) => {
     
     if (isVirtualBot(s.hakim)) {
       // Bot is hakim: auto-choose hokm and start
-      await msg.reply({ content: `بازی آغاز شد (${s.targetSets} ست). حاکم: <@${s.hakim}> (بات) — در حال انتخاب حکم...` });
+      // Create announce message (will be deleted after 2.5s)
+      try {
+        const chAny = msg.channel as any;
+        if (chAny && chAny.send) {
+          const announceMsg = await chAny.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
+          s.newSetAnnounceMsgId = announceMsg.id;
+        }
+      } catch {}
+      await refreshTableEmbed({ channel: msg.channel }, s);
       await botChooseHokmAndStart(msg.client as Client, msg.channel, s);
     } else {
       // Human is hakim: send DM and show table with hokm choice buttons
