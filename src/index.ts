@@ -166,6 +166,9 @@ interface HokmSession {
   targetSets?: number; // how many won hands (sets) to win the match
   setsTeam1?: number;
   setsTeam2?: number;
+  // surrender votes
+  surrenderVotesTeam1?: Set<string>; // userIds who voted to surrender from team1
+  surrenderVotesTeam2?: Set<string>; // userIds who voted to surrender from team2
 }
 
 // ===== Bot Auto-Play =====
@@ -1206,7 +1209,8 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
     .setColor(0x2f3136)
     .setImage('attachment://table.png');
   const openRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`hokm-open-hand-${s.guildId}-${s.channelId}`).setLabel('دست من').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`hokm-open-hand-${s.guildId}-${s.channelId}`).setLabel('دست من').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`hokm-surrender-${s.guildId}-${s.channelId}`).setLabel('تسلیم').setStyle(ButtonStyle.Danger)
   );
   // add hokm choose buttons when waiting for hakim to pick
   const rows: any[] = [openRow];
@@ -1229,15 +1233,20 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
 }
 
 async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession) {
-  // Validate state
-  if (!s.table || s.table.length !== 4) {
-    console.error(`[TRICK ERROR] Invalid table state: ${s.table?.length} cards`);
-    return;
-  }
-  if (!s.leadSuit || !s.hokm) {
-    console.error(`[TRICK ERROR] Missing lead suit or hokm`);
-    return;
-  }
+  try {
+    // Validate state
+    if (!s.table || s.table.length !== 4) {
+      console.error(`[TRICK ERROR] Invalid table state: ${s.table?.length} cards`);
+      return;
+    }
+    if (!s.leadSuit || !s.hokm) {
+      console.error(`[TRICK ERROR] Missing lead suit or hokm`);
+      return;
+    }
+    if (!s.order || s.order.length !== 4) {
+      console.error(`[TRICK ERROR] Invalid order: ${s.order?.length} players`);
+      return;
+    }
   
   // determine winner with same logic as text command
   const lead = s.leadSuit!; const trump = s.hokm!;
@@ -1362,13 +1371,21 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     return;
   }
 
-  // Parallel render for better performance
-  const renderPromises = [];
-  if (gameChannel) renderPromises.push(refreshTableEmbed({ channel: gameChannel }, s));
-  renderPromises.push(refreshAllDMs({ client: (interaction.client as Client) }, s));
-  await Promise.all(renderPromises);
-  // trigger bot auto-play if next turn is bot
-  await maybeBotAutoPlay(interaction.client as Client, s);
+    // Parallel render for better performance
+    const renderPromises = [];
+    if (gameChannel) renderPromises.push(refreshTableEmbed({ channel: gameChannel }, s));
+    renderPromises.push(refreshAllDMs({ client: (interaction.client as Client) }, s));
+    await Promise.all(renderPromises);
+    // trigger bot auto-play if next turn is bot
+    await maybeBotAutoPlay(interaction.client as Client, s);
+  } catch (err) {
+    console.error('[TRICK ERROR] Exception in resolveTrickAndContinue:', err);
+    // Try to recover by refreshing table
+    try {
+      const gameChannel = await (interaction.client as Client).channels.fetch(s.channelId).catch(()=>null);
+      if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
+    } catch {}
+  }
 }
 
 function handToString(hand: Card[]){ const bySuit: Record<Suit, Card[]> = {S:[],H:[],D:[],C:[]}; hand.forEach(c=>bySuit[c.s].push(c)); (Object.keys(bySuit) as Suit[]).forEach(s=>bySuit[s].sort((a,b)=>b.r-a.r));
@@ -1729,6 +1746,42 @@ client.once('ready', async () => {
       }
     }
   } catch {}
+  
+  // Start periodic save for friend data every 5 minutes to prevent data loss
+  setInterval(async () => {
+    try {
+      console.log('[FRIEND DATA] Periodic save started...');
+      const now = Date.now();
+      
+      // Save all ongoing voice sessions to database before they might be lost
+      for (const [guildId, pMap] of pairStarts.entries()) {
+        for (const [key, start] of pMap.entries()) {
+          const parts = key.split(':');
+          if (parts.length < 3) continue;
+          const [a, b] = [parts[0], parts[1]];
+          const deltaMs = now - start;
+          if (deltaMs > 0) {
+            // Update in-memory totals
+            const gMap = getMap(partnerTotals, guildId, () => new Map());
+            const aMap = getMap(gMap, a, () => new Map());
+            const bMap = getMap(gMap, b, () => new Map());
+            aMap.set(b, (aMap.get(b) || 0) + deltaMs);
+            bMap.set(a, (bMap.get(a) || 0) + deltaMs);
+            
+            // Persist to database
+            await store.addDuration(guildId, a, b, deltaMs);
+            
+            // Reset start time to now
+            pMap.set(key, now);
+          }
+        }
+      }
+      
+      console.log('[FRIEND DATA] Periodic save completed.');
+    } catch (err) {
+      console.error('[FRIEND DATA] Periodic save error:', err);
+    }
+  }, 5 * 60 * 1000); // Every 5 minutes
 });
 
 client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState) => {
@@ -1973,6 +2026,153 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       return;
     }
 
+    // Surrender button
+    if (id.startsWith('hokm-surrender-')) {
+      if (!interaction.guild || !interaction.channel) { await interaction.reply({ content: 'خطای سرور.', ephemeral: true }); return; }
+      const parts = id.split('-'); // hokm-surrender-gId-cId
+      const gId = parts[2]; const cId = parts[3];
+      const s = ensureSession(gId, cId);
+      const uid = interaction.user.id;
+      
+      // Check if user is in the game
+      if (!s.order.includes(uid)) {
+        await interaction.reply({ content: 'شما در این بازی نیستید.', ephemeral: true });
+        return;
+      }
+      
+      // Can only surrender during active play
+      if (s.state !== 'playing' && s.state !== 'choosing_hokm') {
+        await interaction.reply({ content: 'فقط در حین بازی می‌توانید تسلیم کنید.', ephemeral: true });
+        return;
+      }
+      
+      // Determine user's team
+      const userTeam = s.team1.includes(uid) ? 1 : 2;
+      s.surrenderVotesTeam1 = s.surrenderVotesTeam1 || new Set<string>();
+      s.surrenderVotesTeam2 = s.surrenderVotesTeam2 || new Set<string>();
+      const votes = userTeam === 1 ? s.surrenderVotesTeam1 : s.surrenderVotesTeam2;
+      
+      // Add vote
+      votes.add(uid);
+      
+      // Check if both team members voted
+      const teamMembers = userTeam === 1 ? s.team1 : s.team2;
+      const allVoted = teamMembers.every(m => votes.has(m));
+      
+      if (allVoted) {
+        // Award set to opponent team
+        s.setsTeam1 = s.setsTeam1 || 0;
+        s.setsTeam2 = s.setsTeam2 || 0;
+        if (userTeam === 1) {
+          s.setsTeam2 += 1;
+        } else {
+          s.setsTeam1 += 1;
+        }
+        
+        // Clear surrender votes
+        s.surrenderVotesTeam1.clear();
+        s.surrenderVotesTeam2.clear();
+        
+        const targetSets = s.targetSets ?? 1;
+        
+        // Check if match is finished
+        if ((s.setsTeam1 >= targetSets) || (s.setsTeam2 >= targetSets)) {
+          s.state = 'finished';
+          // Update stats
+          try {
+            const t1 = s.team1; const t2 = s.team2;
+            const winners = (s.setsTeam1 ?? 0) >= targetSets ? t1 : t2;
+            for (const u of [...t1, ...t2]) ensureUserStat(gId, u).games += 1;
+            for (const u of winners) ensureUserStat(gId, u).wins += 1;
+            if (winners.length === 2) {
+              const [a,b] = winners;
+              ensureUserStat(gId, a).teammateWins[b] = (ensureUserStat(gId, a).teammateWins[b] || 0) + 1;
+              ensureUserStat(gId, b).teammateWins[a] = (ensureUserStat(gId, b).teammateWins[a] || 0) + 1;
+            }
+            saveHokmStats();
+          } catch {}
+          
+          await refreshTableEmbed({ channel: interaction.channel }, s);
+          
+          // Result embed
+          const t1Set = s.setsTeam1 ?? 0; const t2Set = s.setsTeam2 ?? 0;
+          const starter = s.ownerId ? `<@${s.ownerId}>` : '—';
+          const lines: string[] = [];
+          lines.push(`### ✹Starter: ${starter}`);
+          lines.push(`### ✹Sets: ${s.targetSets ?? 1}`);
+          lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+          lines.push(`### ✹Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ➤ ${t1Set}`);
+          lines.push('════════════════════');
+          lines.push(`### ✹Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ➤ ${t2Set}`);
+          lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+          lines.push(`### ✹Winner: Team ${t1Set>t2Set?1:2} ✅`);
+          lines.push(`\n**تیم ${userTeam} تسلیم شد.**`);
+          const emb = new EmbedBuilder().setDescription(lines.join('\n')).setColor(t1Set>t2Set?0x3b82f6:0xef4444);
+          await (interaction.channel as any).send({ embeds: [emb] });
+          await interaction.reply({ content: 'تیم شما تسلیم کرد. بازی به پایان رسید.', ephemeral: true });
+          return;
+        }
+        
+        // Start new set
+        console.log(`[SURRENDER] Team ${userTeam} surrendered. Starting new set. Score: Team1=${s.setsTeam1}, Team2=${s.setsTeam2}`);
+        s.deck = shuffle(makeDeck());
+        s.hands.clear(); 
+        s.order.forEach(u=>s.hands.set(u, []));
+        clearHandOrderCache(s);
+        s.hokm = undefined; 
+        s.table = []; 
+        s.leadSuit = null; 
+        s.tricksTeam1 = 0; 
+        s.tricksTeam2 = 0; 
+        s.lastTrick = undefined;
+        s.tricksByPlayer = new Map(); 
+        s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
+        s.turnIndex = undefined;
+        s.leaderIndex = undefined;
+        
+        // Choose next hakim: if surrendered team's hakim, give to opponent; else clockwise rotation
+        const hakimIdx = s.hakim ? s.order.indexOf(s.hakim) : -1;
+        if (hakimIdx >= 0) {
+          const hakimIsTeam1 = s.team1.includes(s.hakim!);
+          const hakimTeamSurrendered = (userTeam === 1 && hakimIsTeam1) || (userTeam === 2 && !hakimIsTeam1);
+          if (hakimTeamSurrendered) {
+            // Hakim's team surrendered, give hakim to opponent team (like losing a set)
+            s.hakim = s.order[(hakimIdx + 1) % s.order.length];
+          }
+          // else keep current hakim (winning team keeps hakim)
+        } else {
+          s.hakim = s.order[0]; // fallback
+        }
+        
+        const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
+        give(s.hakim!, 5);
+        s.state = 'choosing_hokm';
+        
+        try { 
+          const user = await (interaction.client as Client).users.fetch(s.hakim!); 
+          await user.send({ content: `ست جدید شروع شد (تسلیم حریف). دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim!)!)}` }); 
+        } catch {}
+        
+        const announceMsg = await (interaction.channel as any).send({ content: `تیم ${userTeam} تسلیم کرد. ست جدید آغاز شد. حاکم: <@${s.hakim!}> — لطفاً حکم را انتخاب کن.` });
+        s.newSetAnnounceMsgId = announceMsg.id;
+        
+        await refreshTableEmbed({ channel: interaction.channel }, s);
+        await refreshAllDMs({ client: (interaction.client as Client) }, s);
+        
+        if (isVirtualBot(s.hakim!)) { 
+          await botChooseHokmAndStart(interaction.client as Client, interaction.channel as any, s); 
+        }
+        
+        await interaction.reply({ content: 'تیم شما تسلیم کرد. یک ست به حریف داده شد.', ephemeral: true });
+        return;
+      } else {
+        // Not all team members voted yet
+        const votedCount = Array.from(votes).length;
+        await interaction.reply({ content: `رای شما ثبت شد. (${votedCount}/${teamMembers.length}) اعضای تیم رای دادند.`, ephemeral: true });
+        return;
+      }
+    }
+
     // DM hand filter buttons
     if (id.startsWith('hokm-hand-filter-')) {
       const parts = id.split('-'); // hokm-hand-filter-gId-cId-uid-FL
@@ -2094,9 +2294,10 @@ client.on('messageCreate', async (msg: Message) => {
   const isCmd = (name: string) => new RegExp(`^\\.${name}(?:\\s|$)`).test(content);
   const isSubCmd = (head: string, tail: string) => new RegExp(`^\\.${head}\\s+${tail}(?:\\s|$)`).test(content);
 
-  // .friend [@user|userId]
-  if (isCmd('friend')) {
-    const arg = content.slice(7).trim();
+  // .friend [@user|userId] or .friends
+  if (isCmd('friend') || isCmd('friends')) {
+    const cmdLen = content.startsWith('.friends') ? 8 : 7;
+    const arg = content.slice(cmdLen).trim();
     let target = msg.mentions.users.first() || null;
     if (!target && arg) {
       let id: string | null = null;
@@ -2217,8 +2418,8 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .topfriend — list top 10 pairs with most co-voice time (exclude bots)
-  if (isCmd('topfriend')) {
+  // .topfriend or .topfriends — list top 10 pairs with most co-voice time (exclude bots)
+  if (isCmd('topfriend') || isCmd('topfriends')) {
     const gId = msg.guildId!;
 
     // Aggregate persisted totals per unordered pair (a<b)
@@ -2499,6 +2700,126 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  // .change @user1 @user2 — swap a player in the game (owner only)
+  if (isCmd('change')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    
+    // Only owner can change players
+    if (!s.ownerId || msg.author.id !== s.ownerId) { 
+      await msg.reply('فقط سازنده اتاق می‌تواند بازیکنان را جایگزین کند.'); 
+      return; 
+    }
+    
+    // Parse mentions
+    const mentions = msg.mentions.users;
+    if (mentions.size !== 2) {
+      await msg.reply('باید دقیقاً دو نفر را منشن کنید: `.change @user1 @user2`');
+      return;
+    }
+    
+    const [user1, user2] = Array.from(mentions.values());
+    const id1 = user1.id;
+    const id2 = user2.id;
+    
+    // Determine which one is in game and which is out
+    const id1InGame = s.order.includes(id1);
+    const id2InGame = s.order.includes(id2);
+    
+    if (id1InGame && id2InGame) {
+      await msg.reply('هر دو بازیکن در بازی هستند. یکی باید داخل و یکی باید خارج باشد.');
+      return;
+    }
+    
+    if (!id1InGame && !id2InGame) {
+      await msg.reply('هیچکدام از بازیکنان در بازی نیستند. یکی باید داخل و یکی باید خارج باشد.');
+      return;
+    }
+    
+    // Find in/out players
+    const inGameId = id1InGame ? id1 : id2;
+    const outGameId = id1InGame ? id2 : id1;
+    
+    // Don't allow bots to be swapped in
+    if (isVirtualBot(outGameId)) {
+      await msg.reply('نمی‌توانید بات را جایگزین کنید.');
+      return;
+    }
+    
+    // Find team and position
+    let team: 1 | 2 | null = null;
+    let teamPos = -1;
+    if (s.team1.includes(inGameId)) {
+      team = 1;
+      teamPos = s.team1.indexOf(inGameId);
+    } else if (s.team2.includes(inGameId)) {
+      team = 2;
+      teamPos = s.team2.indexOf(inGameId);
+    }
+    
+    if (team === null) {
+      await msg.reply('خطا: بازیکن در بازی یافت نشد.');
+      return;
+    }
+    
+    // Swap in teams
+    if (team === 1) {
+      s.team1[teamPos] = outGameId;
+    } else {
+      s.team2[teamPos] = outGameId;
+    }
+    
+    // Swap in order (maintain play order position)
+    const orderPos = s.order.indexOf(inGameId);
+    if (orderPos >= 0) {
+      s.order[orderPos] = outGameId;
+    }
+    
+    // Transfer hand if game is in progress
+    if (s.state === 'playing' || s.state === 'choosing_hokm') {
+      const hand = s.hands.get(inGameId) || [];
+      s.hands.delete(inGameId);
+      s.hands.set(outGameId, hand);
+      
+      // If old player was hakim, transfer to new player
+      if (s.hakim === inGameId) {
+        s.hakim = outGameId;
+      }
+      
+      // Clear card order cache for new player
+      const orderKey = `__hokm_card_order_${s.guildId}:${s.channelId}:${outGameId}`;
+      delete (global as any)[orderKey];
+      
+      // Notify new player
+      try {
+        const newUser = await msg.client.users.fetch(outGameId);
+        const handStr = handToString(hand);
+        await newUser.send({ content: `شما به بازی اضافه شدید و جایگزین <@${inGameId}> شدید.\nدست شما:\n${handStr}` });
+      } catch {}
+    }
+    
+    // Update control message if in waiting state
+    if (s.state === 'waiting' && s.controlMsgId) {
+      const contentText = controlListText(s);
+      const rows = buildControlButtons();
+      try { 
+        const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); 
+        if (m) await m.edit({ content: contentText, components: rows }); 
+      } catch {}
+    }
+    
+    // Refresh table if game is active
+    if (s.state !== 'waiting') {
+      try { 
+        await refreshTableEmbed({ channel: msg.channel }, s); 
+        await refreshAllDMs({ client: msg.client as Client }, s);
+      } catch {}
+    }
+    
+    await msg.reply(`بازیکن <@${inGameId}> با <@${outGameId}> جایگزین شد.`);
+    return;
+  }
+
   // .list — recreate control list if waiting; otherwise re-render table
   if (isCmd('list')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
@@ -2718,6 +3039,7 @@ ${tableLines.join('\n')}`);
       `\`.end\` ⟹ پایان و حذف اتاق\n` +
       `\`.list\` ⟹ نمایش لیست/وضعیت\n` +
       `\`.miz\` ⟹ نمایش مجدد میز\n` +
+      `\`.change @user1 @user2 \` ⟹ جایگزینی بازیکن\n` +
       `\`.tablepng\` ⟹ دانلود تصویر PNG میز\n` +
       `\`.tablesvg\` ⟹ دانلود فایل SVG میز\n` +
       `\`.hokm start [N]\` ⟹ شروع بازی (N = تعداد ست)\n` +
