@@ -7,6 +7,7 @@ import { PgFriendStore } from './storage/pgFriendStore';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
 
 const token = process.env.BOT_TOKEN;
+const ownerId = process.env.OWNER_ID || '';
 
 // Emoji font registration (optional)
 let emojiFontAvailable = false;
@@ -1524,6 +1525,30 @@ function saveLoveOverrides() {
   } catch {}
 }
 
+// Timer prefix global for all servers (default is '.')
+let globalTimerPrefix: string = '.';
+const timerPrefixFile = path.join(process.cwd(), 'data', 'timer-prefix.json');
+function loadTimerPrefix() {
+  try {
+    fs.mkdirSync(path.dirname(timerPrefixFile), { recursive: true });
+    const raw = fs.existsSync(timerPrefixFile) ? fs.readFileSync(timerPrefixFile, 'utf8') : '';
+    if (raw) {
+      const obj = JSON.parse(raw) as { prefix: string };
+      if (obj.prefix) globalTimerPrefix = obj.prefix;
+    }
+  } catch {}
+}
+function saveTimerPrefix() {
+  try {
+    fs.mkdirSync(path.dirname(timerPrefixFile), { recursive: true });
+    const obj = { prefix: globalTimerPrefix };
+    fs.writeFileSync(timerPrefixFile, JSON.stringify(obj, null, 2), 'utf8');
+  } catch {}
+}
+function getTimerPrefix(): string {
+  return globalTimerPrefix;
+}
+
 function getMap<K, V>(map: Map<K, V>, key: K, mk: () => V): V {
   let v = map.get(key);
   if (!v) { v = mk(); map.set(key, v); }
@@ -1596,6 +1621,7 @@ if (pgUrl) {
 
 loadLoveOverrides();
 loadLoveRandoms();
+loadTimerPrefix();
 
 async function addDuration(guildId: string, a: string, b: string, deltaMs: number) {
   if (deltaMs <= 0) return;
@@ -2679,6 +2705,7 @@ ${tableLines.join('\n')}`);
     const lines: string[] = [
       '• .t <مدت> [دلیل] — تنظیم تایمر. نمونه: `.t 10m` یا `.t 60 [دلیل]`',
       '• .e <ثانیه> — افزودن چند ثانیه به آخرین تایمر خودت. نمونه: `.e 30`',
+      '• .prefix <نماد> — تغییر پرفیکس دستور زمان. نمونه: `.prefix ?` تا دستور .t به ?t تبدیل شود',
       '• .friend [@کاربر|آیدی] — نمایش ۱۰ نفرِ برتر که بیشترین هم‌حضوری ویس با کاربر هدف را داشته‌اند (بدون ربات‌ها).',
       '• .topfriend — نمایش ۱۰ زوج برتر با بیشترین هم‌حضوری در ویس (بدون ربات‌ها).',
       '• .ll [@کاربر|آیدی] — محاسبه و ساخت تصویر درصد عشق بین شما و کاربر هدف.',
@@ -2994,6 +3021,30 @@ ${tableLines.join('\n')}`);
     }
   }
 
+  // .prefix <newPrefix> — change timer prefix (owner only, global)
+  if (isCmd('prefix')) {
+    // Check if user is bot owner
+    if (msg.author.id !== ownerId) {
+      await msg.reply({ content: '❌ فقط مالک بات می‌تواند پرفیکس را تغییر دهد.' });
+      return;
+    }
+    const arg = content.slice(7).trim();
+    if (!arg || arg.length !== 1) {
+      const current = getTimerPrefix();
+      await msg.reply({ content: `پرفیکس فعلی دستور زمان (در همه سرورها): \`${current}\`\nبرای تغییر: \`.prefix <کاراکتر>\`\nمثال: \`.prefix ?\` تا دستور ${current}t به ?t تبدیل شود` });
+      return;
+    }
+    // Validate prefix character (prevent conflicts with common characters)
+    if (arg === ' ' || /[a-zA-Z0-9@#]/.test(arg)) {
+      await msg.reply({ content: 'پرفیکس نمی‌تواند فاصله یا حرف/عدد باشد. از نمادهایی مثل . ! ? $ استفاده کنید.' });
+      return;
+    }
+    globalTimerPrefix = arg;
+    saveTimerPrefix();
+    await msg.reply({ content: `✅ پرفیکس دستور زمان در همه سرورها تغییر کرد!\nاز این به بعد: \`${arg}t <مدت>\`\nمثال: \`${arg}t 10m\`` });
+    return;
+  }
+
   // .e command
   if (isCmd('e')) {
     const arg = content.slice(2).trim();
@@ -3014,11 +3065,14 @@ ${tableLines.join('\n')}`);
     return;
   }
 
-  if (!isCmd('t')) return;
+  // Timer command with custom prefix
+  const timerPrefix = getTimerPrefix();
+  const timerCmdPattern = new RegExp(`^\\${timerPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}t(?:\\s|$)`);
+  if (!timerCmdPattern.test(content)) return;
 
-  const args = content.slice(2).trim();
+  const args = content.slice(timerPrefix.length + 1).trim();
   if (!args) {
-    await msg.reply({ content: 'استفاده: `.t 10m [دلیل]` یا `.t 60 [دلیل]` (عدد = ثانیه)' });
+    await msg.reply({ content: `استفاده: \`${timerPrefix}t 10m [دلیل]\` یا \`${timerPrefix}t 60 [دلیل]\` (عدد = ثانیه)` });
     return;
   }
 
