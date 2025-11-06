@@ -2702,23 +2702,90 @@ ${tableLines.join('\n')}`);
 
   // .komak — help
   if (isCmd('komak')) {
-    const lines: string[] = [
-      '• .t <مدت> [دلیل] — تنظیم تایمر. نمونه: `.t 10m` یا `.t 60 [دلیل]`',
-      '• .e <ثانیه> — افزودن چند ثانیه به آخرین تایمر خودت. نمونه: `.e 30`',
-      '• .prefix <نماد> — تغییر پرفیکس دستور زمان. نمونه: `.prefix ?` تا دستور .t به ?t تبدیل شود',
-      '• .friend [@کاربر|آیدی] — نمایش ۱۰ نفرِ برتر که بیشترین هم‌حضوری ویس با کاربر هدف را داشته‌اند (بدون ربات‌ها).',
-      '• .topfriend — نمایش ۱۰ زوج برتر با بیشترین هم‌حضوری در ویس (بدون ربات‌ها).',
-      '• .ll [@کاربر|آیدی] — محاسبه و ساخت تصویر درصد عشق بین شما و کاربر هدف.',
-      '• .llset @user1 @user2 <0..100> — فقط مدیران: تنظیم درصد ثابت عشق برای دو کاربر.',
-      '• .llunset @user1 @user2 — فقط مدیران: حذف تنظیم ثابت درصد عشق.',
-      '• .av [@کاربر|آیدی] — نمایش آواتار کاربر (با لینک).',
-      '• .ba [@کاربر|آیدی] — نمایش بنر کاربر (اگر داشته باشد).',
-      '• Slash: /timer set|list|cancel — تایمر با اینترفیس اسلش‌کامند (ثبت با `npm run register:commands`).',
-    ];
+    const timerPrefix = getTimerPrefix();
     const embed = new EmbedBuilder()
-      .setTitle('راهنمای دستورات')
-      .setDescription(lines.join('\n'))
-      .setColor(0x2f3136);
+      .setTitle('📚 راهنمای کامل دستورات TimeSSD')
+      .setDescription('**لیست کامل دستورات و امکانات ربات**')
+      .setColor(0x5865F2)
+      .addFields(
+        {
+          name: '⏱️ دستورات تایمر',
+          value: 
+            `\`${timerPrefix}t <مدت> [دلیل]\` — تنظیم تایمر\n` +
+            `> مثال: \`${timerPrefix}t 10m\` یا \`${timerPrefix}t 60 study\`\n\n` +
+            `\`${timerPrefix}e <ثانیه>\` — افزودن ثانیه به تایمر\n` +
+            `> مثال: \`${timerPrefix}e 30\`\n\n` +
+            `\`/timer set\` — تنظیم تایمر (slash)\n` +
+            `\`/timer list\` — لیست تایمرهای فعال\n` +
+            `\`/timer cancel\` — کنسل کردن تایمر`,
+          inline: false
+        },
+        {
+          name: '❤️ دستورات محاسبه عشق',
+          value:
+            `\`${timerPrefix}ll [@کاربر]\` — محاسبه درصد عشق\n` +
+            `> تصویر زیبا با درصد عشق بین دو نفر`,
+          inline: false
+        },
+        {
+          name: '👥 دستورات هم‌حضوری ویس',
+          value:
+            `\`${timerPrefix}friend [@کاربر]\` — ۱۰ دوست برتر کاربر\n` +
+            `> نمایش افرادی که بیشترین زمان را با هم در ویس بوده‌اند\n\n` +
+            `\`${timerPrefix}topfriend\` — ۱۰ زوج برتر سرور\n` +
+            `> بیشترین هم‌حضوری در ویس`,
+          inline: false
+        },
+        {
+          name: '🃏 بازی حکم - راه‌اندازی',
+          value:
+            `\`${timerPrefix}new\` — ساخت اتاق بازی جدید\n` +
+            `\`${timerPrefix}a1 @user\` یا \`${timerPrefix}a1 bot\` — اضافه به تیم ۱\n` +
+            `\`${timerPrefix}a2 @user\` یا \`${timerPrefix}a2 bot\` — اضافه به تیم ۲\n` +
+            `\`${timerPrefix}r @user\` — حذف از تیم‌ها\n` +
+            `\`${timerPrefix}hokm start [N]\` — شروع بازی (N = تعداد ست)`,
+          inline: false
+        },
+        {
+          name: '🎮 بازی حکم - در حین بازی',
+          value:
+            `\`${timerPrefix}hokm hokm <suit>\` — انتخاب حکم (حاکم)\n` +
+            `\`${timerPrefix}hokm play <card>\` — بازی کردن کارت\n` +
+            `> مثال: \`${timerPrefix}hokm play A♠\`\n\n` +
+            `\`${timerPrefix}hokm hand\` — دریافت کارت‌های دست (DM)\n` +
+            `\`${timerPrefix}hokm table\` — نمایش وضعیت میز`,
+          inline: false
+        },
+        {
+          name: '🎯 بازی حکم - مدیریت',
+          value:
+            `\`${timerPrefix}reset\` — ریست بازی با همان تیم‌ها\n` +
+            `\`${timerPrefix}end\` — پایان و حذف اتاق\n` +
+            `\`${timerPrefix}list\` — نمایش لیست/وضعیت\n` +
+            `\`${timerPrefix}miz\` — نمایش مجدد میز\n` +
+            `\`${timerPrefix}tablepng\` — دانلود تصویر PNG میز\n` +
+            `\`${timerPrefix}tablesvg\` — دانلود فایل SVG میز`,
+          inline: false
+        },
+        {
+          name: '📊 آمار بازی حکم',
+          value:
+            `\`${timerPrefix}best\` — ۲۰ بازیکن برتر سرور\n` +
+            `\`${timerPrefix}bazikon [@کاربر]\` — آمار کامل بازیکن\n` +
+            `> بازی‌ها، برد، بهترین تیمیت، حکم محبوب`,
+          inline: false
+        },
+        {
+          name: '👤 پروفایل کاربر',
+          value:
+            `\`${timerPrefix}av [@کاربر]\` — نمایش آواتار با لینک\n` +
+            `\`${timerPrefix}ba [@کاربر]\` — نمایش بنر کاربر`,
+          inline: false
+        }
+      )
+      .setFooter({ text: '💡 نکته: [@کاربر] = اختیاری | <مقدار> = الزامی' })
+      .setTimestamp();
+    
     await msg.reply({ embeds: [embed] });
     return;
   }
@@ -2788,11 +2855,10 @@ ${tableLines.join('\n')}`);
   }
 
 
-  // .llset — admin only
+  // .llset — owner only
   if (isCmd('llset')) {
-    const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
-    if (!isAdmin) {
-      await msg.reply({ content: 'فقط مدیران می‌توانند از این دستور استفاده کنند.' });
+    // Check if user is bot owner (no message if not)
+    if (msg.author.id !== ownerId) {
       return;
     }
     const arg = content.slice(6).trim();
@@ -2824,11 +2890,10 @@ ${tableLines.join('\n')}`);
     return;
   }
 
-  // .llunset — admin only
+  // .llunset — owner only
   if (isCmd('llunset')) {
-    const isAdmin = !!msg.member?.permissions.has(PermissionsBitField.Flags.Administrator);
-    if (!isAdmin) {
-      await msg.reply({ content: 'فقط مدیران می‌توانند از این دستور استفاده کنند.' });
+    // Check if user is bot owner (no message if not)
+    if (msg.author.id !== ownerId) {
       return;
     }
     const arg = content.slice(8).trim();
@@ -3023,9 +3088,8 @@ ${tableLines.join('\n')}`);
 
   // .prefix <newPrefix> — change timer prefix (owner only, global)
   if (isCmd('prefix')) {
-    // Check if user is bot owner
+    // Check if user is bot owner (no message if not)
     if (msg.author.id !== ownerId) {
-      await msg.reply({ content: '❌ فقط مالک بات می‌تواند پرفیکس را تغییر دهد.' });
       return;
     }
     const arg = content.slice(7).trim();
