@@ -2703,87 +2703,42 @@ ${tableLines.join('\n')}`);
   // .komak — help
   if (isCmd('komak')) {
     const timerPrefix = getTimerPrefix();
+    const helpText = 
+      `**📚 راهنمای کامل دستورات 𝐋 𝐔 𝐍 𝐀**\n\n` +
+      `**🃏 بازی حکم**\n` +
+      `\`${timerPrefix}new\` ⟹ ساخت اتاق بازی جدید\n` +
+      `\`${timerPrefix}a1 @user\` ⟹ افزودن به تیم ۱\n` +
+      `\`${timerPrefix}a2 @user\` ⟹ افزودن به تیم ۲\n` +
+      `\`${timerPrefix}r @user\` ⟹ حذف از تیم‌ها\n` +
+      `\`${timerPrefix}reset\` ⟹ ریست بازی با همان تیم‌ها\n` +
+      `\`${timerPrefix}end\` ⟹ پایان و حذف اتاق\n` +
+      `\`${timerPrefix}list\` ⟹ نمایش لیست/وضعیت\n` +
+      `\`${timerPrefix}miz\` ⟹ نمایش مجدد میز\n` +
+      `\`${timerPrefix}tablepng\` ⟹ دانلود تصویر PNG میز\n` +
+      `\`${timerPrefix}tablesvg\` ⟹ دانلود فایل SVG میز\n` +
+      `\`${timerPrefix}hokm start [N]\` ⟹ شروع بازی (N = تعداد ست)\n` +
+      `\`${timerPrefix}hokm hand\` ⟹ دریافت کارت‌های دست (DM)\n` +
+      `\`${timerPrefix}hokm table\` ⟹ نمایش وضعیت میز\n` +
+      `\`${timerPrefix}best\` ⟹ بازیکنان برتر\n` +
+      `\`${timerPrefix}bazikon @user\` ⟹ آمار بازیکن\n\n` +
+      `**⏱️ دستورات تایمر**\n` +
+      `\`${timerPrefix}t 30\` \n` +
+      `\`${timerPrefix}e 30\` ⟹ افزودن 30 ثانیه به آخرین تایمر\n\n` +
+      `**❤️ دستورات محاسبه عشق**\n` +
+      `\`${timerPrefix}ll\` ⟹ درصد رندوم\n` +
+      `\`${timerPrefix}ll @user\` ⟹ درصد کاربر با شخص منشن شده\n` +
+      `\`${timerPrefix}ll @user1 @user2\` ⟹ درصد بین دو شخص منشن شده\n\n` +
+      `**👥 دستورات هم‌حضوری ویس**\n` +
+      `\`${timerPrefix}friend\` ⟹ دوستان برتر کاربر\n` +
+      `\`${timerPrefix}friend @user\` ⟹ دوستان برتر شخص منشن شده\n` +
+      `\`${timerPrefix}topfriend\` ⟹ زوج های برتر سرور\n\n` +
+      `**👤 پروفایل کاربر**\n` +
+      `\`${timerPrefix}av @user\` ⟹ نمایش آواتار با لینک\n` +
+      `\`${timerPrefix}ba @user\` ⟹ نمایش بنر کاربر`;
+    
     const embed = new EmbedBuilder()
-      .setTitle('📚 راهنمای کامل دستورات TimeSSD')
-      .setDescription('**لیست کامل دستورات و امکانات ربات**')
+      .setDescription(helpText)
       .setColor(0x5865F2)
-      .addFields(
-        {
-          name: '⏱️ دستورات تایمر',
-          value: 
-            `\`${timerPrefix}t <مدت> [دلیل]\` — تنظیم تایمر\n` +
-            `> مثال: \`${timerPrefix}t 10m\` یا \`${timerPrefix}t 60 study\`\n\n` +
-            `\`${timerPrefix}e <ثانیه>\` — افزودن ثانیه به تایمر\n` +
-            `> مثال: \`${timerPrefix}e 30\`\n\n` +
-            `\`/timer set\` — تنظیم تایمر (slash)\n` +
-            `\`/timer list\` — لیست تایمرهای فعال\n` +
-            `\`/timer cancel\` — کنسل کردن تایمر`,
-          inline: false
-        },
-        {
-          name: '❤️ دستورات محاسبه عشق',
-          value:
-            `\`${timerPrefix}ll [@کاربر]\` — محاسبه درصد عشق\n` +
-            `> تصویر زیبا با درصد عشق بین دو نفر`,
-          inline: false
-        },
-        {
-          name: '👥 دستورات هم‌حضوری ویس',
-          value:
-            `\`${timerPrefix}friend [@کاربر]\` — ۱۰ دوست برتر کاربر\n` +
-            `> نمایش افرادی که بیشترین زمان را با هم در ویس بوده‌اند\n\n` +
-            `\`${timerPrefix}topfriend\` — ۱۰ زوج برتر سرور\n` +
-            `> بیشترین هم‌حضوری در ویس`,
-          inline: false
-        },
-        {
-          name: '🃏 بازی حکم - راه‌اندازی',
-          value:
-            `\`${timerPrefix}new\` — ساخت اتاق بازی جدید\n` +
-            `\`${timerPrefix}a1 @user\` یا \`${timerPrefix}a1 bot\` — اضافه به تیم ۱\n` +
-            `\`${timerPrefix}a2 @user\` یا \`${timerPrefix}a2 bot\` — اضافه به تیم ۲\n` +
-            `\`${timerPrefix}r @user\` — حذف از تیم‌ها\n` +
-            `\`${timerPrefix}hokm start [N]\` — شروع بازی (N = تعداد ست)`,
-          inline: false
-        },
-        {
-          name: '🎮 بازی حکم - در حین بازی',
-          value:
-            `\`${timerPrefix}hokm hokm <suit>\` — انتخاب حکم (حاکم)\n` +
-            `\`${timerPrefix}hokm play <card>\` — بازی کردن کارت\n` +
-            `> مثال: \`${timerPrefix}hokm play A♠\`\n\n` +
-            `\`${timerPrefix}hokm hand\` — دریافت کارت‌های دست (DM)\n` +
-            `\`${timerPrefix}hokm table\` — نمایش وضعیت میز`,
-          inline: false
-        },
-        {
-          name: '🎯 بازی حکم - مدیریت',
-          value:
-            `\`${timerPrefix}reset\` — ریست بازی با همان تیم‌ها\n` +
-            `\`${timerPrefix}end\` — پایان و حذف اتاق\n` +
-            `\`${timerPrefix}list\` — نمایش لیست/وضعیت\n` +
-            `\`${timerPrefix}miz\` — نمایش مجدد میز\n` +
-            `\`${timerPrefix}tablepng\` — دانلود تصویر PNG میز\n` +
-            `\`${timerPrefix}tablesvg\` — دانلود فایل SVG میز`,
-          inline: false
-        },
-        {
-          name: '📊 آمار بازی حکم',
-          value:
-            `\`${timerPrefix}best\` — ۲۰ بازیکن برتر سرور\n` +
-            `\`${timerPrefix}bazikon [@کاربر]\` — آمار کامل بازیکن\n` +
-            `> بازی‌ها، برد، بهترین تیمیت، حکم محبوب`,
-          inline: false
-        },
-        {
-          name: '👤 پروفایل کاربر',
-          value:
-            `\`${timerPrefix}av [@کاربر]\` — نمایش آواتار با لینک\n` +
-            `\`${timerPrefix}ba [@کاربر]\` — نمایش بنر کاربر`,
-          inline: false
-        }
-      )
-      .setFooter({ text: '💡 نکته: [@کاربر] = اختیاری | <مقدار> = الزامی' })
       .setTimestamp();
     
     await msg.reply({ embeds: [embed] });
@@ -2933,7 +2888,13 @@ ${tableLines.join('\n')}`);
       const arg = content.slice(3).trim();
       let userA = msg.author;
       let userB = msg.mentions.users.first() || null;
-      if (!userB && arg) {
+      
+      // Check if two users are mentioned: .ll @user1 @user2
+      if (msg.mentions.users.size >= 2) {
+        const mentioned = Array.from(msg.mentions.users.values());
+        userA = mentioned[0];
+        userB = mentioned[1];
+      } else if (!userB && arg) {
         let id: string | null = null;
         const m = arg.match(/^<@!?(\d+)>$/);
         if (m) id = m[1];
@@ -3075,7 +3036,10 @@ ${tableLines.join('\n')}`);
 
       const buffer = canvas.toBuffer('image/png');
       const attachment = new AttachmentBuilder(buffer, { name: 'love.png' });
-      await msg.reply({ files: [attachment] });
+      
+      // Send names as text above image
+      const replyText = `**${aName}** & **${bName}**`;
+      await msg.reply({ content: replyText, files: [attachment] });
       return;
     } catch (err) {
       console.error('Error in .ll command:', err);
@@ -3131,7 +3095,8 @@ ${tableLines.join('\n')}`);
 
   // Timer command with custom prefix
   const timerPrefix = getTimerPrefix();
-  const timerCmdPattern = new RegExp(`^\\${timerPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}t(?:\\s|$)`);
+  const escapedPrefix = timerPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const timerCmdPattern = new RegExp(`^${escapedPrefix}t(?:\\s|$)`);
   if (!timerCmdPattern.test(content)) return;
 
   const args = content.slice(timerPrefix.length + 1).trim();
