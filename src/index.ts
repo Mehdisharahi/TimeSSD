@@ -1542,16 +1542,20 @@ function saveLoveOverrides() {
   } catch {}
 }
 
-// Timer prefix global for all servers (default is '.')
-let globalTimerPrefix: string = '.';
+// Timer prefix global for all servers (default is '!')
+let globalTimerPrefix: string = '!';
 const timerPrefixFile = path.join(process.cwd(), 'data', 'timer-prefix.json');
 function loadTimerPrefix() {
   try {
-    fs.mkdirSync(path.dirname(timerPrefixFile), { recursive: true });
+    // Load stored prefix if exists
     const raw = fs.existsSync(timerPrefixFile) ? fs.readFileSync(timerPrefixFile, 'utf8') : '';
     if (raw) {
       const obj = JSON.parse(raw) as { prefix: string };
       if (obj.prefix) globalTimerPrefix = obj.prefix;
+    } else {
+      // If no file exists, save the default prefix '!' to persist it
+      globalTimerPrefix = '!';
+      saveTimerPrefix();
     }
   } catch {}
 }
@@ -2357,7 +2361,7 @@ client.on('messageCreate', async (msg: Message) => {
     if (!stats || stats.size === 0) { await msg.reply({ content: 'در این سرور بازی انجام نشده است.' }); return; }
     const entries = Array.from(stats.entries()) as Array<[string, HokmUserStat]>;
     const arr = entries
-      .filter(([, st]) => ((st?.games)||0) > 0)
+      .filter(([uid, st]) => ((st?.games)||0) > 0 && !isVirtualBot(uid)) // Exclude bots
       .sort((a: [string, HokmUserStat], b: [string, HokmUserStat]) => ((b[1].wins||0) - (a[1].wins||0)) || ((b[1].games||0) - (a[1].games||0)))
       .slice(0, 20);
     if (arr.length === 0) { await msg.reply({ content: 'در این سرور بازی انجام نشده است.' }); return; }
