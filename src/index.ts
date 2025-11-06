@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember, AttachmentBuilder } from 'discord.js';
+import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember, AttachmentBuilder, ActivityType } from 'discord.js';
 import { createCanvas, GlobalFonts, loadImage, Canvas } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
@@ -1683,6 +1683,10 @@ async function fetchBuffer(url: string): Promise<Buffer> {
 
 client.once('ready', async () => {
   console.log(`TimeSSD is online as ${client.user?.tag}`);
+  
+  // Set bot status
+  client.user?.setActivity('.komak | HOKM', { type: ActivityType.Playing });
+  
   // Initialize current voice channel membership and start sessions for existing pairs
   try {
     await store.init();
