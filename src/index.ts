@@ -2287,6 +2287,41 @@ client.on('interactionCreate', async (interaction: Interaction) => {
 
 });
 
+// ===== Small Caps Conversion =====
+// Map for converting English letters (both uppercase and lowercase) to Unicode small caps
+const smallCapsMap: Record<string, string> = {
+  'A': 'ᴀ', 'a': 'ᴀ',
+  'B': 'ʙ', 'b': 'ʙ',
+  'C': 'ᴄ', 'c': 'ᴄ',
+  'D': 'ᴅ', 'd': 'ᴅ',
+  'E': 'ᴇ', 'e': 'ᴇ',
+  'F': 'ғ', 'f': 'ғ',
+  'G': 'ɢ', 'g': 'ɢ',
+  'H': 'ʜ', 'h': 'ʜ',
+  'I': 'ɪ', 'i': 'ɪ',
+  'J': 'ᴊ', 'j': 'ᴊ',
+  'K': 'ᴋ', 'k': 'ᴋ',
+  'L': 'ʟ', 'l': 'ʟ',
+  'M': 'ᴍ', 'm': 'ᴍ',
+  'N': 'ɴ', 'n': 'ɴ',
+  'O': 'ᴏ', 'o': 'ᴏ',
+  'P': 'ᴘ', 'p': 'ᴘ',
+  'Q': 'Q', 'q': 'Q',
+  'R': 'ʀ', 'r': 'ʀ',
+  'S': 'ꜱ', 's': 'ꜱ',
+  'T': 'ᴛ', 't': 'ᴛ',
+  'U': 'ᴜ', 'u': 'ᴜ',
+  'V': 'ᴠ', 'v': 'ᴠ',
+  'W': 'ᴡ', 'w': 'ᴡ',
+  'X': 'x', 'x': 'x',
+  'Y': 'ʏ', 'y': 'ʏ',
+  'Z': 'ᴢ', 'z': 'ᴢ',
+};
+
+function toSmallCaps(text: string): string {
+  return text.split('').map(char => smallCapsMap[char] || char).join('');
+}
+
 // Dot-prefix command: .t <duration> [reason]
 client.on('messageCreate', async (msg: Message) => {
   if (!msg.inGuild()) return;
@@ -3419,6 +3454,60 @@ ${tableLines.join('\n')}`);
     if (!t) {
       await msg.reply({ content: 'تایمر فعالی برای شما یافت نشد.' });
       return;
+    }
+    return;
+  }
+
+  // .esm — convert text to small caps or change user nickname
+  if (isCmd('esm')) {
+    if (!msg.guild) {
+      await msg.reply({ content: 'این دستور فقط در سرور کار می‌کند.' });
+      return;
+    }
+
+    const arg = content.slice(4).trim(); // Remove '.esm'
+    
+    // Check if there's a mention or reply
+    let targetMember: GuildMember | null = null;
+    let textToConvert = arg;
+
+    // Priority 1: Check for mention
+    if (msg.mentions.members && msg.mentions.members.size > 0) {
+      targetMember = msg.mentions.members.first()!;
+      // Remove the mention from the text
+      textToConvert = arg.replace(/<@!?\d+>/g, '').trim();
+    }
+    // Priority 2: Check for reply
+    else if (msg.reference) {
+      try {
+        const repliedMsg = await msg.channel.messages.fetch(msg.reference.messageId!);
+        if (repliedMsg.member) {
+          targetMember = repliedMsg.member;
+          textToConvert = arg; // Use all text after .esm
+        }
+      } catch {}
+    }
+
+    // If no text provided, show usage
+    if (!textToConvert) {
+      await msg.reply({ content: 'استفاده:\n`.esm @user نام جدید` - تغییر نیکنیم\n`.esm متن` - تبدیل متن به فونت Small Caps' });
+      return;
+    }
+
+    // Convert text to small caps
+    const convertedText = toSmallCaps(textToConvert);
+
+    // If target member exists, change their nickname
+    if (targetMember) {
+      try {
+        await targetMember.setNickname(convertedText);
+        await msg.reply({ content: `✅ نیکنیم <@${targetMember.id}> تغییر کرد به: ${convertedText}` });
+      } catch (err) {
+        await msg.reply({ content: `❌ خطا در تغییر نیکنیم. ممکن است مجوز کافی وجود نداشته باشد یا کاربر دسترسی بالاتری داشته باشد.` });
+      }
+    } else {
+      // Just send the converted text
+      await msg.reply({ content: convertedText });
     }
     return;
   }
