@@ -2322,6 +2322,41 @@ function toSmallCaps(text: string): string {
   return text.split('').map(char => smallCapsMap[char] || char).join('');
 }
 
+// ===== Mathematical Sans-Serif Bold Conversion =====
+// Map for converting English letters to Unicode Mathematical Sans-Serif Bold
+const mathSansSerifBoldMap: Record<string, string> = {
+  'A': '𝗔', 'a': '𝗮',
+  'B': '𝗕', 'b': '𝗯',
+  'C': '𝗖', 'c': '𝗰',
+  'D': '𝗗', 'd': '𝗱',
+  'E': '𝗘', 'e': '𝗲',
+  'F': '𝗙', 'f': '𝗳',
+  'G': '𝗚', 'g': '𝗴',
+  'H': '𝗛', 'h': '𝗵',
+  'I': '𝗜', 'i': '𝗶',
+  'J': '𝗝', 'j': '𝗷',
+  'K': '𝗞', 'k': '𝗸',
+  'L': '𝗟', 'l': '𝗹',
+  'M': '𝗠', 'm': '𝗺',
+  'N': '𝗡', 'n': '𝗻',
+  'O': '𝗢', 'o': '𝗼',
+  'P': '𝗣', 'p': '𝗽',
+  'Q': '𝗤', 'q': '𝗾',
+  'R': '𝗥', 'r': '𝗿',
+  'S': '𝗦', 's': '𝘀',
+  'T': '𝗧', 't': '𝘁',
+  'U': '𝗨', 'u': '𝘂',
+  'V': '𝗩', 'v': '𝘃',
+  'W': '𝗪', 'w': '𝘄',
+  'X': '𝗫', 'x': '𝘅',
+  'Y': '𝗬', 'y': '𝘆',
+  'Z': '𝗭', 'z': '𝘇',
+};
+
+function toMathSansSerifBold(text: string): string {
+  return text.split('').map(char => mathSansSerifBoldMap[char] || char).join('');
+}
+
 // Dot-prefix command: .t <duration> [reason]
 client.on('messageCreate', async (msg: Message) => {
   if (!msg.inGuild()) return;
@@ -3490,7 +3525,7 @@ ${tableLines.join('\n')}`);
 
     // If no text provided, show usage
     if (!textToConvert) {
-      await msg.reply({ content: 'استفاده:\n`.esm @user نام جدید` - تغییر نیکنیم\n`.esm متن` - تبدیل متن به فونت Small Caps' });
+      await msg.reply({ content: 'استفاده:\n`.esm @user نام جدید` - تغییر نیک نیم\n`.esm متن` - تبدیل متن به فونت Small Caps' });
       return;
     }
 
@@ -3501,9 +3536,63 @@ ${tableLines.join('\n')}`);
     if (targetMember) {
       try {
         await targetMember.setNickname(convertedText);
-        await msg.reply({ content: `✅ نیکنیم <@${targetMember.id}> تغییر کرد به: ${convertedText}` });
+        await msg.reply({ content: `✅ نیک نیم <@${targetMember.id}> تغییر کرد به: ${convertedText}` });
       } catch (err) {
-        await msg.reply({ content: `❌ خطا در تغییر نیکنیم. ممکن است مجوز کافی وجود نداشته باشد یا کاربر دسترسی بالاتری داشته باشد.` });
+        await msg.reply({ content: `❌ خطا در تغییر نیک نیم. ممکن است مجوز کافی وجود نداشته باشد یا کاربر دسترسی بالاتری داشته باشد.` });
+      }
+    } else {
+      // Just send the converted text
+      await msg.reply({ content: convertedText });
+    }
+    return;
+  }
+
+  // .esm1 — convert text to Mathematical Sans-Serif Bold or change user nickname
+  if (isCmd('esm1')) {
+    if (!msg.guild) {
+      await msg.reply({ content: 'این دستور فقط در سرور کار می‌کند.' });
+      return;
+    }
+
+    const arg = content.slice(5).trim(); // Remove '.esm1'
+    
+    // Check if there's a mention or reply
+    let targetMember: GuildMember | null = null;
+    let textToConvert = arg;
+
+    // Priority 1: Check for mention
+    if (msg.mentions.members && msg.mentions.members.size > 0) {
+      targetMember = msg.mentions.members.first()!;
+      // Remove the mention from the text
+      textToConvert = arg.replace(/<@!?\d+>/g, '').trim();
+    }
+    // Priority 2: Check for reply
+    else if (msg.reference) {
+      try {
+        const repliedMsg = await msg.channel.messages.fetch(msg.reference.messageId!);
+        if (repliedMsg.member) {
+          targetMember = repliedMsg.member;
+          textToConvert = arg; // Use all text after .esm1
+        }
+      } catch {}
+    }
+
+    // If no text provided, show usage
+    if (!textToConvert) {
+      await msg.reply({ content: 'استفاده:\n`.esm1 @user نام جدید` - تغییر نیک نیم\n`.esm1 متن` - تبدیل متن به فونت Mathematical Sans-Serif Bold' });
+      return;
+    }
+
+    // Convert text to Mathematical Sans-Serif Bold
+    const convertedText = toMathSansSerifBold(textToConvert);
+
+    // If target member exists, change their nickname
+    if (targetMember) {
+      try {
+        await targetMember.setNickname(convertedText);
+        await msg.reply({ content: `✅ نیک نیم <@${targetMember.id}> تغییر کرد به: ${convertedText}` });
+      } catch (err) {
+        await msg.reply({ content: `❌ خطا در تغییر نیک نیم. ممکن است مجوز کافی وجود نداشته باشد یا کاربر دسترسی بالاتری داشته باشد.` });
       }
     } else {
       // Just send the converted text
