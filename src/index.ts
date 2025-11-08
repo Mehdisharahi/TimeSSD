@@ -3739,6 +3739,14 @@ ${tableLines.join('\n')}`);
               }
             }
           }
+
+          // Also send the full combined result to the command sender's DM
+          try {
+            await msg.author.send({ embeds: [embed] });
+          } catch {
+            const authorMention = `<@${msg.author.id}>`;
+            failedDMs.push(authorMention);
+          }
           
           // Send confirmation or error messages
           if (failedDMs.length === 0) {
