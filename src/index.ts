@@ -2420,8 +2420,8 @@ client.on('messageCreate', async (msg: Message) => {
   const isCmd = (name: string) => new RegExp(`^\\.${name}(?:\\s|$)`).test(content);
 
   // .friend [@user|userId] or .friends
-  if (isCmd('friend') || isCmd('friends')) {
-    const cmdLen = content.startsWith('.friends') ? 8 : 7;
+  if (isCmd('friend') || isCmd('friends') || isCmd('دوست')) {
+    const cmdLen = content.startsWith('.friends') ? 8 : content.startsWith('.دوست') ? 5 : 7;
     const arg = content.slice(cmdLen).trim();
     let target = msg.mentions.users.first() || null;
     if (!target && arg) {
@@ -2475,7 +2475,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .best — top 20 Hokm winners (by wins)
-  if (isCmd('best')) {
+  if (isCmd('best') || isCmd('بست')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const gId = msg.guildId!;
     const stats = hokmStats.get(gId);
@@ -2503,10 +2503,10 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .bazikon — show user's Hokm stats
-  if (isCmd('bazikon')) {
+  if (isCmd('bazikon') || isCmd('بازیکن')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const gId = msg.guildId!;
-    const targetIds = await resolveTargetIds(msg, content, '.bazikon');
+    const targetIds = await resolveTargetIds(msg, content, content.startsWith('.بازیکن') ? '.بازیکن' : '.bazikon');
     const targetId = targetIds[0] || msg.author.id;
     const stMap = hokmStats.get(gId);
     const st: HokmUserStat = stMap?.get(targetId) || { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} };
@@ -2624,7 +2624,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .new — create room with join buttons
-  if (isCmd('new')) {
+  if (isCmd('new') || isCmd('hokm') || isCmd('حکم')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     
@@ -2644,12 +2644,12 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .a1 @user — owner assigns user to Team 1
-  if (isCmd('a1')) {
+  if (isCmd('a1') || isCmd('اضافه1')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را اضافه کند.'); return; }
-    const raw = content.slice(3).trim();
+    const raw = content.slice(content.startsWith('.اضافه1') ? 7 : 3).trim();
     if (/^bot\b/i.test(raw)) {
       const added = addBotToTeam(s, 1);
       const contentText = controlListText(s);
@@ -2659,7 +2659,7 @@ client.on('messageCreate', async (msg: Message) => {
       setTimeout(() => replyMsg.delete().catch(()=>{}), 2500);
       return;
     }
-    const targets = await resolveTargetIds(msg, content, '.a1');
+    const targets = await resolveTargetIds(msg, content, content.startsWith('.اضافه1') ? '.اضافه1' : '.a1');
     if (targets.length === 0) { await msg.reply('استفاده: `.a1 @user1 @user2` یا `.a1 bot`'); return; }
     const added: string[] = []; const skipped: string[] = [];
     for (const uid of targets) {
@@ -2677,12 +2677,12 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .a2 @user — owner assigns user to Team 2
-  if (isCmd('a2')) {
+  if (isCmd('a2') || isCmd('اضافه2')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را اضافه کند.'); return; }
-    const raw = content.slice(3).trim();
+    const raw = content.slice(content.startsWith('.اضافه2') ? 7 : 3).trim();
     if (/^bot\b/i.test(raw)) {
       const added = addBotToTeam(s, 2);
       const contentText = controlListText(s);
@@ -2692,7 +2692,7 @@ client.on('messageCreate', async (msg: Message) => {
       setTimeout(() => replyMsg.delete().catch(()=>{}), 2500);
       return;
     }
-    const targets = await resolveTargetIds(msg, content, '.a2');
+    const targets = await resolveTargetIds(msg, content, content.startsWith('.اضافه2') ? '.اضافه2' : '.a2');
     if (targets.length === 0) { await msg.reply('استفاده: `.a2 @user1 @user2` یا `.a2 bot`'); return; }
     const added: string[] = []; const skipped: string[] = [];
     for (const uid of targets) {
@@ -2715,13 +2715,13 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .r — owner removes a user from teams
-  if (isCmd('r')) {
+  if (isCmd('r') || isCmd('حذف')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را حذف کند.'); return; }
     // special: remove virtual bots with `.r bot`
-    const rawArg = content.slice(2);
+    const rawArg = content.slice(content.startsWith('.حذف') ? 5 : 2);
     if (/^\s*bot/i.test(rawArg)) {
       const before1 = [...s.team1];
       const before2 = [...s.team2];
@@ -2737,7 +2737,7 @@ client.on('messageCreate', async (msg: Message) => {
       setTimeout(()=>replyMsg.delete().catch(()=>{}), 2500);
       return;
     }
-    const targets = await resolveTargetIds(msg, content, '.r');
+    const targets = await resolveTargetIds(msg, content, content.startsWith('.حذف') ? '.حذف' : '.r');
     if (targets.length === 0) { await msg.reply('استفاده: `.r @user1 @user2` یا ریپلای/آیدی'); return; }
     const removed: string[] = []; const notIn: string[] = [];
     for (const uid of targets) {
@@ -2760,7 +2760,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .end — owner ends the room and deletes control/table messages
-  if (isCmd('end')) {
+  if (isCmd('end') || isCmd('پایان')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند پایان دهد.'); return; }
@@ -2774,7 +2774,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .reset — owner resets the room and redeals (like fresh start with current teams)
-  if (isCmd('reset')) {
+  if (isCmd('reset') || isCmd('ریست')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند ریست کند.'); return; }
@@ -2833,7 +2833,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .change <player1> <player2> — swap players (supports @user or bot1/bot2/bot3)
-  if (isCmd('change')) {
+  if (isCmd('change') || isCmd('عوض')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     
@@ -2844,7 +2844,7 @@ client.on('messageCreate', async (msg: Message) => {
     }
     
     // Parse arguments - can be @user mentions or "bot1", "bot2", "bot3"
-    const args = content.slice('.change'.length).trim().split(/\s+/).filter(Boolean);
+    const args = content.slice(content.startsWith('.عوض') ? 5 : '.change'.length).trim().split(/\s+/).filter(Boolean);
     if (args.length !== 2) {
       await msg.reply('استفاده: `.change @user bot1` یا `.change bot1 @user` یا `.change @user1 @user2` یا `.change bot1 bot2`');
       return;
@@ -3009,7 +3009,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .list — recreate control list if waiting; otherwise re-render table
-  if (isCmd('list')) {
+  if (isCmd('list') || isCmd('لیست')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state === 'waiting') {
@@ -3057,7 +3057,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .miz — نمایش میز آخرین بازی فعال کاربر
-  if (isCmd('miz')) {
+  if (isCmd('miz') || isCmd('میز')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     
     // Find user's most recent active session
@@ -3092,8 +3092,46 @@ client.on('messageCreate', async (msg: Message) => {
 
 
 
+  // .komakfa — Persian/alternative commands help
+  if (isCmd('komakfa')) {
+    const helpText = 
+      `**📚 لیست دستورات جایگزین و فارسی**\n\n` +
+      `**🃏 دستورات بازی حکم**\n` +
+      `\`.hokm\` \`.new\` \`.حکم\` → ساخت اتاق بازی جدید\n` +
+      `\`.لیست\` \`.list\` → نمایش لیست/وضعیت\n` +
+      `\`.پایان\` \`.end\` → پایان بازی\n` +
+      `\`.حذف\` \`.r\` → حذف بازیکن\n` +
+      `\`.اضافه1\` \`.a1\` → افزودن به تیم ۱\n` +
+      `\`.اضافه2\` \`.a2\` → افزودن به تیم ۲\n` +
+      `\`.ریست\` \`.reset\` → ریست بازی\n` +
+      `\`.میز\` \`.miz\` → نمایش میز\n` +
+      `\`.عوض\` \`.change\` → تعویض/جایگزین بازیکن\n` +
+      `\`.بست\` \`.best\` → بازیکنان برتر\n` +
+      `\`.بازیکن\` \`.bazikon\` → آمار بازیکن\n\n` +
+      `**👥 دستورات اجتماعی**\n` +
+      `\`.دوست\` \`.friend\` → لیست دوستان\n` +
+      `\`.عکس\` \`.av\` → نمایش آواتار\n` +
+      `\`.بنر\` \`.ba\` → نمایش بنر\n\n` +
+      `**🔧 دستورات کاربردی**\n` +
+      `\`.رندوم\` \`.sort\` → رندوم‌سازی\n` +
+      `\`.کمک\` \`.komak\` → راهنمای کامل\n\n` +
+      `**⏱️ دستورات تایمر**\n` +
+      `\`!t\` \`.ت\` → تنظیم تایمر\n\n` +
+      `💡 **نکته:** تمام دستورات بالا یکسان عمل می‌کنند!\n` +
+      `برای راهنمای کامل از \`.komak\` یا \`.کمک\` استفاده کنید.`;
+    
+    const embed = new EmbedBuilder()
+      .setDescription(helpText)
+      .setColor(0x00d9ff)
+      .setFooter({ text: '✨ استفاده از هر کدام از دستورات بالا یکسان است' })
+      .setTimestamp();
+    
+    await msg.reply({ embeds: [embed] });
+    return;
+  }
+
   // .komak — help
-  if (isCmd('komak')) {
+  if (isCmd('komak') || isCmd('کمک')) {
     const timerPrefix = getTimerPrefix();
     const helpText = 
       `**📚 راهنمای کامل دستورات 𝐋 𝐔 𝐍 𝐀**\n\n` +
@@ -3146,8 +3184,8 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .av [@user|userId]
-  if (isCmd('av')) {
-    const arg = content.slice(3).trim();
+  if (isCmd('av') || isCmd('عکس')) {
+    const arg = content.slice(content.startsWith('.عکس') ? 5 : 3).trim();
     let user = msg.mentions.users.first() || null;
     if (!user && arg) {
       let id: string | null = null;
@@ -3175,8 +3213,8 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  if (isCmd('ba')) {
-    const arg = content.slice(3).trim();
+  if (isCmd('ba') || isCmd('بنر')) {
+    const arg = content.slice(content.startsWith('.بنر') ? 5 : 3).trim();
     let user = msg.mentions.users.first() || null;
     if (!user && arg) {
       let id: string | null = null;
@@ -3548,11 +3586,11 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .sort — randomize names or pair two groups
-  if (isCmd('sort') || isCmd('sortpv')) {
+  if (isCmd('sort') || isCmd('sortpv') || isCmd('رندوم')) {
     const isDM = isCmd('sortpv');
     
     // Remove command from content properly
-    const cmdLength = isDM ? 7 : 5; // '.sortpv' or '.sort'
+    const cmdLength = isDM ? 7 : content.startsWith('.رندوم') ? 6 : 5; // '.sortpv' or '.sort' or '.رندوم'
     const restContent = content.slice(cmdLength).trimStart();
     const lines = restContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     
@@ -3823,9 +3861,14 @@ client.on('messageCreate', async (msg: Message) => {
   const timerPrefix = getTimerPrefix();
   const escapedPrefix = timerPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const timerCmdPattern = new RegExp(`^${escapedPrefix}t(?:\\s|$)`);
-  if (!timerCmdPattern.test(content)) return;
+  const altTimer1 = /^!t(?:\s|$)/.test(content); // !t alternative
+  const altTimer2 = /^\.ت(?:\s|$)/.test(content); // .ت alternative
+  if (!timerCmdPattern.test(content) && !altTimer1 && !altTimer2) return;
 
-  const args = content.slice(timerPrefix.length + 1).trim();
+  let cmdLength = timerPrefix.length + 1; // default: prefix + 't'
+  if (altTimer1) cmdLength = 2; // !t
+  else if (altTimer2) cmdLength = 3; // .ت
+  const args = content.slice(cmdLength).trim();
   if (!args) {
     await msg.reply({ content: `استفاده: \`${timerPrefix}t 10m [دلیل]\` یا \`${timerPrefix}t 60 [دلیل]\` (عدد = ثانیه)` });
     return;
