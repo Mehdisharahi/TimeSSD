@@ -3143,7 +3143,8 @@ ${tableLines.join('\n')}`);
       `**🎲 دستورات رندومایز**\n` +
       `\`.sort name1 name2 ...\` ⟹ لیست رندوم\n` +
       `\`.sort group1...\ngroup2...\` ⟹ جفت کردن رندوم\n` +
-      `\`.sortpv\` ⟹ رندوم و ارسال به دایرکت`;
+      `\`.sortpv\` ⟹ رندوم و ارسال به دایرکت\n` +
+      `استفاده از \`!\` برای گروه‌بندی: \`!item1 item2!\` = یک آیتم`;
     
     const embed = new EmbedBuilder()
       .setDescription(helpText)
@@ -3565,10 +3566,48 @@ ${tableLines.join('\n')}`);
     const restContent = content.slice(cmdLength).trimStart();
     const lines = restContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     
+    // Helper function to parse items with ! grouping
+    const parseItems = (line: string): string[] => {
+      const items: string[] = [];
+      let current = '';
+      let inGroup = false;
+      const tokens = line.split(/\s+/);
+      
+      for (const token of tokens) {
+        if (token.startsWith('!') && token.endsWith('!') && token.length > 2) {
+          // Single token wrapped in ! like !word!
+          items.push(token.slice(1, -1));
+        } else if (token.startsWith('!')) {
+          // Start of multi-word group
+          inGroup = true;
+          current = token.slice(1); // Remove leading !
+        } else if (token.endsWith('!') && inGroup) {
+          // End of multi-word group
+          current += ' ' + token.slice(0, -1); // Remove trailing !
+          items.push(current);
+          current = '';
+          inGroup = false;
+        } else if (inGroup) {
+          // Middle of multi-word group
+          current += ' ' + token;
+        } else {
+          // Regular token
+          items.push(token);
+        }
+      }
+      
+      // If we're still in a group at the end, add what we have
+      if (current) {
+        items.push(current);
+      }
+      
+      return items.filter(item => item.length > 0);
+    };
+    
     // Check if single line or double line
     if (lines.length === 1) {
       // Single line mode: randomize list
-      const names = lines[0].split(/\s+/).filter(n => n.length > 0);
+      const names = parseItems(lines[0]);
       if (names.length === 0) {
         await msg.reply({ content: 'استفاده: `.sort name1 name2 name3 ...`' });
         return;
@@ -3602,8 +3641,8 @@ ${tableLines.join('\n')}`);
     
     // Double line mode: pair two groups
     if (lines.length === 2) {
-      const group1 = lines[0].split(/\s+/).filter(n => n.length > 0);
-      const group2 = lines[1].split(/\s+/).filter(n => n.length > 0);
+      const group1 = parseItems(lines[0]);
+      const group2 = parseItems(lines[1]);
       
       if (group1.length !== group2.length) {
         await msg.reply({ content: 'دو گروه باهم برابر نیستند ❌' });
@@ -3614,6 +3653,21 @@ ${tableLines.join('\n')}`);
         await msg.reply({ content: 'لطفاً حداقل یک جفت وارد کنید.' });
         return;
       }
+      
+      // Check if group1 items are all mentions
+      const mentionRegex = /<@!?(\d+)>/;
+      const group1Mentions = group1.map(item => {
+        const match = item.match(mentionRegex);
+        return match ? match[1] : null;
+      });
+      const group1AllMentions = group1Mentions.every(id => id !== null);
+      
+      // Check if group2 items are all mentions
+      const group2Mentions = group2.map(item => {
+        const match = item.match(mentionRegex);
+        return match ? match[1] : null;
+      });
+      const group2AllMentions = group2Mentions.every(id => id !== null);
       
       // Shuffle both groups
       const shuffled1 = [...group1];
@@ -3635,11 +3689,72 @@ ${tableLines.join('\n')}`);
         .setColor(0x2f3136);
       
       if (isDM) {
-        try {
-          await msg.author.send({ embeds: [embed] });
-          await msg.reply({ content: '✅ نتایج در DM شما ارسال شد.' });
-        } catch {
-          await msg.reply({ content: '❌ نمی‌توانم DM بفرستم. لطفاً DM های خود را باز کنید.' });
+        // Check if we should send individual DMs to mentioned users
+        const shouldSendIndividualDMs = group1AllMentions;
+        
+        if (shouldSendIndividualDMs) {
+          // Send individual DMs to mentioned users
+          const failedDMs: string[] = [];
+          
+          // Send to group1 users
+          for (let i = 0; i < shuffled1.length; i++) {
+            const userMention = shuffled1[i];
+            const pairedItem = shuffled2[i];
+            const match = userMention.match(mentionRegex);
+            
+            if (match) {
+              const userId = match[1];
+              try {
+                const user = await msg.client.users.fetch(userId);
+                const individualEmbed = new EmbedBuilder()
+                  .setDescription(`${i + 1}. ${userMention} ⮕ ${pairedItem}`)
+                  .setColor(0x2f3136);
+                
+                await user.send({ embeds: [individualEmbed] });
+              } catch {
+                failedDMs.push(userMention);
+              }
+            }
+          }
+          
+          // If group2 is also all mentions (scenario 4), send to them too
+          if (group2AllMentions) {
+            for (let i = 0; i < shuffled2.length; i++) {
+              const userMention = shuffled2[i];
+              const pairedItem = shuffled1[i];
+              const match = userMention.match(mentionRegex);
+              
+              if (match) {
+                const userId = match[1];
+                try {
+                  const user = await msg.client.users.fetch(userId);
+                  const individualEmbed = new EmbedBuilder()
+                    .setDescription(`${i + 1}. ${pairedItem} ⮕ ${userMention}`)
+                    .setColor(0x2f3136);
+                  
+                  await user.send({ embeds: [individualEmbed] });
+                } catch {
+                  failedDMs.push(userMention);
+                }
+              }
+            }
+          }
+          
+          // Send confirmation or error messages
+          if (failedDMs.length === 0) {
+            await msg.reply({ content: '✅ نتایج در DM تمام افراد منشن شده ارسال شد.' });
+          } else {
+            const failedList = failedDMs.map(mention => `دایرکت ${mention} بسته است ❌`).join('\n');
+            await msg.reply({ content: failedList });
+          }
+        } else {
+          // Original behavior: send to command sender only
+          try {
+            await msg.author.send({ embeds: [embed] });
+            await msg.reply({ content: '✅ نتایج در DM شما ارسال شد.' });
+          } catch {
+            await msg.reply({ content: '❌ نمی‌توانم DM بفرستم. لطفاً DM های خود را باز کنید.' });
+          }
         }
       } else {
         await msg.reply({ embeds: [embed] });
