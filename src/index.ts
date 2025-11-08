@@ -3139,7 +3139,11 @@ ${tableLines.join('\n')}`);
       `\`.topfriend\` ⟹ زوج های برتر سرور\n\n` +
       `**👤 پروفایل کاربر**\n` +
       `\`.av @user\` ⟹ نمایش آواتار با لینک\n` +
-      `\`.ba @user\` ⟹ نمایش بنر کاربر`;
+      `\`.ba @user\` ⟹ نمایش بنر کاربر\n\n` +
+      `**🎲 دستورات رندومایز**\n` +
+      `\`.sort name1 name2 ...\` ⟹ لیست رندوم\n` +
+      `\`.sort group1...\ngroup2...\` ⟹ جفت کردن رندوم\n` +
+      `\`.sortpv\` ⟹ رندوم و ارسال به دایرکت`;
     
     const embed = new EmbedBuilder()
       .setDescription(helpText)
@@ -3548,6 +3552,100 @@ ${tableLines.join('\n')}`);
     } else {
       // Just send the converted text
       await msg.reply({ content: convertedText });
+    }
+    return;
+  }
+
+  // .sort — randomize names or pair two groups
+  if (isCmd('sort') || isCmd('sortpv')) {
+    const isDM = isCmd('sortpv');
+    const lines = content.split('\n');
+    const firstLine = lines[0].replace(/^\.(sort|sortpv)\s*/i, '').trim();
+    
+    // Check if single line or double line
+    if (lines.length === 1 || !lines[1]?.trim()) {
+      // Single line mode: randomize list
+      if (!firstLine) {
+        await msg.reply({ content: 'استفاده: `.sort name1 name2 name3 ...`' });
+        return;
+      }
+      
+      const names = firstLine.split(/\s+/).filter(n => n.length > 0);
+      if (names.length === 0) {
+        await msg.reply({ content: 'لطفاً حداقل یک نام وارد کنید.' });
+        return;
+      }
+      
+      // Shuffle
+      const shuffled = [...names];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      
+      // Format output
+      const output = shuffled.map((name, i) => `${i + 1}. ${name}`).join('\n');
+      const boxed = `\`\`\`\n${output}\n\`\`\``;
+      
+      if (isDM) {
+        try {
+          await msg.author.send({ content: boxed });
+          await msg.reply({ content: '✅ نتایج در DM شما ارسال شد.' });
+        } catch {
+          await msg.reply({ content: '❌ نمی‌توانم DM بفرستم. لطفاً DM های خود را باز کنید.' });
+        }
+      } else {
+        await msg.reply({ content: boxed });
+      }
+      return;
+    }
+    
+    // Double line mode: pair two groups
+    const secondLine = lines[1].trim();
+    if (!firstLine || !secondLine) {
+      await msg.reply({ content: 'استفاده:\n`.sort group1_item1 group1_item2 ...\ngroup2_item1 group2_item2 ...`' });
+      return;
+    }
+    
+    const group1 = firstLine.split(/\s+/).filter(n => n.length > 0);
+    const group2 = secondLine.split(/\s+/).filter(n => n.length > 0);
+    
+    if (group1.length !== group2.length) {
+      await msg.reply({ content: 'دو گروه باهم برابر نیستند ❌' });
+      return;
+    }
+    
+    if (group1.length === 0) {
+      await msg.reply({ content: 'لطفاً حداقل یک جفت وارد کنید.' });
+      return;
+    }
+    
+    // Shuffle both groups
+    const shuffled1 = [...group1];
+    for (let i = shuffled1.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled1[i], shuffled1[j]] = [shuffled1[j], shuffled1[i]];
+    }
+    
+    const shuffled2 = [...group2];
+    for (let i = shuffled2.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled2[i], shuffled2[j]] = [shuffled2[j], shuffled2[i]];
+    }
+    
+    // Format output with arrow
+    const output = shuffled1.map((name, i) => `${i + 1}. ${name} ⮕ ${shuffled2[i]}`).join('\n');
+    const boxed = `\`\`\`\n${output}\n\`\`\``;
+    
+    if (isDM) {
+      try {
+        await msg.author.send({ content: boxed });
+        await msg.reply({ content: '✅ نتایج در DM شما ارسال شد.' });
+      } catch {
+        await msg.reply({ content: '❌ نمی‌توانم DM بفرستم. لطفاً DM های خود را باز کنید.' });
+      }
+    } else {
+      await msg.reply({ content: boxed });
     }
     return;
   }
