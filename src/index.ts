@@ -2760,7 +2760,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .end — owner ends the room and deletes control/table messages
-  if (isCmd('end') || isCmd('پایان')) {
+  if (isCmd('end')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند پایان دهد.'); return; }
@@ -3009,7 +3009,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .list — recreate control list if waiting; otherwise re-render table
-  if (isCmd('list') || isCmd('لیست')) {
+  if (isCmd('list')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state === 'waiting') {
@@ -3098,8 +3098,8 @@ client.on('messageCreate', async (msg: Message) => {
       `**📚 لیست دستورات جایگزین و فارسی**\n\n` +
       `**🃏 دستورات بازی حکم**\n` +
       `\`.hokm\` \`.new\` \`.حکم\` → ساخت اتاق بازی جدید\n` +
-      `\`.لیست\` \`.list\` → نمایش لیست/وضعیت\n` +
-      `\`.پایان\` \`.end\` → پایان بازی\n` +
+      `\`.list\` → نمایش لیست/وضعیت\n` +
+      `\`.end\` → پایان بازی\n` +
       `\`.حذف\` \`.r\` → حذف بازیکن\n` +
       `\`.اضافه1\` \`.a1\` → افزودن به تیم ۱\n` +
       `\`.اضافه2\` \`.a2\` → افزودن به تیم ۲\n` +
