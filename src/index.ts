@@ -1915,7 +1915,51 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
   }
 });
 
+// Helper function to safely reply to interactions (prevents double-reply crashes)
+async function safeInteractionReply(interaction: any, options: any): Promise<boolean> {
+  try {
+    if (interaction.replied || interaction.deferred) {
+      // Already replied, try to edit or followUp
+      if (options.ephemeral || options.fetchReply) {
+        // Can't edit ephemeral messages easily, just skip
+        return false;
+      }
+      try {
+        await interaction.editReply(options);
+        return true;
+      } catch {
+        return false;
+      }
+    } else {
+      await interaction.reply(options);
+      return true;
+    }
+  } catch (err: any) {
+    if (err?.code !== 40060) { // Ignore "already acknowledged" errors
+      console.error('[SAFE REPLY ERROR]:', err?.message || err);
+    }
+    return false;
+  }
+}
+
+// Global error handlers to prevent crashes
+client.on('error', (error) => {
+  console.error('[CLIENT ERROR]:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[UNHANDLED REJECTION]:', reason);
+  // Don't crash the bot
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('[UNCAUGHT EXCEPTION]:', error);
+  // Log but don't exit (risky but prevents crashes during games)
+});
+
 client.on('interactionCreate', async (interaction: Interaction) => {
+  // Wrap everything in try-catch to prevent crashes
+  try {
   // Hokm buttons
   if (interaction.isButton()) {
     const id = interaction.customId;
@@ -2360,20 +2404,37 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       {
         const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId, s.hokm);
         const content = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:''} — ${uid===s.order[s.turnIndex??0]?'نوبت شماست.':'منتظر نوبت بمانید.'}`;
-        try { await interaction.update({ content, components: rows }); } catch { await interaction.reply({ content, components: rows, ephemeral: true }); }
+        try {
+          // Check if interaction has already been replied/deferred
+          if (!interaction.replied && !interaction.deferred) {
+            await interaction.update({ content, components: rows });
+          }
+        } catch (err: any) {
+          // Only log if it's not the "already acknowledged" error
+          if (err?.code !== 40060) {
+            console.error('[HOKM INTERACTION ERROR]:', err?.message || err);
+          }
+        }
       }
       // update table only (hands are private via ephemeral)
       try {
         const ch = await interaction.client.channels.fetch(cId).catch(()=>null) as any;
         if (ch) await refreshTableEmbed({ channel: ch }, s);
-      } catch {}
+      } catch (err) {
+        console.error('[HOKM TABLE UPDATE ERROR]:', err);
+      }
       
       // check trick resolve
-      if (s.table.length === 4) {
-        await resolveTrickAndContinue(interaction, s);
-      } else {
-        // trigger bot if next turn is bot
-        await maybeBotAutoPlay(interaction.client as Client, s);
+      try {
+        if (s.table.length === 4) {
+          await resolveTrickAndContinue(interaction, s);
+        } else {
+          // trigger bot if next turn is bot
+          await maybeBotAutoPlay(interaction.client as Client, s);
+        }
+      } catch (err) {
+        console.error('[HOKM GAME FLOW ERROR]:', err);
+        // Game continues even if there's an error
       }
       return;
     }
@@ -2386,6 +2447,17 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     return;
   }
 
+  } catch (err: any) {
+    console.error('[INTERACTION HANDLER ERROR]:', err);
+    // Try to notify user if possible (but don't crash if this fails too)
+    try {
+      if (interaction.isButton() || interaction.isChatInputCommand()) {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({ content: '❌ خطایی رخ داد. لطفاً دوباره تلاش کنید.', ephemeral: true }).catch(() => {});
+        }
+      }
+    } catch {}
+  }
 });
 
 // ===== Small Caps Conversion =====
@@ -3224,23 +3296,91 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .list — recreate control list if waiting; otherwise re-render table
+  // .list — recreate control list (ONLY between game creation and game start)
   if (isCmd('list')) {
-    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    if (!msg.guild) { return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
-    if (s.state === 'waiting') {
-      // delete previous control message if exists
-      if (s.controlMsgId) {
-        try { const prev = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (prev) await prev.delete().catch(()=>{}); } catch {}
-        s.controlMsgId = undefined;
-      }
-      const contentText = controlListText(s);
-      const rows = buildControlButtons();
-      const sent = await msg.reply({ content: contentText, components: rows });
-      s.controlMsgId = sent.id;
-    } else {
-      try { await refreshTableEmbed({ channel: msg.channel }, s); } catch {}
+    
+    // Check if game is created (has players)
+    if (s.order.length === 0) {
+      return;
     }
+    
+    // Only work in 'waiting' state (between creation and start)
+    if (s.state !== 'waiting') {
+      return;
+    }
+    
+    // Recreate control list
+    // delete previous control message if exists
+    if (s.controlMsgId) {
+      try { const prev = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (prev) await prev.delete().catch(()=>{}); } catch {}
+      s.controlMsgId = undefined;
+    }
+    const contentText = controlListText(s);
+    const rows = buildControlButtons();
+    const sent = await msg.reply({ content: contentText, components: rows });
+    s.controlMsgId = sent.id;
+    return;
+  }
+
+  // .reset — reset game to waiting state (owner only, silent)
+  if (isCmd('reset')) {
+    if (!msg.guild) { return; }
+    const s = ensureSession(msg.guildId!, msg.channelId);
+    
+    // Check if user is the room owner
+    if (!s.ownerId || msg.author.id !== s.ownerId) {
+      return;
+    }
+    
+    // Check if game exists
+    if (s.order.length === 0) {
+      return;
+    }
+    
+    // Reset game to waiting state while preserving teams
+    s.state = 'waiting';
+    s.hokm = undefined;
+    s.hakim = undefined;
+    s.deck = [];
+    s.hands.clear();
+    s.table = undefined;
+    s.leadSuit = undefined;
+    s.leaderIndex = undefined;
+    s.turnIndex = undefined;
+    s.tricksTeam1 = 0;
+    s.tricksTeam2 = 0;
+    s.setsTeam1 = 0;
+    s.setsTeam2 = 0;
+    s.tricksByPlayer = new Map();
+    s.lastTrick = undefined;
+    s.surrenderVotesTeam1 = new Set();
+    s.surrenderVotesTeam2 = new Set();
+    
+    // Delete table message if exists
+    if (s.tableMsgId) {
+      try {
+        const tableMsg = await (msg.channel as any).messages.fetch(s.tableMsgId).catch(()=>null);
+        if (tableMsg) await tableMsg.delete().catch(()=>{});
+      } catch {}
+      s.tableMsgId = undefined;
+    }
+    
+    // Delete previous control message if exists
+    if (s.controlMsgId) {
+      try {
+        const prev = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null);
+        if (prev) await prev.delete().catch(()=>{});
+      } catch {}
+      s.controlMsgId = undefined;
+    }
+    
+    // Show updated control list with current teams (silently)
+    const contentText = controlListText(s);
+    const rows = buildControlButtons();
+    const sent = await msg.reply({ content: contentText, components: rows });
+    s.controlMsgId = sent.id;
     return;
   }
 
