@@ -1555,6 +1555,21 @@ const pairStarts: Map<string, Map<string, number>> = new Map();
 // partnerTotals[guildId][userId][partnerId] -> totalMs
 const partnerTotals: Map<string, Map<string, Map<string, number>>> = new Map();
 
+// ===== Activity tracking for .idlist command =====
+// voiceActivityLog[guildId][channelId] -> Array<{userId, timestamp}>
+const voiceActivityLog: Map<string, Map<string, Array<{userId: string, timestamp: number}>>> = new Map();
+// textActivityLog[guildId][channelId] -> Array<{userId, timestamp}>
+const textActivityLog: Map<string, Map<string, Array<{userId: string, timestamp: number}>>> = new Map();
+
+// ===== .dmall command state management =====
+// dmallStates[userId] -> {step, message, timestamp}
+type DmallState = {
+  step: 'awaiting_message' | 'awaiting_userlist';
+  message?: string;
+  timestamp: number;
+};
+const dmallStates: Map<string, DmallState> = new Map();
+
 const loveOverrides: Map<string, Map<string, number>> = new Map();
 const loveFile = path.join(process.cwd(), 'data', 'love-overrides.json');
 function loveKey(a: string, b: string): string {
@@ -1892,6 +1907,11 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
       if (!pMap.has(key)) pMap.set(key, now);
     }
     set.add(userId);
+    
+    // Log voice activity for .idlist command
+    const voiceLog = getMap(voiceActivityLog, guildId, () => new Map());
+    const channelLog = getMap(voiceLog, newCid, () => []);
+    channelLog.push({ userId, timestamp: now });
   }
 });
 
@@ -2447,6 +2467,173 @@ client.on('messageCreate', async (msg: Message) => {
   setTimeout(() => processedMessages.delete(msg.id), 60_000);
   const content = msg.content.trim();
   const isCmd = (name: string) => new RegExp(`^\\.${name}(?:\\s|$)`).test(content);
+  
+  // Log text activity for .idlist command
+  if (msg.guildId && msg.channelId) {
+    const textLog = getMap(textActivityLog, msg.guildId, () => new Map());
+    const channelLog = getMap(textLog, msg.channelId, () => []);
+    channelLog.push({ userId: msg.author.id, timestamp: Date.now() });
+  }
+
+  // Handle .dmall workflow states
+  const dmallState = dmallStates.get(msg.author.id);
+  if (dmallState) {
+    // Allow cancel at any step
+    if (isCmd('cancel')) {
+      dmallStates.delete(msg.author.id);
+      await msg.reply({ content: '✅ عملیات .dmall لغو شد.' });
+      return;
+    }
+    
+    // Cleanup old states (> 10 minutes)
+    if (Date.now() - dmallState.timestamp > 10 * 60 * 1000) {
+      dmallStates.delete(msg.author.id);
+    } else if (dmallState.step === 'awaiting_message') {
+      // User is sending the message to broadcast
+      const messageContent = content;
+      if (!messageContent) {
+        await msg.reply({ content: 'پیام نمی‌تواند خالی باشد. لطفاً پیام مورد نظر را ارسال کنید یا با `.cancel` لغو کنید.' });
+        return;
+      }
+      dmallState.message = messageContent;
+      dmallState.step = 'awaiting_userlist';
+      dmallState.timestamp = Date.now();
+      await msg.reply({ content: '✅ پیام دریافت شد.\n\nحالا لیست یوزر آیدی‌ها یا منشن کاربران را ارسال کنید (با فاصله از هم جدا شوند).\nیا فایل TXT حاوی یوزر آیدی‌ها را آپلود کنید.' });
+      return;
+    } else if (dmallState.step === 'awaiting_userlist') {
+      // User is sending the user list
+      let userIds: string[] = [];
+      
+      // Check if message has attachment (TXT file)
+      if (msg.attachments.size > 0) {
+        const attachment = msg.attachments.first();
+        if (attachment && attachment.name?.endsWith('.txt')) {
+          try {
+            const response = await fetch(attachment.url);
+            const text = await response.text();
+            // Parse user IDs from file (space-separated)
+            userIds = text.split(/\s+/).filter(id => /^\d+$/.test(id.trim())).map(id => id.trim());
+          } catch (err) {
+            await msg.reply({ content: '❌ خطا در خواندن فایل.' });
+            dmallStates.delete(msg.author.id);
+            return;
+          }
+        }
+      } else {
+        // Parse from message content (mentions or user IDs)
+        const mentionRegex = /<@!?(\d+)>/g;
+        let match;
+        while ((match = mentionRegex.exec(content)) !== null) {
+          userIds.push(match[1]);
+        }
+        
+        // Also parse plain user IDs
+        const tokens = content.split(/\s+/);
+        for (const token of tokens) {
+          if (/^\d{17,20}$/.test(token) && !userIds.includes(token)) {
+            userIds.push(token);
+          }
+        }
+      }
+      
+      if (userIds.length === 0) {
+        await msg.reply({ content: '❌ هیچ یوزر آیدی معتبری یافت نشد. لطفاً یوزر آیدی‌ها یا منشن‌ها را ارسال کنید یا با `.cancel` لغو کنید.' });
+        return;
+      }
+      
+      // Start sending DMs
+      const messageToSend = dmallState.message!;
+      dmallStates.delete(msg.author.id);
+      
+      const progressMsg = await msg.reply({ content: `📤 در حال ارسال به ${userIds.length} کاربر...
+⏳ پیشرفت: 0/${userIds.length}` });
+      
+      const failedUsers: string[] = [];
+      const rateLimitedUsers: string[] = [];
+      let successCount = 0;
+      
+      for (let i = 0; i < userIds.length; i++) {
+        const userId = userIds[i];
+        try {
+          const user = await msg.client.users.fetch(userId);
+          await user.send(messageToSend);
+          successCount++;
+          
+          // Update progress every 10 messages or at the end
+          if ((i + 1) % 10 === 0 || i === userIds.length - 1) {
+            try {
+              await progressMsg.edit({ content: `📤 در حال ارسال به ${userIds.length} کاربر...
+⏳ پیشرفت: ${i + 1}/${userIds.length}
+✅ موفق: ${successCount} | ❌ ناموفق: ${failedUsers.length + rateLimitedUsers.length}` });
+            } catch {}
+          }
+          
+          // Discord rate limit: ~1 DM per second is safe
+          // Use 1500ms delay to be extra safe
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        } catch (err: any) {
+          // Check if it's a rate limit error
+          if (err?.code === 429 || err?.status === 429) {
+            rateLimitedUsers.push(userId);
+            // Wait longer if rate limited (5 seconds)
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          } else {
+            failedUsers.push(userId);
+          }
+        }
+      }
+      
+      // Send final report
+      const totalFailed = failedUsers.length + rateLimitedUsers.length;
+      let reportMsg = `✅ ارسال کامل شد!
+
+📊 آمار:
+• موفق: ${successCount}/${userIds.length}
+• ناموفق: ${totalFailed}`;
+      
+      if (rateLimitedUsers.length > 0) {
+        reportMsg += `
+• ⚠️ Rate Limited: ${rateLimitedUsers.length}`;
+      }
+      
+      // Calculate how many mentions we can fit in a 2000 char message
+      // Each mention is ~22 chars (<@123456789012345678> + space)
+      // Reserve 500 chars for the message structure
+      const maxCharsForMentions = 1500;
+      const avgMentionLength = 23;
+      const maxMentionsPerMessage = Math.floor(maxCharsForMentions / avgMentionLength);
+      
+      const allFailedUsers = [...failedUsers, ...rateLimitedUsers];
+      if (allFailedUsers.length > 0) {
+        reportMsg += `
+
+❌ کاربران با دایرکت بسته یا محدود شده:
+`;
+        const failedToMention = allFailedUsers.slice(0, maxMentionsPerMessage).map(id => `<@${id}>`).join(' ');
+        reportMsg += failedToMention;
+        if (allFailedUsers.length > maxMentionsPerMessage) {
+          reportMsg += `
+
+... و ${allFailedUsers.length - maxMentionsPerMessage} کاربر دیگر`;
+          // Send remaining users in separate messages if needed
+          for (let i = maxMentionsPerMessage; i < allFailedUsers.length; i += maxMentionsPerMessage) {
+            const batch = allFailedUsers.slice(i, i + maxMentionsPerMessage);
+            const batchMsg = batch.map(id => `<@${id}>`).join(' ');
+            try {
+              await msg.channel.send({ content: batchMsg, allowedMentions: { parse: [] } });
+            } catch {}
+          }
+        }
+      }
+      
+      try {
+        await progressMsg.edit({ content: reportMsg, allowedMentions: { parse: [] } });
+      } catch {
+        await msg.reply({ content: reportMsg, allowedMentions: { parse: [] } });
+      }
+      return;
+    }
+  }
 
   // .friend [@user|userId] or .friends
   if (isCmd('friend') || isCmd('friends') || isCmd('دوست')) {
@@ -3475,6 +3662,362 @@ client.on('messageCreate', async (msg: Message) => {
     } catch (err) {
       await msg.reply({ content: `دایرکت <@${targetUser.id}> بسته است ❌` });
     }
+    return;
+  }
+
+  // .idlist — list user IDs from voice/text channels or server (owner + allowed users)
+  if (isCmd('idlist')) {
+    if (!canUseDMCommands(msg.author.id)) {
+      return;
+    }
+    
+    const arg = content.slice(7).trim();
+    if (!arg) {
+      await msg.reply({ content: 'استفاده:\n`.idlist channelId` - لیست کاربران فعلی (ویس) یا 24 ساعت گذشته (تکست)\n`.idlist serverId` - لیست تمام اعضای سرور (فایل TXT)\n`.idlist 7d channelId` - فعالیت 7 روز گذشته (فایل TXT)\n`.idlist 45m channelId` - فعالیت 45 دقیقه گذشته (فایل TXT)' });
+      return;
+    }
+    
+    // Parse arguments: [duration] targetId
+    const parts = arg.split(/\s+/);
+    let duration: number | null = null;
+    let targetId: string;
+    
+    if (parts.length === 2) {
+      // Try to parse first part as duration
+      duration = parseDuration(parts[0]);
+      targetId = parts[1];
+      if (!duration) {
+        await msg.reply({ content: 'فرمت مدت زمان نامعتبر. نمونه: 7d, 45m, 2h' });
+        return;
+      }
+    } else if (parts.length === 1) {
+      targetId = parts[0];
+    } else {
+      await msg.reply({ content: 'استفاده: `.idlist [duration] targetId`' });
+      return;
+    }
+    
+    try {
+      // Try to fetch as channel first
+      let channel: any = null;
+      try {
+        channel = await msg.client.channels.fetch(targetId);
+      } catch {}
+      
+      if (channel) {
+        // It's a channel
+        if (channel.isVoiceBased()) {
+          // Voice channel
+          if (duration) {
+            // Time-filtered voice activity
+            const now = Date.now();
+            const cutoff = now - duration;
+            const voiceLog = voiceActivityLog.get(channel.guildId)?.get(targetId) || [];
+            const recentUsers = new Set<string>();
+            for (const entry of voiceLog) {
+              if (entry.timestamp >= cutoff) {
+                recentUsers.add(entry.userId);
+              }
+            }
+            const userIds = Array.from(recentUsers).join(' ');
+            const buffer = Buffer.from(userIds, 'utf8');
+            const attachment = new AttachmentBuilder(buffer, { name: 'user_ids.txt' });
+            await msg.reply({ content: `لیست یوزر آیدی‌های فعال در ${parts[0]} گذشته:`, files: [attachment] });
+          } else {
+            // Current voice members
+            const voiceChannel = channel as any;
+            const members = voiceChannel.members?.map((m: any) => m.id) || [];
+            if (members.length === 0) {
+              await msg.reply({ content: 'هیچ کاربری در این چنل ویس نیست.' });
+            } else {
+              const userIds = members.join(' ');
+              await msg.reply({ content: `\`\`\`${userIds}\`\`\`` });
+            }
+          }
+        } else if (channel.isTextBased()) {
+          // Text channel
+          const timeFilter = duration || (24 * 60 * 60 * 1000); // Default 24h
+          const now = Date.now();
+          const cutoff = now - timeFilter;
+          const textLog = textActivityLog.get(channel.guildId)?.get(targetId) || [];
+          const recentUsers = new Set<string>();
+          for (const entry of textLog) {
+            if (entry.timestamp >= cutoff) {
+              recentUsers.add(entry.userId);
+            }
+          }
+          const userIds = Array.from(recentUsers).join(' ');
+          
+          if (duration) {
+            // Send as file if duration was specified
+            const buffer = Buffer.from(userIds, 'utf8');
+            const attachment = new AttachmentBuilder(buffer, { name: 'user_ids.txt' });
+            await msg.reply({ content: `لیست یوزر آیدی‌های فعال در ${parts[0]} گذشته:`, files: [attachment] });
+          } else {
+            // Send inline for default 24h
+            if (userIds.length === 0) {
+              await msg.reply({ content: 'هیچ فعالیتی در 24 ساعت گذشته یافت نشد.' });
+            } else {
+              await msg.reply({ content: `\`\`\`${userIds}\`\`\`` });
+            }
+          }
+        } else {
+          await msg.reply({ content: 'این نوع چنل پشتیبانی نمی‌شود.' });
+        }
+      } else {
+        // Try to fetch as guild
+        let guild: any = null;
+        try {
+          guild = await msg.client.guilds.fetch(targetId);
+        } catch {}
+        
+        if (guild) {
+          // It's a server/guild
+          if (duration) {
+            // Time-filtered server activity (voice + text)
+            const now = Date.now();
+            const cutoff = now - duration;
+            const activeUsers = new Set<string>();
+            
+            // Check voice activity across all channels
+            const voiceLog = voiceActivityLog.get(targetId);
+            if (voiceLog) {
+              for (const channelLog of voiceLog.values()) {
+                for (const entry of channelLog) {
+                  if (entry.timestamp >= cutoff) {
+                    activeUsers.add(entry.userId);
+                  }
+                }
+              }
+            }
+            
+            // Check text activity across all channels
+            const textLog = textActivityLog.get(targetId);
+            if (textLog) {
+              for (const channelLog of textLog.values()) {
+                for (const entry of channelLog) {
+                  if (entry.timestamp >= cutoff) {
+                    activeUsers.add(entry.userId);
+                  }
+                }
+              }
+            }
+            
+            const userIds = Array.from(activeUsers).join(' ');
+            const buffer = Buffer.from(userIds, 'utf8');
+            const attachment = new AttachmentBuilder(buffer, { name: 'user_ids.txt' });
+            await msg.reply({ content: `لیست یوزر آیدی‌های فعال در ${parts[0]} گذشته:`, files: [attachment] });
+          } else {
+            // All server members
+            const statusMsg = await msg.reply({ content: '⏳ در حال دریافت لیست اعضای سرور...' });
+            try {
+              // Fetch with timeout (30 seconds max for large servers)
+              await Promise.race([
+                guild.members.fetch(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 30000))
+              ]);
+              const allMembers = guild.members.cache.map((m: any) => m.id);
+              const userIds = allMembers.join(' ');
+              const buffer = Buffer.from(userIds, 'utf8');
+              const attachment = new AttachmentBuilder(buffer, { name: 'user_ids.txt' });
+              await statusMsg.edit({ content: `✅ لیست تمام اعضای سرور (${allMembers.length} نفر):`, files: [attachment] });
+            } catch (fetchErr) {
+              // Fallback to cached members if fetch times out
+              const cachedMembers = guild.members.cache.map((m: any) => m.id);
+              if (cachedMembers.length > 0) {
+                const userIds = cachedMembers.join(' ');
+                const buffer = Buffer.from(userIds, 'utf8');
+                const attachment = new AttachmentBuilder(buffer, { name: 'user_ids.txt' });
+                await statusMsg.edit({ content: `⚠️ لیست اعضای cache شده (${cachedMembers.length} نفر - ممکن است ناقص باشد):`, files: [attachment] });
+              } else {
+                await statusMsg.edit({ content: '❌ خطا در دریافت لیست اعضا. سرور خیلی بزرگ است یا timeout رخ داد.' });
+              }
+            }
+          }
+        } else {
+          await msg.reply({ content: 'چنل یا سرور یافت نشد. ID را بررسی کنید.' });
+        }
+      }
+    } catch (err) {
+      console.error('[IDLIST ERROR]:', err);
+      await msg.reply({ content: '❌ خطا در پردازش درخواست.' });
+    }
+    return;
+  }
+
+  // .cancel — cancel ongoing .dmall workflow (owner + allowed users)
+  if (isCmd('cancel')) {
+    if (!canUseDMCommands(msg.author.id)) {
+      return;
+    }
+    const state = dmallStates.get(msg.author.id);
+    if (state) {
+      dmallStates.delete(msg.author.id);
+      await msg.reply({ content: '✅ عملیات .dmall لغو شد.' });
+    } else {
+      await msg.reply({ content: 'هیچ عملیات فعالی برای لغو وجود ندارد.' });
+    }
+    return;
+  }
+
+  // .dmhelp — show DM commands help with beautiful embed
+  if (isCmd('dmhelp')) {
+    if (!canUseDMCommands(msg.author.id)) {
+      return;
+    }
+    
+    const isOwner = msg.author.id === ownerId;
+    
+    const helpEmbed = new EmbedBuilder()
+      .setColor('#5865F2')
+      .setTitle('📬 راهنمای دستورات DM')
+      .setDescription('سیستم کامل مدیریت پیام‌های خصوصی و لیست کاربران')
+      .setTimestamp();
+    
+    // Single DM Commands
+    helpEmbed.addFields({
+      name: '💬 ارسال DM به یک کاربر',
+      value: '**`.dm @user پیام`** یا **`.dm userID پیام`**\n' +
+             '→ ارسال پیام به دایرکت کاربر بدون نمایش فرستنده\n' +
+             '📝 مثال: `.dm @کاربر سلام چطوری؟`',
+      inline: false
+    });
+    
+    helpEmbed.addFields({
+      name: '👤 ارسال DM با منشن فرستنده',
+      value: '**`.dmh @user پیام`** یا **`.dmh userID پیام`**\n' +
+             '→ ارسال پیام به دایرکت با نمایش فرستنده\n' +
+             '📝 مثال: `.dmh @کاربر به این موضوع توجه کن`\n' +
+             '📤 در DM کاربر: `@شما : به این موضوع توجه کن`',
+      inline: false
+    });
+    
+    // ID List Commands
+    helpEmbed.addFields({
+      name: '📋 لیست یوزر آیدی‌ها',
+      value: '**`.idlist channelID`** - لیست کاربران فعلی (ویس) یا 24 ساعت گذشته (تکست)\n' +
+             '**`.idlist serverID`** - لیست تمام اعضای سرور (فایل TXT)\n' +
+             '**`.idlist 7d channelID`** - فعالیت 7 روز گذشته (فایل TXT)\n' +
+             '**`.idlist 45m channelID`** - فعالیت 45 دقیقه گذشته (فایل TXT)\n' +
+             '📝 فرمت زمانی: `7d`, `24h`, `45m`, `30s`',
+      inline: false
+    });
+    
+    // Broadcast Command
+    helpEmbed.addFields({
+      name: '📢 ارسال گروهی DM',
+      value: '**`.dmall`** - ارسال پیام به چندین کاربر همزمان\n' +
+             '**مراحل:**\n' +
+             '1️⃣ `.dmall` را بزنید\n' +
+             '2️⃣ پیام مورد نظر را ارسال کنید\n' +
+             '3️⃣ لیست یوزر آیدی‌ها یا منشن‌ها را بفرستید (یا فایل TXT آپلود کنید)\n' +
+             '4️⃣ بات شروع به ارسال می‌کند (با تاخیر 1.5 ثانیه)\n' +
+             '✅ گزارش نهایی: آمار موفق/ناموفق + لیست کاربران با DM بسته',
+      inline: false
+    });
+    
+    // Utility Commands
+    helpEmbed.addFields({
+      name: '🛠️ دستورات کمکی',
+      value: '**`.cancel`** - لغو عملیات `.dmall` در حین انجام\n' +
+             '**`.dmstatus`** - نمایش وضعیت دسترسی و محدودیت‌های Discord\n' +
+             '**`.dmhelp`** - نمایش این راهنما',
+      inline: false
+    });
+    
+    // Owner-only commands
+    if (isOwner) {
+      helpEmbed.addFields({
+        name: '👑 دستورات مالک بات',
+        value: '**`.dmset @user`** یا **`.dmset userID`**\n' +
+               '→ دادن دسترسی به تمام دستورات DM به کاربر\n\n' +
+               '**`.dmunset @user`** یا **`.dmunset userID`**\n' +
+               '→ گرفتن دسترسی از کاربر\n\n' +
+               `📊 تعداد کاربران با دسترسی: **${dmAllowedUsersSet.size} نفر**`,
+        inline: false
+      });
+    }
+    
+    // Rate Limits & Safety
+    helpEmbed.addFields({
+      name: '⚙️ محدودیت‌ها و ایمنی',
+      value: '🔹 Rate Limit: 1 DM هر 1.5 ثانیه\n' +
+             '🔹 حداکثر طول پیام: 2000 کاراکتر\n' +
+             '🔹 حداکثر منشن در پیام: ~65 نفر\n' +
+             '🔹 Timeout سرور بزرگ: 30 ثانیه\n' +
+             '✅ بات به صورت خودکار از مسدود شدن جلوگیری می‌کند',
+      inline: false
+    });
+    
+    helpEmbed.setFooter({ 
+      text: `درخواست شده توسط ${msg.author.tag}`,
+      iconURL: msg.author.displayAvatarURL()
+    });
+    
+    await msg.reply({ embeds: [helpEmbed] });
+    return;
+  }
+
+  // .dmstatus — show DM permissions and rate limit info
+  if (isCmd('dmstatus')) {
+    if (!canUseDMCommands(msg.author.id)) {
+      return;
+    }
+    
+    const hasAccess = canUseDMCommands(msg.author.id);
+    const isOwner = msg.author.id === ownerId;
+    
+    let statusMsg = `**📊 وضعیت دسترسی DM**\n\n`;
+    
+    if (isOwner) {
+      statusMsg += `✅ شما مالک بات هستید - دسترسی کامل\n\n`;
+      statusMsg += `**کاربران با دسترسی:** ${dmAllowedUsersSet.size} نفر\n`;
+      if (dmAllowedUsersSet.size > 0) {
+        const users = Array.from(dmAllowedUsersSet).slice(0, 10);
+        statusMsg += users.map(id => `• <@${id}>`).join('\n');
+        if (dmAllowedUsersSet.size > 10) {
+          statusMsg += `\n... و ${dmAllowedUsersSet.size - 10} نفر دیگر`;
+        }
+      }
+    } else if (hasAccess) {
+      statusMsg += `✅ شما دسترسی به دستورات DM دارید\n`;
+    } else {
+      statusMsg += `❌ شما دسترسی به دستورات DM ندارید\n`;
+      statusMsg += `برای دریافت دسترسی، مالک بات باید از دستور \`.dmset @${msg.author.tag}\` استفاده کند.\n`;
+    }
+    
+    statusMsg += `\n**📝 دستورات قابل دسترسی:**\n`;
+    statusMsg += hasAccess ? '✅ `.dm` - ارسال DM به یک کاربر\n' : '❌ `.dm`\n';
+    statusMsg += hasAccess ? '✅ `.dmh` - ارسال DM با منشن فرستنده\n' : '❌ `.dmh`\n';
+    statusMsg += hasAccess ? '✅ `.idlist` - لیست یوزر آیدی‌ها\n' : '❌ `.idlist`\n';
+    statusMsg += hasAccess ? '✅ `.dmall` - ارسال گروهی DM\n' : '❌ `.dmall`\n';
+    statusMsg += hasAccess ? '✅ `.cancel` - لغو عملیات .dmall\n' : '❌ `.cancel`\n';
+    statusMsg += hasAccess ? '✅ `.dmstatus` - نمایش وضعیت\n' : '❌ `.dmstatus`\n';
+    statusMsg += hasAccess ? '✅ `.dmhelp` - راهنمای کامل\n' : '❌ `.dmhelp`\n';
+    
+    statusMsg += `\n**⚙️ محدودیت‌های Discord:**\n`;
+    statusMsg += `• Rate Limit DM: ~1 پیام/ثانیه (بات از 1.5 ثانیه استفاده می‌کند)\n`;
+    statusMsg += `• حداکثر طول پیام: 2000 کاراکتر\n`;
+    statusMsg += `• حداکثر منشن در پیام: ~65 نفر (بات خودکار پیام‌های اضافی می‌فرستد)\n`;
+    statusMsg += `• Timeout سرور بزرگ: 30 ثانیه (با fallback به cache)\n`;
+    
+    await msg.reply({ content: statusMsg, allowedMentions: { parse: [] } });
+    return;
+  }
+
+  // .dmall — broadcast message to multiple users via DM (owner + allowed users)
+  if (isCmd('dmall')) {
+    if (!canUseDMCommands(msg.author.id)) {
+      return;
+    }
+    
+    // Start the workflow
+    dmallStates.set(msg.author.id, {
+      step: 'awaiting_message',
+      timestamp: Date.now()
+    });
+    
+    await msg.reply({ content: '📝 لطفاً پیام مورد نظر برای ارسال به دایرکت کاربران را ارسال کنید.\n\n(برای لغو از دستور `.cancel` استفاده کنید)' });
     return;
   }
 
