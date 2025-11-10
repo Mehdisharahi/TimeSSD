@@ -400,6 +400,8 @@ async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSessio
       if (m) await m.edit({ embeds: [tableEmbed] });
     }
   } catch {}
+  // Schedule announce message deletion after 2.5 seconds
+  await scheduleAnnounceMessageDeletion(channel, s);
   if (channel) await refreshTableEmbed({ channel }, s);
   await maybeBotAutoPlay(client, s);
 }
