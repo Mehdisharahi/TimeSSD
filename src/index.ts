@@ -1612,6 +1612,32 @@ function getTimerPrefix(): string {
   return globalTimerPrefix;
 }
 
+// DM allowed users storage (users who can use .dm and .dmh commands)
+const dmAllowedUsersSet = new Set<string>();
+const dmAllowedUsersFile = path.join(process.cwd(), 'data', 'dm-allowed-users.json');
+function loadDMAllowedUsers() {
+  try {
+    const raw = fs.existsSync(dmAllowedUsersFile) ? fs.readFileSync(dmAllowedUsersFile, 'utf8') : '';
+    if (raw) {
+      const obj = JSON.parse(raw) as { users: string[] };
+      if (obj.users && Array.isArray(obj.users)) {
+        dmAllowedUsersSet.clear();
+        obj.users.forEach(id => dmAllowedUsersSet.add(id));
+      }
+    }
+  } catch {}
+}
+function saveDMAllowedUsers() {
+  try {
+    fs.mkdirSync(path.dirname(dmAllowedUsersFile), { recursive: true });
+    const obj = { users: Array.from(dmAllowedUsersSet) };
+    fs.writeFileSync(dmAllowedUsersFile, JSON.stringify(obj, null, 2), 'utf8');
+  } catch {}
+}
+function canUseDMCommands(userId: string): boolean {
+  return userId === ownerId || dmAllowedUsersSet.has(userId);
+}
+
 function getMap<K, V>(map: Map<K, V>, key: K, mk: () => V): V {
   let v = map.get(key);
   if (!v) { v = mk(); map.set(key, v); }
@@ -1685,6 +1711,7 @@ if (pgUrl) {
 loadLoveOverrides();
 loadLoveRandoms();
 loadTimerPrefix();
+loadDMAllowedUsers();
 
 async function addDuration(guildId: string, a: string, b: string, deltaMs: number) {
   if (deltaMs <= 0) return;
@@ -3317,6 +3344,137 @@ client.on('messageCreate', async (msg: Message) => {
       saveLoveOverrides();
     }
     await msg.reply({ content: `تنظیم ثابت بین <@${u1.id}> و <@${u2.id}> حذف شد.` });
+    return;
+  }
+
+  // .dmset — owner only, grant DM command permission to a user
+  if (isCmd('dmset')) {
+    if (msg.author.id !== ownerId) {
+      return;
+    }
+    const arg = content.slice(6).trim();
+    let targetUser = msg.mentions.users.first() || null;
+    if (!targetUser && arg) {
+      // Try to parse user ID
+      let id: string | null = null;
+      const m = arg.match(/^<@!?(\d+)>$/);
+      if (m) id = m[1];
+      else if (/^\d+$/.test(arg)) id = arg;
+      if (id) {
+        try { targetUser = await msg.client.users.fetch(id); } catch {}
+      }
+    }
+    if (!targetUser) {
+      await msg.reply({ content: 'استفاده: `.dmset @user` یا `.dmset userId`' });
+      return;
+    }
+    dmAllowedUsersSet.add(targetUser.id);
+    saveDMAllowedUsers();
+    await msg.reply({ content: `✅ <@${targetUser.id}> اکنون می‌تواند از دستورات .dm و .dmh استفاده کند.` });
+    return;
+  }
+
+  // .dmunset — owner only, revoke DM command permission from a user
+  if (isCmd('dmunset')) {
+    if (msg.author.id !== ownerId) {
+      return;
+    }
+    const arg = content.slice(8).trim();
+    let targetUser = msg.mentions.users.first() || null;
+    if (!targetUser && arg) {
+      // Try to parse user ID
+      let id: string | null = null;
+      const m = arg.match(/^<@!?(\d+)>$/);
+      if (m) id = m[1];
+      else if (/^\d+$/.test(arg)) id = arg;
+      if (id) {
+        try { targetUser = await msg.client.users.fetch(id); } catch {}
+      }
+    }
+    if (!targetUser) {
+      await msg.reply({ content: 'استفاده: `.dmunset @user` یا `.dmunset userId`' });
+      return;
+    }
+    dmAllowedUsersSet.delete(targetUser.id);
+    saveDMAllowedUsers();
+    await msg.reply({ content: `✅ دسترسی .dm و .dmh از <@${targetUser.id}> حذف شد.` });
+    return;
+  }
+
+  // .dm — send DM to user (owner + allowed users)
+  if (isCmd('dm')) {
+    if (!canUseDMCommands(msg.author.id)) {
+      return;
+    }
+    const arg = content.slice(3).trim();
+    let targetUser = msg.mentions.users.first() || null;
+    let message = '';
+    
+    if (targetUser) {
+      // Remove mention from message
+      message = arg.replace(/<@!?\d+>/g, '').trim();
+    } else {
+      // Try to parse user ID at the start
+      const parts = arg.split(/\s+/);
+      if (parts.length >= 2 && /^\d+$/.test(parts[0])) {
+        const id = parts[0];
+        try {
+          targetUser = await msg.client.users.fetch(id);
+          message = parts.slice(1).join(' ');
+        } catch {}
+      }
+    }
+    
+    if (!targetUser || !message) {
+      await msg.reply({ content: 'استفاده: `.dm @user پیام` یا `.dm userId پیام`' });
+      return;
+    }
+    
+    try {
+      await targetUser.send(message);
+      await msg.reply({ content: `✅ پیام به <@${targetUser.id}> ارسال شد.` });
+    } catch (err) {
+      await msg.reply({ content: `دایرکت <@${targetUser.id}> بسته است ❌` });
+    }
+    return;
+  }
+
+  // .dmh — send DM to user with sender mention (owner + allowed users)
+  if (isCmd('dmh')) {
+    if (!canUseDMCommands(msg.author.id)) {
+      return;
+    }
+    const arg = content.slice(4).trim();
+    let targetUser = msg.mentions.users.first() || null;
+    let message = '';
+    
+    if (targetUser) {
+      // Remove mention from message
+      message = arg.replace(/<@!?\d+>/g, '').trim();
+    } else {
+      // Try to parse user ID at the start
+      const parts = arg.split(/\s+/);
+      if (parts.length >= 2 && /^\d+$/.test(parts[0])) {
+        const id = parts[0];
+        try {
+          targetUser = await msg.client.users.fetch(id);
+          message = parts.slice(1).join(' ');
+        } catch {}
+      }
+    }
+    
+    if (!targetUser || !message) {
+      await msg.reply({ content: 'استفاده: `.dmh @user پیام` یا `.dmh userId پیام`' });
+      return;
+    }
+    
+    try {
+      const fullMessage = `<@${msg.author.id}> : ${message}`;
+      await targetUser.send(fullMessage);
+      await msg.reply({ content: `✅ پیام به <@${targetUser.id}> ارسال شد (با منشن شما).` });
+    } catch (err) {
+      await msg.reply({ content: `دایرکت <@${targetUser.id}> بسته است ❌` });
+    }
     return;
   }
 
