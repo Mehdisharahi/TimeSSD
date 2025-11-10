@@ -3339,7 +3339,7 @@ client.on('messageCreate', async (msg: Message) => {
       return;
     }
     
-    // Reset game to waiting state while preserving teams
+    // Reset game to initial state (like .new) while preserving teams
     s.state = 'waiting';
     s.hokm = undefined;
     s.hakim = undefined;
@@ -3353,6 +3353,9 @@ client.on('messageCreate', async (msg: Message) => {
     s.tricksTeam2 = 0;
     s.setsTeam1 = 0;
     s.setsTeam2 = 0;
+    // Reset target sets/tricks to allow reconfiguration
+    s.targetSets = undefined;
+    s.targetTricks = undefined;
     s.tricksByPlayer = new Map();
     s.lastTrick = undefined;
     s.surrenderVotesTeam1 = new Set();
