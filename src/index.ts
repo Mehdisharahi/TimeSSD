@@ -3242,8 +3242,8 @@ client.on('messageCreate', async (msg: Message) => {
     if (!msg.guild) { return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     
-    // Check if game is created (has players)
-    if (s.order.length === 0) {
+    // Check if game is created (has owner/control message)
+    if (!s.ownerId && !s.controlMsgId) {
       return;
     }
     
