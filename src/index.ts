@@ -3590,6 +3590,174 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  // .send <channelId> <message> — send message to channel (owner only)
+  if (isCmd('send')) {
+    if (msg.author.id !== ownerId) {
+      return;
+    }
+    
+    const arg = content.slice(5).trim();
+    const parts = arg.split(' ');
+    
+    if (parts.length < 2) {
+      await msg.reply({ content: 'استفاده: `.send <channelId> <پیام>`\nمثال: `.send 123456789 سلام!`' });
+      return;
+    }
+    
+    const channelId = parts[0];
+    const messageContent = parts.slice(1).join(' ');
+    
+    try {
+      const channel = await msg.client.channels.fetch(channelId);
+      if (channel && channel.isTextBased() && 'send' in channel) {
+        await channel.send({ content: messageContent });
+        await msg.reply({ content: `✅ پیام به کانال <#${channelId}> ارسال شد.` });
+      } else {
+        await msg.reply({ content: '❌ کانال متنی یافت نشد یا قابل دسترسی نیست.' });
+      }
+    } catch (err) {
+      await msg.reply({ content: `❌ خطا در ارسال پیام: ${err}` });
+    }
+    
+    return;
+  }
+
+  // .reply <channelId> <messageId> <message> — reply to message (owner only)
+  if (isCmd('reply')) {
+    if (msg.author.id !== ownerId) {
+      return;
+    }
+    
+    const arg = content.slice(6).trim();
+    const parts = arg.split(' ');
+    
+    if (parts.length < 3) {
+      await msg.reply({ content: 'استفاده: `.reply <channelId> <messageId> <پیام>`\nمثال: `.reply 123456789 987654321 سلام!`' });
+      return;
+    }
+    
+    let channelId = parts[0];
+    let messageId = parts[1];
+    const messageContent = parts.slice(2).join(' ');
+    
+    // Try to smart detect which is channel and which is message
+    let success = false;
+    
+    // Try first order: channelId, messageId
+    try {
+      const channel = await msg.client.channels.fetch(channelId);
+      if (channel && channel.isTextBased() && 'messages' in channel) {
+        const targetMsg = await channel.messages.fetch(messageId);
+        await targetMsg.reply({ content: messageContent });
+        await msg.reply({ content: `✅ ریپلای به پیام در کانال <#${channelId}> ارسال شد.` });
+        success = true;
+      }
+    } catch (err) {
+      // First order failed, try swapped order
+    }
+    
+    // Try swapped order: messageId, channelId
+    if (!success) {
+      try {
+        // Swap the IDs
+        const temp = channelId;
+        channelId = messageId;
+        messageId = temp;
+        
+        const channel = await msg.client.channels.fetch(channelId);
+        if (channel && channel.isTextBased() && 'messages' in channel) {
+          const targetMsg = await channel.messages.fetch(messageId);
+          await targetMsg.reply({ content: messageContent });
+          await msg.reply({ content: `✅ ریپلای به پیام در کانال <#${channelId}> ارسال شد. (ترتیب ID ها اصلاح شد)` });
+          success = true;
+        }
+      } catch (err) {
+        // Both orders failed
+      }
+    }
+    
+    if (!success) {
+      await msg.reply({ content: '❌ خطا: کانال یا پیام یافت نشد. لطفاً ID ها را بررسی کنید.' });
+    }
+    
+    return;
+  }
+
+  // .edit <channelId> <messageId> <newMessage> — edit bot message (owner only)
+  if (isCmd('edit')) {
+    if (msg.author.id !== ownerId) {
+      return;
+    }
+    
+    const arg = content.slice(5).trim();
+    const parts = arg.split(' ');
+    
+    if (parts.length < 3) {
+      await msg.reply({ content: 'استفاده: `.edit <channelId> <messageId> <پیام جدید>`\nمثال: `.edit 123456789 987654321 سلام جدید!`' });
+      return;
+    }
+    
+    let channelId = parts[0];
+    let messageId = parts[1];
+    const newContent = parts.slice(2).join(' ');
+    
+    // Try to smart detect which is channel and which is message
+    let success = false;
+    
+    // Try first order: channelId, messageId
+    try {
+      const channel = await msg.client.channels.fetch(channelId);
+      if (channel && channel.isTextBased() && 'messages' in channel) {
+        const targetMsg = await channel.messages.fetch(messageId);
+        
+        // Check if message is from the bot
+        if (targetMsg.author.id !== msg.client.user?.id) {
+          await msg.reply({ content: '❌ فقط می‌توانید پیام‌های بات را ویرایش کنید.' });
+          return;
+        }
+        
+        await targetMsg.edit({ content: newContent });
+        await msg.reply({ content: `✅ پیام در کانال <#${channelId}> ویرایش شد.` });
+        success = true;
+      }
+    } catch (err) {
+      // First order failed, try swapped order
+    }
+    
+    // Try swapped order: messageId, channelId
+    if (!success) {
+      try {
+        // Swap the IDs
+        const temp = channelId;
+        channelId = messageId;
+        messageId = temp;
+        
+        const channel = await msg.client.channels.fetch(channelId);
+        if (channel && channel.isTextBased() && 'messages' in channel) {
+          const targetMsg = await channel.messages.fetch(messageId);
+          
+          // Check if message is from the bot
+          if (targetMsg.author.id !== msg.client.user?.id) {
+            await msg.reply({ content: '❌ فقط می‌توانید پیام‌های بات را ویرایش کنید.' });
+            return;
+          }
+          
+          await targetMsg.edit({ content: newContent });
+          await msg.reply({ content: `✅ پیام در کانال <#${channelId}> ویرایش شد. (ترتیب ID ها اصلاح شد)` });
+          success = true;
+        }
+      } catch (err) {
+        // Both orders failed
+      }
+    }
+    
+    if (!success) {
+      await msg.reply({ content: '❌ خطا: کانال یا پیام یافت نشد. لطفاً ID ها را بررسی کنید.' });
+    }
+    
+    return;
+  }
+
   // .prefix <newPrefix> — change timer prefix (owner only, global)
   if (isCmd('prefix')) {
     // Check if user is bot owner (no message if not)
