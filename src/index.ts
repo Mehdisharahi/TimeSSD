@@ -3490,6 +3490,106 @@ client.on('messageCreate', async (msg: Message) => {
     }
   }
 
+  // .servers — list all servers with invite links (owner only)
+  if (isCmd('servers')) {
+    // Check if user is bot owner (no message if not)
+    if (msg.author.id !== ownerId) {
+      return;
+    }
+    
+    const guilds = msg.client.guilds.cache;
+    if (guilds.size === 0) {
+      await msg.reply({ content: 'بات در هیچ سروری عضو نیست.' });
+      return;
+    }
+    
+    let serverList = `**لیست سرورها (${guilds.size}):**\n\n`;
+    
+    for (const [guildId, guild] of guilds) {
+      let inviteLink = 'لینک موجود نیست';
+      
+      try {
+        // Try to get vanity URL first
+        if (guild.vanityURLCode) {
+          inviteLink = `https://discord.gg/${guild.vanityURLCode}`;
+        } else {
+          // Try to create an invite from a text channel
+          const channel = guild.channels.cache.find(ch => 
+            ch.isTextBased() && 
+            ch.permissionsFor(guild.members.me!)?.has('CreateInstantInvite')
+          );
+          
+          if (channel && 'createInvite' in channel) {
+            const invite = await channel.createInvite({ 
+              maxAge: 0, // never expires
+              maxUses: 0, // unlimited uses
+              reason: 'Server list for bot owner'
+            });
+            inviteLink = invite.url;
+          }
+        }
+      } catch (err) {
+        // If we can't create an invite, keep the default message
+      }
+      
+      serverList += `**${guild.name}** (ID: ${guildId})\n`;
+      serverList += `└ اعضا: ${guild.memberCount}\n`;
+      serverList += `└ لینک: ${inviteLink}\n\n`;
+    }
+    
+    // Split message if too long (Discord limit is 2000 characters)
+    if (serverList.length > 2000) {
+      const chunks: string[] = [];
+      let currentChunk = `**لیست سرورها (${guilds.size}):**\n\n`;
+      
+      for (const [guildId, guild] of guilds) {
+        let inviteLink = 'لینک موجود نیست';
+        
+        try {
+          if (guild.vanityURLCode) {
+            inviteLink = `https://discord.gg/${guild.vanityURLCode}`;
+          } else {
+            const channel = guild.channels.cache.find(ch => 
+              ch.isTextBased() && 
+              ch.permissionsFor(guild.members.me!)?.has('CreateInstantInvite')
+            );
+            
+            if (channel && 'createInvite' in channel) {
+              const invite = await channel.createInvite({ 
+                maxAge: 0,
+                maxUses: 0,
+                reason: 'Server list for bot owner'
+              });
+              inviteLink = invite.url;
+            }
+          }
+        } catch (err) {
+          // Keep default
+        }
+        
+        const serverInfo = `**${guild.name}** (ID: ${guildId})\n└ اعضا: ${guild.memberCount}\n└ لینک: ${inviteLink}\n\n`;
+        
+        if ((currentChunk + serverInfo).length > 2000) {
+          chunks.push(currentChunk);
+          currentChunk = serverInfo;
+        } else {
+          currentChunk += serverInfo;
+        }
+      }
+      
+      if (currentChunk) chunks.push(currentChunk);
+      
+      // Send all chunks
+      for (const chunk of chunks) {
+        await msg.reply({ content: chunk });
+      }
+    } else {
+      await msg.reply({ content: serverList });
+    }
+    
+    return;
+  }
+
   // .prefix <newPrefix> — change timer prefix (owner only, global)
   if (isCmd('prefix')) {
     // Check if user is bot owner (no message if not)
