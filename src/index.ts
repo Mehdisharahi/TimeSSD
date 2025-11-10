@@ -3061,65 +3061,6 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .reset — owner resets the room and redeals (like fresh start with current teams)
-  if (isCmd('reset') || isCmd('ریست')) {
-    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
-    const s = ensureSession(msg.guildId!, msg.channelId);
-    if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند ریست کند.'); return; }
-    if (s.team1.length !== 2 || s.team2.length !== 2) { await msg.reply('برای ریست، هر دو تیم باید ۲ نفر داشته باشند.'); return; }
-    // reinitialize game state
-    s.order = [s.team1[0], s.team2[0], s.team1[1], s.team2[1]];
-    s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
-    s.deck = shuffle(makeDeck());
-    s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
-    clearHandOrderCache(s); // Clear cached suit order for reset
-    const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
-    give(s.hakim, 5);
-    s.hokm = undefined; s.tableMsgId = undefined;
-    s.state = 'choosing_hokm';
-    
-    // update control list if exists
-    if (s.controlMsgId) {
-      const contentText = controlListText(s);
-      const rows = buildControlButtons();
-      try { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } catch {}
-    }
-    
-    if (isVirtualBot(s.hakim)) {
-      // Bot is hakim: auto-choose hokm and start
-      // Create announce message (will be deleted after 2.5s)
-      try {
-        const chAny = msg.channel as any;
-        if (chAny && chAny.send) {
-          const announceMsg = await chAny.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
-          s.newSetAnnounceMsgId = announceMsg.id;
-        }
-      } catch {}
-      await refreshTableEmbed({ channel: msg.channel }, s);
-      await botChooseHokmAndStart(msg.client as Client, msg.channel, s);
-    } else {
-      // Human is hakim: send DM and show table with hokm choice buttons
-      try { 
-        const user = await msg.client.users.fetch(s.hakim); 
-        await user.send({ content: `بازی ریست شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); 
-      } catch {}
-      
-      // Create announce message
-      try {
-        const chAny = msg.channel as any;
-        if (chAny && chAny.send) {
-          const announceMsg = await chAny.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
-          s.newSetAnnounceMsgId = announceMsg.id;
-        }
-      } catch {}
-      
-      // Show table with hokm choice buttons
-      await refreshTableEmbed({ channel: msg.channel }, s);
-      await msg.reply({ content: `ریست شد. حاکم: <@${s.hakim}> — از دکمه‌های زیر میز حکم را انتخاب کن.` });
-    }
-    return;
-  }
-
   // .change <player1> <player2> — swap players (supports @user or bot1/bot2/bot3)
   if (isCmd('change') || isCmd('عوض')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
@@ -3325,7 +3266,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .reset — reset game to waiting state (owner only, silent)
-  if (isCmd('reset')) {
+  if (isCmd('reset') || isCmd('ریست')) {
     if (!msg.guild) { return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     
