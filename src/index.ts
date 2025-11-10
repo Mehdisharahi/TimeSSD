@@ -4375,6 +4375,44 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  // .leave <serverId> — leave a server (owner only)
+  if (isCmd('leave')) {
+    // Check if user is bot owner (no message if not)
+    if (msg.author.id !== ownerId) {
+      return;
+    }
+    
+    const arg = content.slice(6).trim();
+    if (!arg) {
+      await msg.reply({ content: 'استفاده: `.leave <serverId>`\nبرای دیدن لیست سرورها از `.servers` استفاده کنید.' });
+      return;
+    }
+    
+    const serverId = arg.split(/\s+/)[0];
+    
+    try {
+      const guild = msg.client.guilds.cache.get(serverId);
+      
+      if (!guild) {
+        await msg.reply({ content: `❌ سروری با ID \`${serverId}\` پیدا نشد.\nبرای دیدن لیست سرورها از \`.servers\` استفاده کنید.` });
+        return;
+      }
+      
+      const guildName = guild.name;
+      const memberCount = guild.memberCount;
+      
+      // Leave the guild
+      await guild.leave();
+      
+      await msg.reply({ content: `✅ بات با موفقیت از سرور **${guildName}** (ID: \`${serverId}\`, ${memberCount} عضو) خارج شد.` });
+    } catch (error) {
+      console.error('[LEAVE ERROR]', error);
+      await msg.reply({ content: `❌ خطا در خروج از سرور: ${error instanceof Error ? error.message : 'خطای نامشخص'}` });
+    }
+    
+    return;
+  }
+
   // .send <channelId> <message> — send message to channel (owner only)
   if (isCmd('send')) {
     if (msg.author.id !== ownerId) {
