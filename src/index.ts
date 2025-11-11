@@ -3,6 +3,7 @@ import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceSta
 import { createCanvas, GlobalFonts, loadImage, Canvas } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
+import http from 'http';
 import { PgFriendStore } from './storage/pgFriendStore';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
 
@@ -273,26 +274,33 @@ function chooseBotCard(hand: Card[], s: HokmSession): Card {
         }
         return minCard(follow);
       }
+      // حریف برنده است - منطق تهاجمی: حتماً سر کن یا برش بده
       const ace = follow.find(c=>c.r===14);
       if (ace) return ace;
-      const king = follow.find(c=>c.r===13);
       const wc = table[w].card;
       const better = follow.filter(c=>beatCard(c,wc));
       if (better.length) {
-        if (king && isAcePlayed(lead)) return king;
-        const noK = better.filter(c=>c.r!==13);
-        return noK.length? maxCard(noK) : minCard(follow);
+        // اگر K داری و حریف برنده است، بدون چک A حتماً K بزن
+        const king = better.find(c=>c.r===13);
+        if (king) return king;
+        // یا بزرگترین کارت بالاتر از حریف
+        return maxCard(better);
       }
+      // نمی‌تونی سر کنی، کوچکترین بزن
       return minCard(follow);
     } else {
+      // نمی‌تونی خال شروع بازی کنی
       if (mateCard.r===14 || (mateCard.r===13&&isAcePlayed(lead))) return minNonTrump(legal);
       if (mateWins && oppCard.s!==trump) return minNonTrump(legal);
+      // حریف برنده است - حتماً برش بده
       const trumps = legal.filter(c=>c.s===trump);
       if (!trumps.length) return minNonTrump(legal);
       if (oppCard.s===trump) {
+        // حریف با حکم برنده - باید بالاتر از حکم حریف بزنی
         const better = trumps.filter(c=>c.r>oppCard.r);
         return better.length? minCard(better) : minNonTrump(legal);
       }
+      // حریف با غیر حکم برنده - با کوچکترین حکم برش بده
       if (mateCard.r>=12 && !isAcePlayed(lead)) return minNonTrump(legal);
       return minCard(trumps);
     }
@@ -2030,7 +2038,8 @@ process.on('unhandledRejection', (reason, promise) => {
 
 process.on('uncaughtException', (error) => {
   console.error('[UNCAUGHT EXCEPTION]:', error);
-  // Log but don't exit (risky but prevents crashes during games)
+  console.error('[UNCAUGHT EXCEPTION] Stack:', error.stack);
+  // Log but don't exit - keep bot alive
 });
 
 client.on('interactionCreate', async (interaction: Interaction) => {
@@ -5099,17 +5108,44 @@ client.on('messageCreate', async (msg: Message) => {
   at.messageId = sent.id;
 });
 
+// HTTP server for Railway health checks
+const PORT = process.env.PORT || 3000;
+const server = http.createServer((req, res) => {
+  if (req.url === '/health' || req.url === '/') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ 
+      status: 'ok', 
+      uptime: process.uptime(),
+      bot: client.user ? 'online' : 'connecting'
+    }));
+  } else {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not Found');
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`[HTTP] Health check server listening on port ${PORT}`);
+});
+
 // Graceful shutdown handlers
 process.on('SIGTERM', async () => {
   console.log('[SHUTDOWN] Received SIGTERM signal, shutting down gracefully...');
   try {
+    // Close HTTP server first
+    server.close(() => {
+      console.log('[SHUTDOWN] HTTP server closed');
+    });
+    
     // Data is saved in realtime to database, no need to save on shutdown
     // Destroy the client
     client.destroy();
-    console.log('[SHUTDOWN] Client destroyed successfully');
+    console.log('[SHUTDOWN] Discord client destroyed successfully');
     
-    // Exit cleanly
-    process.exit(0);
+    // Exit cleanly after a short delay to allow cleanup
+    setTimeout(() => {
+      process.exit(0);
+    }, 1000);
   } catch (err: any) {
     console.error('[SHUTDOWN] Error during shutdown:', err);
     process.exit(1);
@@ -5119,10 +5155,18 @@ process.on('SIGTERM', async () => {
 process.on('SIGINT', async () => {
   console.log('[SHUTDOWN] Received SIGINT signal, shutting down gracefully...');
   try {
+    // Close HTTP server
+    server.close(() => {
+      console.log('[SHUTDOWN] HTTP server closed');
+    });
+    
     // Data is saved in realtime to database, no need to save on shutdown
     client.destroy();
-    console.log('[SHUTDOWN] Client destroyed successfully');
-    process.exit(0);
+    console.log('[SHUTDOWN] Discord client destroyed successfully');
+    
+    setTimeout(() => {
+      process.exit(0);
+    }, 1000);
   } catch (err: any) {
     console.error('[SHUTDOWN] Error during shutdown:', err);
     process.exit(1);
