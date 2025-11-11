@@ -462,10 +462,6 @@ function addHokmPick(gId: string, uid: string, suit: Suit) {
 loadHokmStats();
 const hokmSessions = new Map<string, HokmSession>(); // key: guildId:channelId:sessionId
 function keyGCS(g: string, c: string, s: string){ return `${g}:${c}:${s}`; }
-// Generate unique session ID
-function generateSessionId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
 function makeDeck(): Card[] { const d: Card[] = []; (['S','H','D','C'] as Suit[]).forEach(s=>RANKS.forEach(r=>d.push({s, r}))); return d; }
 function shuffle<T>(a: T[]): T[] { for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];} return a; }
 function rankStr(r:number){ if(r===14) return 'A'; if(r===13) return 'K'; if(r===12) return 'Q'; if(r===11) return 'J'; return String(r); }
@@ -1434,7 +1430,7 @@ function parseSuit(input: string): Suit | null {
 }
 // Create a new game session
 function createNewSession(gId: string, cId: string, ownerId?: string): HokmSession {
-  const sessionId = generateSessionId();
+  const sessionId = generateTableNumber(gId, cId);
   const s: HokmSession = { 
     sessionId, 
     guildId: gId, 
@@ -1473,6 +1469,30 @@ function getChannelSessions(gId: string, cId: string): HokmSession[] {
 // Count active games (not finished) in a channel
 function countActiveGames(gId: string, cId: string): number {
   return getChannelSessions(gId, cId).filter(s => s.state !== 'finished').length;
+}
+
+// Generate table number (1-4) for this channel, reusing finished tables
+function generateTableNumber(gId: string, cId: string): string {
+  const sessions = getChannelSessions(gId, cId);
+  const activeNumbers = new Set<string>();
+  
+  // Collect active (not finished) table numbers
+  for (const s of sessions) {
+    if (s.state !== 'finished') {
+      activeNumbers.add(s.sessionId);
+    }
+  }
+  
+  // Find first available number from 1-4
+  for (let i = 1; i <= 4; i++) {
+    const num = String(i);
+    if (!activeNumbers.has(num)) {
+      return num;
+    }
+  }
+  
+  // Should never reach here if countActiveGames check is working
+  return '1';
 }
 
 // Backwards-compat shim: return the most recent (by sessionId) non-finished session in this channel,
@@ -2041,7 +2061,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         await interaction.reply({ content: `به تیم ${id.includes('t1')? '1':'2'} پیوستی.`, flags: [MessageFlags.Ephemeral] });
       }
       // Update control message as plain text (no embed)
-      const contentText = controlListText(s);
+      const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
       const rows = buildControlButtons(s.sessionId);
       try { if (s.controlMsgId) { const m = await (interaction.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
       return;
@@ -2076,7 +2096,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       await interaction.deferUpdate();
       
       // Update control message
-      const contentText = controlListText(s);
+      const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
       const rows = buildControlButtons(s.sessionId);
       try { if (s.controlMsgId) { const m = await (interaction.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
       return;
@@ -2996,6 +3016,17 @@ client.on('messageCreate', async (msg: Message) => {
   if (isCmd('new') || isCmd('hokm') || isCmd('حکم')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const gId = msg.guildId!; const cId = msg.channelId;
+    
+    // Check if this user already has an active table in this channel
+    const userActiveTables = getChannelSessions(gId, cId).filter(s => 
+      s.ownerId === msg.author.id && s.state !== 'finished'
+    );
+    if (userActiveTables.length > 0) {
+      const tableNum = userActiveTables[0].sessionId;
+      await msg.reply(`شما قبلاً میز ${tableNum} را در این کانال ساخته‌اید. لطفاً ابتدا آن بازی را تمام کنید یا با دستور \`.end\` آن را ببندید.`);
+      return;
+    }
+    
     const activeCount = countActiveGames(gId, cId);
     if (activeCount >= 4) {
       await msg.reply('حداکثر ۴ بازی همزمان در این کانال مجاز است. لطفاً منتظر بمانید تا یکی از بازی‌ها تمام شود.');
@@ -3004,7 +3035,7 @@ client.on('messageCreate', async (msg: Message) => {
     // Create brand-new session for this request
     const s = createNewSession(gId, cId, msg.author.id);
     s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'waiting'; s.tableMsgId = undefined;
-    const contentText = `${controlListText(s)}\nشماره میز: ${s.sessionId.split('-')[0]}`;
+    const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
     const rows = buildControlButtons(s.sessionId);
     const sent = await msg.reply({ content: contentText, components: rows });
     s.controlMsgId = sent.id;
@@ -3020,7 +3051,7 @@ client.on('messageCreate', async (msg: Message) => {
     const raw = content.slice(content.startsWith('.اضافه1') ? 7 : 3).trim();
     if (/^bot\b/i.test(raw)) {
       const added = addBotToTeam(s, 1);
-      const contentText = controlListText(s);
+      const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
       const rows = buildControlButtons(s.sessionId);
       try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
       const replyMsg = await msg.reply({ content: added? `Bot به تیم 1 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 1 وجود ندارد.' });
@@ -3053,8 +3084,8 @@ client.on('messageCreate', async (msg: Message) => {
     const raw = content.slice(content.startsWith('.اضافه2') ? 7 : 3).trim();
     if (/^bot\b/i.test(raw)) {
       const added = addBotToTeam(s, 2);
-      const contentText = controlListText(s);
-      const rows = buildControlButtons();
+      const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
+      const rows = buildControlButtons(s.sessionId);
       try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
       const replyMsg = await msg.reply({ content: added? `Bot به تیم 2 افزوده شد (${added.id.replace('BOT','Bot')}).` : 'امکان افزودن Bot به تیم 2 وجود ندارد.' });
       setTimeout(() => replyMsg.delete().catch(()=>{}), 2500);
@@ -3070,8 +3101,8 @@ client.on('messageCreate', async (msg: Message) => {
       if (s.team2.length >= 2) { skipped.push(`<@${uid}> (تیم 2 پر است)`); continue; }
       s.team2.push(uid); added.push(`<@${uid}>`);
     }
-    const contentText = controlListText(s);
-    const rows = buildControlButtons();
+    const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
+    const rows = buildControlButtons(s.sessionId);
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
     {
       const lines: string[] = [];
@@ -3098,8 +3129,8 @@ client.on('messageCreate', async (msg: Message) => {
       const removedBots: string[] = [];
       for (const u of before1) if (isVirtualBot(u) && !s.team1.includes(u)) removedBots.push(`<@${u.replace('BOT','Bot')}>`);
       for (const u of before2) if (isVirtualBot(u) && !s.team2.includes(u)) removedBots.push(`<@${u.replace('BOT','Bot')}>`);
-      const contentText = controlListText(s);
-      const rows = buildControlButtons();
+      const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
+      const rows = buildControlButtons(s.sessionId);
       try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
       const replyMsg = await msg.reply({ content: `حذف شد: ${removedBots.join(' , ') || '—'}` });
       setTimeout(()=>replyMsg.delete().catch(()=>{}), 2500);
@@ -3114,8 +3145,8 @@ client.on('messageCreate', async (msg: Message) => {
       s.team2 = s.team2.filter(x=>x!==uid);
       if (inAny) removed.push(`<@${uid}>`); else notIn.push(`<@${uid}>`);
     }
-    const contentText = controlListText(s);
-    const rows = buildControlButtons();
+    const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
+    const rows = buildControlButtons(s.sessionId);
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.edit({ content: contentText, components: rows }); } } catch {}
     {
       const lines: string[] = [];
@@ -3288,8 +3319,8 @@ client.on('messageCreate', async (msg: Message) => {
     
     // Update control message if in waiting state
     if (s.state === 'waiting' && s.controlMsgId) {
-      const contentText = controlListText(s);
-      const rows = buildControlButtons();
+      const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
+      const rows = buildControlButtons(s.sessionId);
       try { 
         const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); 
         if (m) await m.edit({ content: contentText, components: rows }); 
@@ -3338,8 +3369,8 @@ client.on('messageCreate', async (msg: Message) => {
       try { const prev = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (prev) await prev.delete().catch(()=>{}); } catch {}
       s.controlMsgId = undefined;
     }
-    const contentText = controlListText(s);
-    const rows = buildControlButtons();
+    const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
+    const rows = buildControlButtons(s.sessionId);
     const sent = await msg.reply({ content: contentText, components: rows });
     s.controlMsgId = sent.id;
     return;
@@ -3401,8 +3432,8 @@ client.on('messageCreate', async (msg: Message) => {
     }
     
     // Show updated control list with current teams (silently)
-    const contentText = controlListText(s);
-    const rows = buildControlButtons();
+    const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
+    const rows = buildControlButtons(s.sessionId);
     const sent = await msg.reply({ content: contentText, components: rows });
     s.controlMsgId = sent.id;
     return;
