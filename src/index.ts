@@ -10,6 +10,9 @@ import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed 
 const token = process.env.BOT_TOKEN;
 const ownerId = process.env.OWNER_ID || '';
 
+// Bot ready status for health checks
+let botReady = false;
+
 // Emoji font registration (optional)
 let emojiFontAvailable = false;
 try {
@@ -1869,6 +1872,7 @@ async function fetchBuffer(url: string): Promise<Buffer> {
 
 client.once('clientReady', async () => {
   console.log(`TimeSSD is online as ${client.user?.tag}`);
+  botReady = true; // Mark bot as ready for health checks
   
   // Set bot status
   client.user?.setActivity('.komak | HOKM', { type: ActivityType.Playing });
@@ -5108,7 +5112,7 @@ client.on('messageCreate', async (msg: Message) => {
   at.messageId = sent.id;
 });
 
-// HTTP server for Railway health checks
+// HTTP server for Railway health checks - Start BEFORE Discord login
 const PORT = process.env.PORT || 3000;
 const server = http.createServer((req, res) => {
   if (req.url === '/health' || req.url === '/') {
@@ -5116,7 +5120,8 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ 
       status: 'ok', 
       uptime: process.uptime(),
-      bot: client.user ? 'online' : 'connecting'
+      bot: botReady ? 'online' : 'connecting',
+      timestamp: new Date().toISOString()
     }));
   } else {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -5126,6 +5131,7 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[HTTP] Health check server listening on port ${PORT}`);
+  console.log(`[HTTP] Health endpoint: http://0.0.0.0:${PORT}/health`);
 });
 
 // Graceful shutdown handlers
@@ -5139,11 +5145,14 @@ process.on('SIGTERM', async () => {
     
     // Data is saved in realtime to database, no need to save on shutdown
     // Destroy the client
-    client.destroy();
-    console.log('[SHUTDOWN] Discord client destroyed successfully');
+    if (client) {
+      client.destroy();
+      console.log('[SHUTDOWN] Discord client destroyed successfully');
+    }
     
     // Exit cleanly after a short delay to allow cleanup
     setTimeout(() => {
+      console.log('[SHUTDOWN] Exiting process...');
       process.exit(0);
     }, 1000);
   } catch (err: any) {
@@ -5161,10 +5170,13 @@ process.on('SIGINT', async () => {
     });
     
     // Data is saved in realtime to database, no need to save on shutdown
-    client.destroy();
-    console.log('[SHUTDOWN] Discord client destroyed successfully');
+    if (client) {
+      client.destroy();
+      console.log('[SHUTDOWN] Discord client destroyed successfully');
+    }
     
     setTimeout(() => {
+      console.log('[SHUTDOWN] Exiting process...');
       process.exit(0);
     }, 1000);
   } catch (err: any) {
@@ -5173,4 +5185,5 @@ process.on('SIGINT', async () => {
   }
 });
 
+// Login to Discord AFTER HTTP server is ready
 client.login(token);
