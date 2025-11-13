@@ -3063,13 +3063,13 @@ client.on('messageCreate', async (msg: Message) => {
       : [];
     const favText = favArray.length > 0 ? favArray.join(' ') : '—';
     const lines: string[] = [];
-    lines.push(`## ✕ <@${targetId}> Stats:`);
+    lines.push(`## 𖣔 <@${targetId}> Stats:`);
     lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-    lines.push(`### ▶︎ Games : ${st.games||0}`);
-    lines.push(`### 🜛 WIN: ${st.wins||0}`);
+    lines.push(`### 🎮 Games : ${st.games||0}`);
+    lines.push(`### 💫 WIN: ${st.wins||0}`);
     lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
-    lines.push(`### 🏁 Trick: ${st.tricks || 0}`);
-    lines.push(`### 🏢 Set: ${st.sets || 0}`);
+    lines.push(`### 🀄 Trick: ${st.tricks || 0}`);
+    lines.push(`### 🎯 Set: ${st.sets || 0}`);
     lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
     lines.push(`### ⭐ Kot: ${st.kot || 0}`);
     lines.push(`### ❌ Kot Lose: ${st.kotLose || 0}`);
@@ -3077,8 +3077,8 @@ client.on('messageCreate', async (msg: Message) => {
     lines.push(`### 💎 Hakem Kot: ${st.hakemKot || 0}`);
     lines.push(`### ☠️ HakemKot Lose: ${st.hakemKotLose || 0}`);
     lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
-    lines.push(`### 🤭 Best Teamate: ${mateText}`);
-    lines.push(`### 🏹 Favorite hokm: ${favText}`);
+    lines.push(`### 🫂 Best Teamate: ${mateText}`);
+    lines.push(`### 🃏 Favorite hokm: ${favText}`);
     lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
     
     const embedBaz = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
