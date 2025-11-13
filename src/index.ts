@@ -1941,38 +1941,81 @@ loadTimerPrefix();
 loadDMAllowedUsers();
 
 async function addDuration(guildId: string, a: string, b: string, deltaMs: number) {
+  // افزودن بررسی مقدار درست زمان
   if (deltaMs <= 0) return;
+  
+  // گرد کردن به عدد صحیح برای جلوگیری از خطاهای احتمالی
+  const roundedDelta = Math.floor(deltaMs);
+  
+  // دریافت نقشه‌های ذخیره‌سازی
   const gMap = getMap(partnerTotals, guildId, () => new Map());
   const aMap = getMap(gMap, a, () => new Map());
   const bMap = getMap(gMap, b, () => new Map());
-  aMap.set(b, (aMap.get(b) || 0) + deltaMs);
-  bMap.set(a, (bMap.get(a) || 0) + deltaMs);
-  // persist to SQLite/Postgres
-  await store.addDuration(guildId, a, b, deltaMs);
+  
+  // اطمینان از مقداردهی متقارن برای هر دو کاربر
+  const aCurrentTotal = aMap.get(b) || 0;
+  const bCurrentTotal = bMap.get(a) || 0;
+  
+  // افزودن زمان جدید به مقادیر قبلی
+  const aNewTotal = aCurrentTotal + roundedDelta;
+  const bNewTotal = bCurrentTotal + roundedDelta;
+  
+  // مطمئن شوید که هر دو رکورد مقدار یکسانی دارند
+  aMap.set(b, aNewTotal);
+  bMap.set(a, bNewTotal);
+  
+  try {
+    // ذخیره در پایگاه داده
+    await store.addDuration(guildId, a, b, roundedDelta);
+  } catch (err) {
+    console.error(`[FRIEND DATA] Error saving duration for ${a}-${b}:`, err);
+    // اگر ذخیره با مشکل مواجه شد، دوباره تلاش می‌کنیم
+    try {
+      await store.addDuration(guildId, a, b, roundedDelta);
+    } catch {} // در صورت شکست مجدد، فقط صرفنظر می‌کنیم
+  }
 }
 
 // Compute live totals for a user: persisted totals + ongoing sessions until now
 function computeTotalsUpToNow(guildId: string, userId: string): Map<string, number> | null {
+  // Создаем новую карту для выходных данных
+  const out = new Map<string, number>();
+  
+  // 1. Сначала загружаем сохраненные итоги из partnerTotals
   const baseGuild = partnerTotals.get(guildId);
   const base = baseGuild?.get(userId);
-  const out = new Map<string, number>();
   if (base) {
-    for (const [pid, ms] of base.entries()) out.set(pid, ms);
+    // Копируем все сохраненные данные в выходную карту
+    for (const [pid, ms] of base.entries()) {
+      out.set(pid, ms);
+    }
   }
+  
+  // 2. Теперь добавляем текущие активные сеансы из pairStarts
   const pMap = pairStarts.get(guildId);
-  if (!pMap || pMap.size === 0) return out.size ? out : null;
-  const now = Date.now();
-  for (const [key, start] of pMap.entries()) {
-    // key format: idA:idB:channelId
-    const parts = key.split(':');
-    if (parts.length < 3) continue;
-    const idA = parts[0];
-    const idB = parts[1];
-    const other = userId === idA ? idB : (userId === idB ? idA : null);
-    if (!other) continue;
-    const delta = now - start;
-    if (delta > 0) out.set(other, (out.get(other) || 0) + delta);
+  if (pMap && pMap.size > 0) {
+    const now = Date.now();
+    for (const [key, start] of pMap.entries()) {
+      // key format: idA:idB:channelId
+      const parts = key.split(':');
+      if (parts.length < 3) continue;
+      
+      const idA = parts[0];
+      const idB = parts[1];
+      
+      // Проверяем, является ли это релевантной парой для текущего пользователя
+      const other = userId === idA ? idB : (userId === idB ? idA : null);
+      if (!other) continue;
+      
+      // Вычисляем продолжительность текущей сессии
+      const delta = now - start;
+      if (delta > 0) {
+        // Добавляем текущую продолжительность к имеющимся данным
+        out.set(other, (out.get(other) || 0) + delta);
+      }
+    }
   }
+  
   return out.size ? out : null;
 }
 
@@ -2048,83 +2091,155 @@ client.once('clientReady', async () => {
     }
   } catch {}
   
-  // Start periodic save for friend data every 5 minutes to prevent data loss
+  // ذخیره دوره‌ای جلسات صوتی جاری برای جلوگیری از از دست دادن داده‌ها هنگام راه‌اندازی مجدد
   setInterval(async () => {
     try {
-      console.log('[FRIEND DATA] Periodic save started...');
       const now = Date.now();
+      let saveCount = 0;
+      let errorCount = 0;
       
-      // Save all ongoing voice sessions to database before they might be lost
+      // ذخیره تمام جلسات صوتی جاری به پایگاه داده قبل از اینکه از دست بروند
+      // بررسی هر سرور
       for (const [guildId, pMap] of pairStarts.entries()) {
-        for (const [key, start] of pMap.entries()) {
-          const parts = key.split(':');
-          if (parts.length < 3) continue;
-          const [a, b] = [parts[0], parts[1]];
-          const deltaMs = now - start;
-          if (deltaMs > 0) {
-            // Update in-memory totals
-            const gMap = getMap(partnerTotals, guildId, () => new Map());
-            const aMap = getMap(gMap, a, () => new Map());
-            const bMap = getMap(gMap, b, () => new Map());
-            aMap.set(b, (aMap.get(b) || 0) + deltaMs);
-            bMap.set(a, (bMap.get(a) || 0) + deltaMs);
-            
-            // Persist to database
-            await store.addDuration(guildId, a, b, deltaMs);
-            
-            // Reset start time to now
-            pMap.set(key, now);
+        try {
+          // برای هر جلسه فعال در هر سرور
+          for (const [key, start] of pMap.entries()) {
+            try {
+              const parts = key.split(':');
+              if (parts.length < 3) {
+                // کلید نامعتبر - حذف آن
+                pMap.delete(key);
+                continue;
+              }
+              
+              const a = parts[0];
+              const b = parts[1];
+              
+              // بررسی برای اطمینان از اینکه شروع با یک زمان معتبر است
+              if (typeof start !== 'number' || start <= 0 || start > now) {
+                // زمان نامعتبر - تنظیم مجدد به زمان فعلی
+                pMap.set(key, now);
+                continue;
+              }
+              
+              // محاسبه دقیق زمان سپری شده
+              const deltaMs = now - start;
+              if (deltaMs <= 0) continue; // اگر مشکلی در محاسبه زمان وجود دارد
+              
+              // اطمینان از اینکه مدت زمان منطقی است (کمتر از دو برابر فاصله ذخیره)
+              if (deltaMs > 4 * 60 * 1000) {
+                // زمان بیش از حد طولانی - احتمالاً غیرعادی - تنظیم مجدد به زمان فعلی
+                console.warn(`[FRIEND DATA] Unusually long session (${Math.round(deltaMs/1000/60)}min) for ${a}-${b} - resetting timer`);
+                pMap.set(key, now);
+                continue;
+              }
+              
+              // تلاش برای ذخیره زمان در دیتابیس
+              await addDuration(guildId, a, b, deltaMs);
+              saveCount++;
+              
+              // تنظیم زمان شروع به اکنون
+              pMap.set(key, now);
+            } catch (err) {
+              errorCount++;
+              console.error(`[FRIEND DATA] Error saving session for ${key}:`, err);
+            }
           }
+        } catch (err) {
+          console.error(`[FRIEND DATA] Error processing guild ${guildId}:`, err);
         }
       }
       
-      console.log('[FRIEND DATA] Periodic save completed.');
+      console.log(`[FRIEND DATA] Periodic save completed: ${saveCount} sessions saved, ${errorCount} errors`);
     } catch (err) {
       console.error('[FRIEND DATA] Periodic save error:', err);
     }
-  }, 5 * 60 * 1000); // Every 5 minutes
+  }, 2 * 60 * 1000); // Every 2 minutes (reduced from 5min for more accuracy)
 });
 
 client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState) => {
-  const guildId = oldState.guild.id;
-  const userId = oldState.id;
-  const oldCid = oldState.channelId;
-  const newCid = newState.channelId;
-  if (oldCid === newCid) return; // ignore mute/deaf changes
-  const chMap = getMap<string, Map<string, Set<string>>>(channelMembers, guildId, () => new Map<string, Set<string>>());
-  const pMap = getMap<string, Map<string, number>>(pairStarts, guildId, () => new Map<string, number>());
-  const now = Date.now();
-
-  // Leaving old channel: finalize sessions with remaining members there
-  if (oldCid) {
-    const set = chMap.get(oldCid);
-    if (set && set.has(userId)) {
-      set.delete(userId);
+  try {
+    const guildId = oldState.guild.id;
+    const userId = oldState.id;
+    const oldCid = oldState.channelId;
+    const newCid = newState.channelId;
+    const now = Date.now();
+    
+    // فقط تغییرات کانال را بررسی کنید
+    if (oldCid === newCid) return; // نادیده گرفتن تغییرات mute/deaf
+    
+    // بررسی کاربران بات - اگر کاربر بات باشد، زمان را محاسبه نکنید
+    if (newState.member?.user.bot) return;
+    
+    const chMap = getMap<string, Map<string, Set<string>>>(channelMembers, guildId, () => new Map<string, Set<string>>());
+    const pMap = getMap<string, Map<string, number>>(pairStarts, guildId, () => new Map<string, number>());
+    
+    // خروج از کانال قدیم: نهایی کردن جلسات با اعضای باقیمانده در آنجا
+    if (oldCid) {
+      const set = chMap.get(oldCid);
+      if (set && set.has(userId)) {
+        // حذف کاربر از کانال قدیم
+        set.delete(userId);
+        
+        // برای هر کاربر دیگر در کانال، جلسه را ببندید و زمان را ذخیره کنید
+        for (const otherId of set) {
+          // اطمینان از اینکه بات نباشد
+          try {
+            const otherMember = await oldState.guild.members.fetch(otherId).catch(() => null);
+            if (otherMember?.user.bot) continue;
+            
+            const key = pairKey(userId, otherId, oldCid);
+            const start = pMap.get(key);
+            if (start) {
+              // محاسبه و ذخیره زمان با هم بودن
+              const duration = now - start;
+              if (duration > 0) {
+                await addDuration(guildId, userId, otherId, duration);
+              }
+              pMap.delete(key);
+            }
+          } catch (err) {
+            console.error(`[VOICE] Error processing voice partner ${otherId}:`, err);
+          }
+        }
+        
+        // اگر کانال خالی است، آن را حذف کنید
+        if (set.size === 0) chMap.delete(oldCid);
+      }
+    }
+    
+    // پیوستن به کانال جدید: شروع جلسات با اعضای موجود در آنجا
+    if (newCid) {
+      const set = getMap<string, Set<string>>(chMap, newCid, () => new Set<string>());
+      
+      // برای هر کاربر موجود در کانال، یک جلسه جدید شروع کنید
       for (const otherId of set) {
-        const key = pairKey(userId, otherId, oldCid);
-        const start = pMap.get(key);
-        if (start) {
-          addDuration(guildId, userId, otherId, now - start);
-          pMap.delete(key);
+        try {
+          // اطمینان از اینکه بات نباشد
+          const otherMember = await newState.guild.members.fetch(otherId).catch(() => null);
+          if (otherMember?.user.bot) continue;
+          
+          const key = pairKey(userId, otherId, newCid);
+          // اطمینان از اینکه جلسه فقط یک بار شروع شود
+          if (!pMap.has(key)) {
+            pMap.set(key, now);
+          }
+        } catch (err) {
+          console.error(`[VOICE] Error starting session with ${otherId}:`, err);
         }
       }
-      if (set.size === 0) chMap.delete(oldCid);
+      
+      // افزودن کاربر به مجموعه کاربران کانال
+      set.add(userId);
+      
+      // ثبت فعالیت صوتی برای دستور .idlist
+      const voiceLog = getMap(voiceActivityLog, guildId, () => new Map());
+      const channelLog = getMap(voiceLog, newCid, () => []);
+      channelLog.push({ userId, timestamp: now });
     }
-  }
-
-  // Joining new channel: start sessions with existing members there
-  if (newCid) {
-    const set = getMap<string, Set<string>>(chMap, newCid, () => new Set<string>());
-    for (const otherId of set) {
-      const key = pairKey(userId, otherId, newCid);
-      if (!pMap.has(key)) pMap.set(key, now);
-    }
-    set.add(userId);
-    
-    // Log voice activity for .idlist command
-    const voiceLog = getMap(voiceActivityLog, guildId, () => new Map());
-    const channelLog = getMap(voiceLog, newCid, () => []);
-    channelLog.push({ userId, timestamp: now });
+  } catch (err) {
+    // مدیریت خطاهای ممکن برای جلوگیری از crash کردن بات
+    console.error('[VOICE STATE ERROR]', err);
   }
 });
 
@@ -3085,82 +3200,209 @@ client.on('messageCreate', async (msg: Message) => {
 
   // .topfriend or .topfriends — list top 10 pairs with most co-voice time (exclude bots)
   if (isCmd('topfriend') || isCmd('topfriends')) {
-    const gId = msg.guildId!;
-
-    // Aggregate persisted totals per unordered pair (a<b)
-    const agg = new Map<string, { a: string; b: string; ms: number }>();
-    const baseGuild = partnerTotals.get(gId);
-    if (baseGuild) {
-      for (const [a, mp] of baseGuild) {
-        for (const [b, ms] of mp) {
-          const [x, y] = a < b ? [a, b] : [b, a];
-          const key = `${x}:${y}`;
-          const cur = agg.get(key) || { a: x, b: y, ms: 0 };
-          cur.ms += ms;
-          agg.set(key, cur);
+    try {
+      const gId = msg.guildId!;
+      
+      // مدیریت بهتر جمع‌آوری جفت‌ها
+      const startTime = Date.now();
+      
+      // ذخیره فوری جلسات فعلی قبل از محاسبه مجموعه
+      await saveCurrent(gId);
+      
+      // نقشه‌ای برای ذخیره جمع مدت‌های هر جفت
+      const pairTotals = new Map<string, { a: string; b: string; ms: number }>();
+      
+      // نقشه‌ای برای تشخیص بات‌ها
+      const botFlags = new Map<string, boolean>();
+      
+      // 1. بررسی مقادیر ذخیره‌شده در پایگاه داده
+      const baseGuild = partnerTotals.get(gId);
+      if (baseGuild) {
+        // ابتدا از شکل ذخیره‌شده در ذهن استفاده می‌کنیم (user -> partner -> ms)
+        for (const [a, partners] of baseGuild.entries()) {
+          for (const [b, ms] of partners.entries()) {
+            // ترتیب منظم برای جلوگیری از تکرار
+            const [x, y] = a < b ? [a, b] : [b, a];
+            const key = `${x}:${y}`;
+            
+            // دریافت یا ایجاد رکورد برای این جفت
+            const pair = pairTotals.get(key) || { a: x, b: y, ms: 0 };
+            
+            // برای هر جفت، باید فقط یک بار محاسبه شود (a->b و b->a در یک هتسند)
+            // بنابراین، ما میتوانیم نصف مقدار را بگیریم چون هر جفت دو بار ظاهر می‌شود
+            // نکته: این ممکن است باعث شود تعداد کمی متفاوت باشد از زمانی که رابطه متقارن نیست
+            pair.ms += ms;
+            
+            // ذخیره به‌روز شده در مجموعه
+            pairTotals.set(key, pair);
+          }
         }
       }
+      
+      // 2. اضافه کردن جلسات جاری (در عمل، با استفاده از ذخیره فوری قبلی، این بخش نادیده گرفته می‌شود)
+      const pMap = pairStarts.get(gId);
+      if (pMap && pMap.size > 0) {
+        const now = Date.now();
+        for (const [key, start] of pMap.entries()) {
+          try {
+            const parts = key.split(':');
+            if (parts.length < 3) continue;
+            
+            const a = parts[0];
+            const b = parts[1];
+            const [x, y] = a < b ? [a, b] : [b, a];
+            const pairKey = `${x}:${y}`;
+            
+            // ورودی را بگیر یا ایجاد کن
+            const pair = pairTotals.get(pairKey) || { a: x, b: y, ms: 0 };
+            
+            // زمان جاری را اضافه کن
+            const delta = now - start;
+            if (delta > 0) {
+              pair.ms += delta;
+              pairTotals.set(pairKey, pair);
+            }
+          } catch (err) {
+            console.error(`[TOPFRIENDS] Error processing active session ${key}:`, err);
+          }
+        }
+      }
+      
+      // بررسی برای داده‌های خالی
+      if (pairTotals.size === 0) {
+        await msg.reply({ content: 'هیچ زوجی یافت نشد.' });
+        return;
+      }
+      
+      // مرتب‌سازی بر اساس زمان نزولی
+      const allPairs = Array.from(pairTotals.values())
+        .sort((p, q) => q.ms - p.ms);
+      
+      // تابع قالب‌بندی زمان
+      const fmt = (ms: number) => {
+        const totalSeconds = Math.floor(ms / 1000);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        
+        if (hours > 0) {
+          return `${hours}h ${minutes}m`;
+        }
+        if (minutes > 0) {
+          const seconds = totalSeconds % 60;
+          return `${minutes}m ${seconds}s`;
+        }
+        return `${totalSeconds}s`;
+      };
+      
+      // ایجاد خطوط نتیجه برای 10 جفت برتر (بدون بات‌ها)
+      const lines: string[] = [];
+      const processedCount = { total: 0, bots: 0, added: 0, missing: 0 };
+      
+      // ابتدا سعی کنید بات‌ها را از کش شناسایی کنید تا در ادامه از آن‌ها اجتناب شود
+      msg.guild?.members.cache.forEach(m => {
+        if (m.user.bot) botFlags.set(m.id, true);
+      });
+      
+      // پردازش جفت‌ها برای ایجاد خطوط نتیجه
+      for (const p of allPairs) {
+        if (lines.length >= 10) break;
+        processedCount.total++;
+        
+        // بررسی سریع برای بات‌ها از کش
+        if (botFlags.get(p.a) || botFlags.get(p.b)) {
+          processedCount.bots++;
+          continue;
+        }
+        
+        // تلاش برای دریافت اعضا از کش
+        let m1 = msg.guild?.members.cache.get(p.a);
+        let m2 = msg.guild?.members.cache.get(p.b);
+        
+        // دریافت اعضای کش نشده
+        try { 
+          if (!m1) {
+            const fetchedMember = await msg.guild?.members.fetch(p.a).catch(() => undefined);
+            m1 = fetchedMember || undefined;
+          } 
+          if (!m2) {
+            const fetchedMember = await msg.guild?.members.fetch(p.b).catch(() => undefined);
+            m2 = fetchedMember || undefined;
+          }
+        } catch {}
+        
+        // بررسی کنید اگر هر یک از اعضا نادرست باشند
+        if (!m1 || !m2) {
+          processedCount.missing++;
+          continue;
+        }
+        
+        // بررسی کنید که هیچ کدام بات نباشند
+        if (m1.user.bot || m2.user.bot) {
+          botFlags.set(m1.user.bot ? m1.id : m2.id, true);
+          processedCount.bots++;
+          continue;
+        }
+        
+        // افزودن به نتایج
+        lines.push(`${lines.length + 1}. <@${p.a}> + <@${p.b}> — ${fmt(p.ms)}`);
+        processedCount.added++;
+      }
+      
+      // بررسی برای نتایج خالی
+      if (lines.length === 0) {
+        await msg.reply({ content: 'هیچ زوج غیر باتی یافت نشد.' });
+        return;
+      }
+      
+      // لاگ برای تشخیص مشکلات
+      const endTime = Date.now();
+      console.log(`[TOPFRIENDS] Generated in ${endTime - startTime}ms - Processed ${processedCount.total} pairs: ${processedCount.added} added, ${processedCount.bots} bots, ${processedCount.missing} missing members`);
+      
+      // ایجاد امبد زیبا و پاسخ
+      const embed = new EmbedBuilder()
+        .setTitle('top friends')
+        .setDescription(lines.join('\n'))
+        .setColor(0x2f3136);
+      await msg.reply({ embeds: [embed] });
+    } catch (err) {
+      console.error('[TOPFRIENDS ERROR]', err);
+      await msg.reply({ content: 'خطایی در محاسبه آمار دوستان روی داد. لطفا دوباره تلاش کنید.' });
     }
-
-    // Add ongoing sessions from pairStarts (per channel) up to now
-    const pMap = pairStarts.get(gId);
-    if (pMap && pMap.size) {
+    return;
+  }
+  
+  // Helper to save current session times to the database
+  async function saveCurrent(guildId: string) {
+    try {
+      const pMap = pairStarts.get(guildId);
+      if (!pMap || pMap.size === 0) return;
+      
       const now = Date.now();
+      let count = 0;
+      
+      // For each active session
       for (const [key, start] of pMap.entries()) {
         const parts = key.split(':');
         if (parts.length < 3) continue;
-        const [a, b] = [parts[0], parts[1]];
-        const [x, y] = a < b ? [a, b] : [b, a];
-        const k2 = `${x}:${y}`;
-        const cur = agg.get(k2) || { a: x, b: y, ms: 0 };
-        const delta = now - start;
-        if (delta > 0) cur.ms += delta;
-        agg.set(k2, cur);
+        
+        const a = parts[0];
+        const b = parts[1];
+        const deltaMs = now - start;
+        
+        if (deltaMs > 0) {
+          await addDuration(guildId, a, b, deltaMs);
+          count++;
+          // Update start time to now
+          pMap.set(key, now);
+        }
       }
+      
+      if (count > 0) {
+        console.log(`[FRIEND DATA] Saved ${count} current sessions for guild ${guildId}`);
+      }
+    } catch (err) {
+      console.error(`[FRIEND DATA] Error saving current sessions for guild ${guildId}:`, err);
     }
-
-    // Nothing to report
-    if (agg.size === 0) {
-      await msg.reply({ content: 'هیچ زوجی یافت نشد.' });
-      return;
-    }
-
-    // Sort by ms desc
-    const allPairs = Array.from(agg.values()).sort((p, q) => q.ms - p.ms);
-
-    // Build top 10 non-bot pairs (lazy fetch members)
-    const lines: string[] = [];
-    const fmt = (ms: number) => {
-      let s = Math.floor(ms / 1000);
-      const h = Math.floor(s / 3600); s -= h * 3600;
-      const m = Math.floor(s / 60); s -= m * 60;
-      if (h > 0) return `${h}h ${m}m`;
-      if (m > 0) return `${m}m ${s}s`;
-      return `${s}s`;
-    };
-
-    for (const p of allPairs) {
-      if (lines.length >= 10) break;
-      let m1 = msg.guild?.members.cache.get(p.a) || null;
-      let m2 = msg.guild?.members.cache.get(p.b) || null;
-      try { if (!m1) m1 = await msg.guild?.members.fetch(p.a).catch(() => null) || null; } catch {}
-      try { if (!m2) m2 = await msg.guild?.members.fetch(p.b).catch(() => null) || null; } catch {}
-      if (!m1 || !m2) continue;
-      if (m1.user.bot || m2.user.bot) continue;
-      lines.push(`${lines.length + 1}. <@${p.a}> + <@${p.b}> — ${fmt(p.ms)}`);
-    }
-
-    if (lines.length === 0) {
-      await msg.reply({ content: 'هیچ زوج غیر باتی یافت نشد.' });
-      return;
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle('top friends')
-      .setDescription(lines.join('\n'))
-      .setColor(0x2f3136);
-    await msg.reply({ embeds: [embed] });
-    return;
   }
 
   // .new — create room with join buttons (supports up to 4 concurrent sessions per channel)
