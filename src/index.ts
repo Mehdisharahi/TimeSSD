@@ -174,6 +174,11 @@ interface HokmSession {
   // surrender votes
   surrenderVotesTeam1?: Set<string>; // userIds who voted to surrender from team1
   surrenderVotesTeam2?: Set<string>; // userIds who voted to surrender from team2
+  // Kot and Hakem Kot tracking
+  kotTeam1?: number; // Count of Kot (7-0 win when hakim team) for Team 1
+  kotTeam2?: number; // Count of Kot for Team 2
+  hakemKotTeam1?: number; // Count of Hakem Kot (7-0 win when NOT hakim team) for Team 1
+  hakemKotTeam2?: number; // Count of Hakem Kot for Team 2
 }
 
 // ===== Bot Auto-Play =====
@@ -424,6 +429,12 @@ type HokmUserStat = {
   wins: number;
   teammateWins: Record<string, number>;
   hokmPicks: Partial<Record<Suit, number>>;
+  tricks?: number; // Total tricks won
+  sets?: number; // Total sets won
+  kot?: number; // Total Kot (7-0 win when hakim)
+  hakemKot?: number; // Total Hakem Kot (7-0 win when not hakim)
+  kotLose?: number; // Total Kot loses
+  hakemKotLose?: number; // Total Hakem Kot loses
 };
 const hokmStats: Map<string, Map<string, HokmUserStat>> = new Map();
 // Prefer env override, then Railway volume (/data), else project data/
@@ -463,7 +474,21 @@ function ensureUserStat(gId: string, uid: string): HokmUserStat {
   let g = hokmStats.get(gId);
   if (!g) { g = new Map(); hokmStats.set(gId, g); }
   let st = g.get(uid);
-  if (!st) { st = { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} }; g.set(uid, st); }
+  if (!st) { 
+    st = { 
+      games: 0, 
+      wins: 0, 
+      teammateWins: {}, 
+      hokmPicks: {},
+      tricks: 0,
+      sets: 0,
+      kot: 0,
+      hakemKot: 0,
+      kotLose: 0,
+      hakemKotLose: 0
+    }; 
+    g.set(uid, st); 
+  }
   return st;
 }
 function addHokmPick(gId: string, uid: string, suit: Suit) {
@@ -1321,11 +1346,34 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     const winnerTr = winnerTeam==='t1' ? t1Tr : t2Tr;
     const loserTr = winnerTeam==='t1' ? t2Tr : t1Tr;
     s.setsTeam1 = s.setsTeam1 || 0; s.setsTeam2 = s.setsTeam2 || 0;
+    
+    // Initialize Kot counters if they don't exist
+    s.kotTeam1 = s.kotTeam1 ?? 0;
+    s.kotTeam2 = s.kotTeam2 ?? 0;
+    s.hakemKotTeam1 = s.hakemKotTeam1 ?? 0;
+    s.hakemKotTeam2 = s.hakemKotTeam2 ?? 0;
+    
     let add = 1;
+    let isKot = false;
+    let isHakemKot = false;
+    
     if (winnerTr === 7 && loserTr === 0) {
       const hakimIsTeam1 = s.team1.includes(s.hakim!);
       const winnerIsHakimTeam = (winnerTeam==='t1' && hakimIsTeam1) || (winnerTeam==='t2' && !hakimIsTeam1);
-      add = winnerIsHakimTeam ? 2 : 3; // koot=2, hakim-koot=3
+      
+      if (winnerIsHakimTeam) {
+        add = 2; // Kot (hakim team wins 7-0) gets 2 sets
+        isKot = true;
+        // Increment Kot counter for winner team
+        if (winnerTeam === 't1') s.kotTeam1 += 1;
+        else s.kotTeam2 += 1;
+      } else {
+        add = 3; // Hakem Kot (non-hakim team wins 7-0) gets 3 sets
+        isHakemKot = true;
+        // Increment Hakem Kot counter for winner team
+        if (winnerTeam === 't1') s.hakemKotTeam1 += 1;
+        else s.hakemKotTeam2 += 1;
+      }
     }
     if (winnerTeam==='t1') s.setsTeam1 += add; else s.setsTeam2 += add;
     const targetSets = s.targetSets ?? 1;
@@ -1336,8 +1384,48 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
         const gId = s.guildId;
         const t1 = s.team1; const t2 = s.team2;
         const winners = (s.setsTeam1 ?? 0) >= targetSets ? t1 : t2;
-        for (const uid of [...t1, ...t2]) ensureUserStat(gId, uid).games += 1;
-        for (const uid of winners) ensureUserStat(gId, uid).wins += 1;
+        const losers = winners === t1 ? t2 : t1;
+        
+        // Update basic game stats
+        for (const uid of [...t1, ...t2]) {
+          const stat = ensureUserStat(gId, uid);
+          stat.games = (stat.games || 0) + 1;
+          
+          // Add trick counts to player stats
+          const playerTricks = s.tricksByPlayer?.get(uid) || 0;
+          stat.tricks = (stat.tricks || 0) + playerTricks;
+          
+          // Add set count for winner teams
+          if (winners.includes(uid)) {
+            // Win count
+            stat.wins = (stat.wins || 0) + 1;
+            
+            // Sets count (one player gets all the sets from their team)
+            const setCount = winners === t1 ? (s.setsTeam1 || 0) : (s.setsTeam2 || 0);
+            stat.sets = (stat.sets || 0) + setCount;
+            
+            // Kot and Hakem Kot for winners
+            const userTeam = t1.includes(uid) ? 't1' : 't2';
+            if (userTeam === 't1') {
+              if (s.kotTeam1 && s.kotTeam1 > 0) stat.kot = (stat.kot || 0) + s.kotTeam1;
+              if (s.hakemKotTeam1 && s.hakemKotTeam1 > 0) stat.hakemKot = (stat.hakemKot || 0) + s.hakemKotTeam1;
+            } else {
+              if (s.kotTeam2 && s.kotTeam2 > 0) stat.kot = (stat.kot || 0) + s.kotTeam2;
+              if (s.hakemKotTeam2 && s.hakemKotTeam2 > 0) stat.hakemKot = (stat.hakemKot || 0) + s.hakemKotTeam2;
+            }
+          } else {
+            // Kot and Hakem Kot loss tracking for losers
+            const userTeam = t1.includes(uid) ? 't1' : 't2';
+            if (userTeam === 't1') {
+              if (s.kotTeam2 && s.kotTeam2 > 0) stat.kotLose = (stat.kotLose || 0) + s.kotTeam2;
+              if (s.hakemKotTeam2 && s.hakemKotTeam2 > 0) stat.hakemKotLose = (stat.hakemKotLose || 0) + s.hakemKotTeam2;
+            } else {
+              if (s.kotTeam1 && s.kotTeam1 > 0) stat.kotLose = (stat.kotLose || 0) + s.kotTeam1;
+              if (s.hakemKotTeam1 && s.hakemKotTeam1 > 0) stat.hakemKotLose = (stat.hakemKotLose || 0) + s.hakemKotTeam1;
+            }
+          }
+        }
+        
         // teammate wins (per team, +1 for both teammates)
         if (winners.length === 2) {
           const [a,b] = winners;
@@ -1345,21 +1433,58 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
           ensureUserStat(gId, b).teammateWins[a] = (ensureUserStat(gId, b).teammateWins[a] || 0) + 1;
         }
         saveHokmStats();
-      } catch {}
+      } catch (error) {
+        console.error('[STATS ERROR]', error);
+      }
       if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
       // result embed
       if (gameChannel) {
         const t1Set = s.setsTeam1 ?? 0; const t2Set = s.setsTeam2 ?? 0;
         const starter = s.ownerId ? `<@${s.ownerId}>` : '—';
         const lines: string[] = [];
+        
+        // Get trick counts for each player
+        const playerTricks: Record<string, number> = {};
+        for (const [uid, tricks] of s.tricksByPlayer?.entries() ?? []) {
+          playerTricks[uid] = tricks;
+        }
+        
+        // Header info
         lines.push(`### ✹Starter: ${starter}`);
         lines.push(`### ✹Sets: ${s.targetSets ?? 1}`);
         lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+        
+        // Team 1 info
         lines.push(`### ✹Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ➤ ${t1Set}`);
-        lines.push('════════════════════');
+        lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
+        
+        // Individual player tricks for Team 1
+        for (const uid of s.team1) {
+          lines.push(`### 🂡 <@${uid}> Trick ➩ ${playerTricks[uid] || 0}`);
+        }
+        
+        // Team 1 Kot stats
+        lines.push(`### ★ Kot ➩ ${s.kotTeam1 || 0}`);
+        lines.push(`### ♛ Hakem Kot ➩ ${s.hakemKotTeam1 || 0}`);
+        lines.push('### ════════════════════');
+        
+        // Team 2 info
         lines.push(`### ✹Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ➤ ${t2Set}`);
+        lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
+        
+        // Individual player tricks for Team 2
+        for (const uid of s.team2) {
+          lines.push(`### 🂡 <@${uid}> Trick ➩ ${playerTricks[uid] || 0}`);
+        }
+        
+        // Team 2 Kot stats
+        lines.push(`### ★ Kot ➩ ${s.kotTeam2 || 0}`);
+        lines.push(`### ♛ Hakem Kot ➩ ${s.hakemKotTeam2 || 0}`);
         lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+        
+        // Winner info
         lines.push(`### ✹Winner: Team ${t1Set>t2Set?1:2} ✅`);
+        
         const emb = new EmbedBuilder().setDescription(lines.join('\n')).setColor(t1Set>t2Set?0x3b82f6:0xef4444);
         await gameChannel.send({ embeds: [emb] });
       }
@@ -1453,7 +1578,12 @@ function createNewSession(gId: string, cId: string, ownerId?: string): HokmSessi
     deck: [], 
     hands: new Map(), 
     state: 'waiting', 
-    tricksByPlayer: new Map() 
+    tricksByPlayer: new Map(),
+    // Initialize Kot and Hakem Kot counters
+    kotTeam1: 0,
+    kotTeam2: 0,
+    hakemKotTeam1: 0,
+    hakemKotTeam2: 0
   };
   const k = keyGCS(gId, cId, sessionId);
   hokmSessions.set(k, s);
@@ -2933,13 +3063,24 @@ client.on('messageCreate', async (msg: Message) => {
       : [];
     const favText = favArray.length > 0 ? favArray.join(' ') : '—';
     const lines: string[] = [];
-    lines.push(`## ✵ <@${targetId}> Stats:`);
-    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push(`## ✕ <@${targetId}> Stats:`);
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
     lines.push(`### ▶︎ Games : ${st.games||0}`);
-    lines.push(`### 💫 WIN: ${st.wins||0}`);
-    lines.push(`### 🫂 Best Teamate: ${mateText}`);
-    lines.push(`### 🃏 Favorite hokm: ${favText}`);
-    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push(`### 🜛 WIN: ${st.wins||0}`);
+    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
+    lines.push(`### 🏁 Trick: ${st.tricks || 0}`);
+    lines.push(`### 🏢 Set: ${st.sets || 0}`);
+    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
+    lines.push(`### ⭐ Kot: ${st.kot || 0}`);
+    lines.push(`### ❌ Kot Lose: ${st.kotLose || 0}`);
+    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
+    lines.push(`### 💎 Hakem Kot: ${st.hakemKot || 0}`);
+    lines.push(`### ☠️ HakemKot Lose: ${st.hakemKotLose || 0}`);
+    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
+    lines.push(`### 🤭 Best Teamate: ${mateText}`);
+    lines.push(`### 🏹 Favorite hokm: ${favText}`);
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    
     const embedBaz = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
     await msg.reply({ embeds: [embedBaz] });
     return;
@@ -3418,6 +3559,11 @@ client.on('messageCreate', async (msg: Message) => {
     s.tricksTeam2 = 0;
     s.setsTeam1 = 0;
     s.setsTeam2 = 0;
+    // Reset Kot and Hakem Kot counters
+    s.kotTeam1 = 0;
+    s.kotTeam2 = 0;
+    s.hakemKotTeam1 = 0;
+    s.hakemKotTeam2 = 0;
     // Reset target sets/tricks to allow reconfiguration
     s.targetSets = undefined;
     s.targetTricks = undefined;
