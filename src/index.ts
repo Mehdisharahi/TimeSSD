@@ -1450,40 +1450,40 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
         }
         
         // Header info
-        lines.push(`### ✹Starter: ${starter}`);
-        lines.push(`### ✹Sets: ${s.targetSets ?? 1}`);
+        lines.push(`### 🏁 Starter: ${starter}`);
+        lines.push(`### 🎯 Sets: ${s.targetSets ?? 1}`);
         lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
         
         // Team 1 info
-        lines.push(`### ✹Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ➤ ${t1Set}`);
+        lines.push(`### 👥 Team 1: ${s.team1.map(u=>`<@${u}>`).join(' , ')} ➤ ${t1Set}`);
         lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
         
         // Individual player tricks for Team 1
         for (const uid of s.team1) {
-          lines.push(`### 🂡 <@${uid}> Trick ➩ ${playerTricks[uid] || 0}`);
+          lines.push(`### 🎴 <@${uid}> Trick ➩ ${playerTricks[uid] || 0}`);
         }
         
         // Team 1 Kot stats
-        lines.push(`### ★ Kot ➩ ${s.kotTeam1 || 0}`);
-        lines.push(`### ♛ Hakem Kot ➩ ${s.hakemKotTeam1 || 0}`);
+        lines.push(`### ⭐ Kot ➩ ${s.kotTeam1 || 0}`);
+        lines.push(`### 💎 Hakem Kot ➩ ${s.hakemKotTeam1 || 0}`);
         lines.push('### ════════════════════');
         
         // Team 2 info
-        lines.push(`### ✹Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ➤ ${t2Set}`);
+        lines.push(`### 👥 Team 2: ${s.team2.map(u=>`<@${u}>`).join(' , ')} ➤ ${t2Set}`);
         lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
         
         // Individual player tricks for Team 2
         for (const uid of s.team2) {
-          lines.push(`### 🂡 <@${uid}> Trick ➩ ${playerTricks[uid] || 0}`);
+          lines.push(`### 🎴 <@${uid}> Trick ➩ ${playerTricks[uid] || 0}`);
         }
         
         // Team 2 Kot stats
-        lines.push(`### ★ Kot ➩ ${s.kotTeam2 || 0}`);
-        lines.push(`### ♛ Hakem Kot ➩ ${s.hakemKotTeam2 || 0}`);
+        lines.push(`### ⭐ Kot ➩ ${s.kotTeam2 || 0}`);
+        lines.push(`### 💎 Hakem Kot ➩ ${s.hakemKotTeam2 || 0}`);
         lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
         
         // Winner info
-        lines.push(`### ✹Winner: Team ${t1Set>t2Set?1:2} ✅`);
+        lines.push(`### ✅ Winner: Team ${t1Set>t2Set?1:2} ✅`);
         
         const emb = new EmbedBuilder().setDescription(lines.join('\n')).setColor(t1Set>t2Set?0x3b82f6:0xef4444);
         await gameChannel.send({ embeds: [emb] });
@@ -3026,7 +3026,7 @@ client.on('messageCreate', async (msg: Message) => {
     for (const [uid, st] of arr) {
       idx++;
       const rank = String(idx).padStart(2, '0');
-      lines.push(`### ➡ ${rank} - <@${uid}> ▶︎Games : ${st.games||0} 💫WIN: ${st.wins||0}`);
+      lines.push(`### ➡ ${rank} - <@${uid}> 🎮Games : ${st.games||0} 💫WIN: ${st.wins||0}`);
     }
     lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
     const embedBest = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
