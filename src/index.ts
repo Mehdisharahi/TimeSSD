@@ -3126,14 +3126,14 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .r — owner removes a user from teams
-  if (isCmd('r') || isCmd('حذف')) {
+  // .rem — owner removes a user from teams
+  if (isCmd('rem') || isCmd('ح')) {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (s.state !== 'waiting') { await msg.reply('فقط قبل از شروع بازی قابل انجام است.'); return; }
     if (s.ownerId && msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند اعضا را حذف کند.'); return; }
-    // special: remove virtual bots with `.r bot`
-    const rawArg = content.slice(content.startsWith('.حذف') ? 5 : 2);
+    // special: remove virtual bots with `.rem bot`
+    const rawArg = content.slice(content.startsWith('.ح') ? 3 : 4);
     if (/^\s*bot/i.test(rawArg)) {
       const before1 = [...s.team1];
       const before2 = [...s.team2];
@@ -3149,8 +3149,8 @@ client.on('messageCreate', async (msg: Message) => {
       setTimeout(()=>replyMsg.delete().catch(()=>{}), 2500);
       return;
     }
-    const targets = await resolveTargetIds(msg, content, content.startsWith('.حذف') ? '.حذف' : '.r');
-    if (targets.length === 0) { await msg.reply('استفاده: `.r @user1 @user2` یا ریپلای/آیدی'); return; }
+    const targets = await resolveTargetIds(msg, content, content.startsWith('.ح') ? '.ح' : '.rem');
+    if (targets.length === 0) { await msg.reply('استفاده: `.rem @user1 @user2` یا ریپلای/آیدی'); return; }
     const removed: string[] = []; const notIn: string[] = [];
     for (const uid of targets) {
       const inAny = s.team1.includes(uid) || s.team2.includes(uid);
@@ -3524,7 +3524,7 @@ client.on('messageCreate', async (msg: Message) => {
       `\`.hokm\` \`.new\` \`.حکم\` → ساخت اتاق بازی جدید\n` +
       `\`.list\` → نمایش لیست/وضعیت\n` +
       `\`.end\` → پایان بازی\n` +
-      `\`.حذف\` \`.r\` → حذف بازیکن\n` +
+      `\`.ح\` \`.r\` → حذف بازیکن\n` +
       `\`.اضافه1\` \`.a1\` → افزودن به تیم ۱\n` +
       `\`.اضافه2\` \`.a2\` → افزودن به تیم ۲\n` +
       `\`.ریست\` \`.reset\` → ریست بازی\n` +
@@ -3563,7 +3563,7 @@ client.on('messageCreate', async (msg: Message) => {
       `\`.new\` ⟹ ساخت اتاق بازی جدید\n` +
       `\`.a1 @user\` ⟹ افزودن به تیم ۱\n` +
       `\`.a2 @user\` ⟹ افزودن به تیم ۲\n` +
-      `\`.r @user\` ⟹ حذف از تیم‌ها\n` +
+      `\.rem @user\` ⟹ حذف از تیم‌ها\n` +
       `\`.reset\` ⟹ ریست بازی با همان تیم‌ها\n` +
       `\`.end\` ⟹ پایان و حذف اتاق\n` +
       `\`.list\` ⟹ نمایش لیست/وضعیت\n` +
