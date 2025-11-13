@@ -625,34 +625,14 @@ function buildHandButtons(s: HokmSession, userId: string, opts?: { filter?: Suit
 }
 
 async function refreshPlayerDM(ctx: { client: Client }, s: HokmSession, userId: string) {
-  try {
-    const user = await ctx.client.users.fetch(userId);
-    const dm = await user.createDM(true);
-    const stateKey = `__hokm_dm_state_${s.guildId}:${s.channelId}:${s.sessionId}:${userId}` as any;
-    const prev = (global as any)[stateKey] as { filter?: string; page?: number } | undefined;
-    const filter = (prev?.filter as any) || 'ALL';
-    const page = prev?.page || 0;
-    const { rows, meta } = buildHandButtons(s, userId, { filter: filter as any, page });
-    (global as any)[stateKey] = { filter: meta.filter, page: meta.page };
-    const content = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:''} — ${userId===s.order[s.turnIndex??0]?'نوبت شماست.':'منتظر نوبت بمانید.'}\nدست شما:\n${handToString(s.hands.get(userId) || [])}`;
-    const msgId = s.playerDMMsgIds?.get(userId);
-    if (msgId) {
-      const m = await dm.messages.fetch(msgId).catch(()=>null);
-      if (m) { await m.edit({ content, components: rows }); return; }
-    }
-    const sent = await dm.send({ content, components: rows });
-    s.playerDMMsgIds = s.playerDMMsgIds || new Map<string,string>();
-    s.playerDMMsgIds.set(userId, sent.id);
-  } catch {}
+  // تابع خالی - دیگر هیچ پیام خصوصی ارسال نمی‌شود
+  return;
 }
 
 async function refreshAllDMs(ctx: { client: Client }, s: HokmSession) {
-  // Only refresh DMs for human players, skip bots
-  const humanPlayers = s.order.filter(uid => !isVirtualBot(uid));
-  // Refresh in parallel for better performance
-  await Promise.all(humanPlayers.map(uid => refreshPlayerDM(ctx, s, uid).catch(err => {
-    console.error(`[DM ERROR] Failed to refresh DM for ${uid}:`, err);
-  })));
+  // تابع غیرفعال شده - هیچ پیام خصوصی ارسال نمی‌شود
+  // ما تصمیم گرفتیم پیام‌های خصوصی را برای بهبود تجربه کاربری حذف کنیم
+  return;
 }
 
 function clearHandOrderCache(s: HokmSession) {
@@ -1539,7 +1519,6 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
     give(s.hakim, 5);
     s.state = 'choosing_hokm';
-    try { const user = await (interaction.client as Client).users.fetch(s.hakim); await user.send({ content: `ست جدید شروع شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
     if (gameChannel) {
       const announceMsg = await gameChannel.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
       s.newSetAnnounceMsgId = announceMsg.id;
@@ -2321,7 +2300,6 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       
       await interaction.update({ content: `بازی با ${numSets} ست شروع شد!`, components: [] });
       
-      try { const user = await interaction.client.users.fetch(s.hakim); await user.send({ content: `ست جدید شروع شد. دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim)!)}` }); } catch {}
       try {
         const chAny = interaction.channel as any;
         if (chAny && chAny.send) {
@@ -2553,11 +2531,6 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
         give(s.hakim!, 5);
         s.state = 'choosing_hokm';
-        
-        try { 
-          const user = await (interaction.client as Client).users.fetch(s.hakim!); 
-          await user.send({ content: `ست جدید شروع شد (تسلیم حریف). دست اولیه شما (۵ کارت):\n${handToString(s.hands.get(s.hakim!)!)}` }); 
-        } catch {}
         
         const announceMsg = await (interaction.channel as any).send({ content: `تیم ${userTeam} تسلیم کرد. ست جدید آغاز شد. حاکم: <@${s.hakim!}> — لطفاً حکم را انتخاب کن.` });
         s.newSetAnnounceMsgId = announceMsg.id;
@@ -3498,14 +3471,6 @@ client.on('messageCreate', async (msg: Message) => {
       if (!isVirtualBot(replacementId)) {
         const orderKey = `__hokm_card_order_${s.guildId}:${s.channelId}:${replacementId}`;
         delete (global as any)[orderKey];
-        
-        // Notify new player if they're human
-        try {
-          const newUser = await msg.client.users.fetch(replacementId);
-          const handStr = handToString(hand);
-          const oldName = isVirtualBot(inGameId) ? inGameId.replace('BOT', 'Bot') : `<@${inGameId}>`;
-          await newUser.send({ content: `شما به بازی اضافه شدید و جایگزین ${oldName} شدید.\nدست شما:\n${handStr}` });
-        } catch {}
       }
     }
     
@@ -3523,10 +3488,6 @@ client.on('messageCreate', async (msg: Message) => {
     if (s.state !== 'waiting') {
       try { 
         await refreshTableEmbed({ channel: msg.channel }, s); 
-        if (!isVirtualBot(replacementId)) {
-          await refreshAllDMs({ client: msg.client as Client }, s);
-        }
-        
         // Trigger bot auto-play if it's now bot's turn
         if (s.state === 'playing') {
           await maybeBotAutoPlay(msg.client as Client, s);
