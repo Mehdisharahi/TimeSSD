@@ -1450,7 +1450,7 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
         }
         
         // Header info
-        lines.push(`### 🏁 Starter: ${starter}`);
+        lines.push(`### 🚩 Starter: ${starter}`);
         lines.push(`### 🎯 Sets: ${s.targetSets ?? 1}`);
         lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
         
