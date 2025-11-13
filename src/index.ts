@@ -179,6 +179,8 @@ interface HokmSession {
   kotTeam2?: number; // Count of Kot for Team 2
   hakemKotTeam1?: number; // Count of Hakem Kot (7-0 win when NOT hakim team) for Team 1
   hakemKotTeam2?: number; // Count of Hakem Kot for Team 2
+  // Total tricks across all sets
+  allTricksByPlayer?: Map<string, number>; // userId -> total tricks across all sets
 }
 
 // ===== Bot Auto-Play =====
@@ -1329,9 +1331,14 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
   const winnerUserId = s.order[winnerTurnIndex];
   const team = s.team1.includes(winnerUserId) ? 't1' : 't2';
   if (team==='t1') s.tricksTeam1 = (s.tricksTeam1||0)+1; else s.tricksTeam2 = (s.tricksTeam2||0)+1;
-  // per-player trick counter
+  // per-player trick counter for current set
   if (!s.tricksByPlayer) s.tricksByPlayer = new Map();
   s.tricksByPlayer.set(winnerUserId, (s.tricksByPlayer.get(winnerUserId) || 0) + 1);
+  
+  // per-player trick counter for all sets
+  if (!s.allTricksByPlayer) s.allTricksByPlayer = new Map();
+  s.allTricksByPlayer.set(winnerUserId, (s.allTricksByPlayer.get(winnerUserId) || 0) + 1);
+  
   // store last trick and set next trick
   s.lastTrick = (s.table || []).slice(0, 4);
   s.leaderIndex = winnerTurnIndex; s.turnIndex = winnerTurnIndex; s.table = []; s.leadSuit = null;
@@ -1391,8 +1398,8 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
           const stat = ensureUserStat(gId, uid);
           stat.games = (stat.games || 0) + 1;
           
-          // Add trick counts to player stats
-          const playerTricks = s.tricksByPlayer?.get(uid) || 0;
+          // Add trick counts to player stats - use allTricksByPlayer which contains tricks across all sets
+          const playerTricks = s.allTricksByPlayer?.get(uid) || 0;
           stat.tricks = (stat.tricks || 0) + playerTricks;
           
           // Add set count for winner teams
@@ -1443,9 +1450,9 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
         const starter = s.ownerId ? `<@${s.ownerId}>` : '—';
         const lines: string[] = [];
         
-        // Get trick counts for each player
+        // Get trick counts for each player across all sets
         const playerTricks: Record<string, number> = {};
-        for (const [uid, tricks] of s.tricksByPlayer?.entries() ?? []) {
+        for (const [uid, tricks] of s.allTricksByPlayer?.entries() ?? []) {
           playerTricks[uid] = tricks;
         }
         
@@ -1502,8 +1509,18 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     s.tricksTeam1 = 0; 
     s.tricksTeam2 = 0; 
     s.lastTrick = undefined;
+    
+    // Reset tricks for current set, but keep cumulative tricks for all sets
     s.tricksByPlayer = new Map(); 
     s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
+    
+    // Make sure allTricksByPlayer is initialized (shouldn't be necessary but adding as a safety check)
+    if (!s.allTricksByPlayer) {
+      s.allTricksByPlayer = new Map();
+      // Initialize with current tricksByPlayer values if needed
+      s.order.forEach(u => s.allTricksByPlayer!.set(u, 0));
+    }
+    
     s.turnIndex = undefined;
     s.leaderIndex = undefined;
     
@@ -1583,7 +1600,9 @@ function createNewSession(gId: string, cId: string, ownerId?: string): HokmSessi
     kotTeam1: 0,
     kotTeam2: 0,
     hakemKotTeam1: 0,
-    hakemKotTeam2: 0
+    hakemKotTeam2: 0,
+    // Initialize total tricks counter
+    allTricksByPlayer: new Map()
   };
   const k = keyGCS(gId, cId, sessionId);
   hokmSessions.set(k, s);
@@ -2290,6 +2309,11 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       s.hakim = s.order[Math.floor(Math.random() * s.order.length)];
       s.deck = shuffle(makeDeck());
       s.hands.clear(); s.order.forEach(u=>s.hands.set(u, []));
+      
+      // Initialize allTricksByPlayer for the game
+      s.allTricksByPlayer = new Map();
+      s.order.forEach(u => s.allTricksByPlayer!.set(u, 0));
+      
       clearHandOrderCache(s); // Clear cached suit order for new game
       const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
       give(s.hakim, 5);
@@ -3446,6 +3470,20 @@ client.on('messageCreate', async (msg: Message) => {
       s.hands.delete(inGameId);
       s.hands.set(replacementId, hand);
       
+      // Transfer tricksByPlayer for current set
+      if (s.tricksByPlayer) {
+        const currentTricks = s.tricksByPlayer.get(inGameId) || 0;
+        s.tricksByPlayer.delete(inGameId);
+        s.tricksByPlayer.set(replacementId, currentTricks);
+      }
+      
+      // Transfer allTricksByPlayer (accumulated tricks across all sets)
+      if (s.allTricksByPlayer) {
+        const allTricks = s.allTricksByPlayer.get(inGameId) || 0;
+        s.allTricksByPlayer.delete(inGameId);
+        s.allTricksByPlayer.set(replacementId, allTricks);
+      }
+      
       // If old player was hakim, transfer to new player
       if (s.hakim === inGameId) {
         s.hakim = replacementId;
@@ -3568,6 +3606,8 @@ client.on('messageCreate', async (msg: Message) => {
     s.targetSets = undefined;
     s.targetTricks = undefined;
     s.tricksByPlayer = new Map();
+    // Reset allTricksByPlayer since this is a complete game reset
+    s.allTricksByPlayer = new Map();
     s.lastTrick = undefined;
     s.surrenderVotesTeam1 = new Set();
     s.surrenderVotesTeam2 = new Set();
