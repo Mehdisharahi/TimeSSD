@@ -73,8 +73,59 @@ async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSessio
   if (channel) await refreshTableEmbed({ channel }, s);
   await maybeBotAutoPlay(client, s);
 }
+
+function displayTable(s: HokmSession, channel: any) {
+  // بررسی مقادیر undefined در سطرهای اولیه تابع
+  if (!s.hokm || s.turnIndex === undefined || !s.order || !s.order[s.turnIndex]) {
+    console.warn('[TABLE] Invalid session state for displayTable', {
+      hasSuit: !!s.hokm, 
+      turnIndex: s.turnIndex,
+      hasOrder: !!s.order,
+      playerCount: s.order?.length
+    });
+    return;
   }
-} catch {}
+  
+  const suitEmoji = s.hokm ? SUIT_EMOJI[s.hokm] : '?';
+  const playerMention = `<@${s.order[s.turnIndex]}>`;
+  
+  const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
+    .setDescription(`حکم: ${suitEmoji} — نوبت: ${playerMention}`);
+  
+  try {
+    if (s.tableMsgId && channel) {
+      try {
+        const m = await channel.messages.fetch(s.tableMsgId).catch(() => null);
+        if (m) {
+          await m.edit({ embeds: [tableEmbed] }).catch((err: any) => {
+            if (err?.code === 10008) { // Unknown Message
+              console.log('[TABLE] Clearing invalid tableMsgId');
+              s.tableMsgId = undefined;
+            } else {
+              console.warn(`[TABLE] Edit error: ${err?.code || err?.message || 'Unknown error'}`);
+            }
+          });
+        } else {
+          // پیام یافت نشد
+          s.tableMsgId = undefined;
+        }
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : 'Unknown error';
+        const errCode = (err as any)?.code;
+        console.warn(`[TABLE] Error fetching message: ${errCode || errMsg}`);
+        if (errCode === 10008) { // Unknown Message
+          s.tableMsgId = undefined;
+        }
+      }
+    }
+  } catch (err: unknown) {
+    console.error('[TABLE] General error in displayTable:', err);
+    // در صورت خطای کلی، شناسه پیام را پاک می‌کنیم
+    s.tableMsgId = undefined;
+  }
+  if (channel) await refreshTableEmbed({ channel }, s);
+  await maybeBotAutoPlay(client, s);
+}
 
 // ===== Hokm Phase 1 state =====
 type Suit = 'S' | 'H' | 'D' | 'C';
@@ -380,49 +431,6 @@ async function maybeBotAutoPlay(client: Client, s: HokmSession) {
       console.error('[BOT ERROR] Exception in maybeBotAutoPlay:', err);
     }
   }, 300); // Faster bot response
-}
-
-// Bot hakim chooses hokm (trump) based on the initial 5-card hand).
-function botPickHokm(s: HokmSession): Suit {
-  const hand = s.hands.get(s.hakim!) || [];
-  const score: Record<Suit, number> = { S:0, H:0, D:0, C:0 };
-  const count: Record<Suit, number> = { S:0, H:0, D:0, C:0 };
-  for (const c of hand) {
-    count[c.s] += 1;
-    const rw = c.r>=14?5 : c.r===13?4 : c.r===12?3 : c.r===11?2 : c.r/14;
-    score[c.s] += rw;
-  }
-  const suits: Suit[] = ['S','H','D','C'];
-  suits.sort((a,b)=> count[b]-count[a] || score[b]-score[a]);
-  return suits[0];
-}
-
-async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSession) {
-  if (!s.hakim) return;
-  const suit = botPickHokm(s);
-  s.hokm = suit;
-  try { addHokmPick(s.guildId, s.hakim!, suit); saveHokmStats(); } catch {}
-  const give = (u: string, n: number)=>{ const h = s.hands.get(u)!; for(let i=0;i<n;i++) h.push(s.deck.pop()!); };
-  for (const uid of s.order) {
-    const need = 13 - (s.hands.get(uid)?.length || 0);
-    give(uid, need);
-  }
-  s.state = 'playing';
-  s.leaderIndex = s.order.indexOf(s.hakim); if (s.leaderIndex < 0) s.leaderIndex = 0;
-  s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
-  s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
-  const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
-    .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>`);
-  try {
-    if (s.tableMsgId && channel?.messages?.fetch) {
-      const m = await channel.messages.fetch(s.tableMsgId).catch(()=>null);
-      if (m) await m.edit({ embeds: [tableEmbed] });
-    }
-  } catch {}
-  // Schedule announce message deletion after 2.5 seconds
-  await scheduleAnnounceMessageDeletion(channel, s);
-  if (channel) await refreshTableEmbed({ channel }, s);
-  await maybeBotAutoPlay(client, s);
 }
 
 // ===== Hokm Stats =====
@@ -1264,14 +1272,48 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
       embed.setDescription(`حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.`);
       rows.push(chooseRow);
     }
+    
+    // اگر پیام قبلی وجود دارد، سعی کنید آن را به‌روزرسانی کنید
     if (s.tableMsgId) {
-      const m = await ctx.channel.messages.fetch(s.tableMsgId).catch(()=>null);
-      if (m) { await m.edit({ embeds: [embed], components: rows, files: [attachment] }); return; }
+      try {
+        const m = await ctx.channel.messages.fetch(s.tableMsgId).catch(()=>null);
+        if (m) { 
+          await m.edit({ embeds: [embed], components: rows, files: [attachment] }).catch((e: any) => {
+            console.warn(`[TABLE WARNING] Failed to edit message: ${e?.code || e?.message || 'Unknown error'}`);
+            throw e; // رها کردن برای ایجاد پیام جدید
+          }); 
+          return; 
+        } else {
+          // پیام یافت نشد، پاکسازی شناسه قبلی
+          console.log(`[TABLE INFO] Message with ID ${s.tableMsgId} not found, creating new one`);
+          s.tableMsgId = undefined;
+        }
+      } catch (editErr: unknown) {
+        // خطا در ویرایش، احتمالاً پیام حذف شده - ایجاد جدید
+        const errMsg = editErr instanceof Error ? editErr.message : 'Unknown error';
+        const errCode = (editErr as any)?.code;
+        console.warn(`[TABLE WARNING] Error editing message: ${errCode || errMsg}`);
+        s.tableMsgId = undefined;
+      }
     }
-    const sent = await ctx.channel.send({ embeds: [embed], components: rows, files: [attachment] });
-    s.tableMsgId = sent.id;
-  } catch (err) {
+    
+    // ایجاد پیام جدید
+    try {
+      const sent = await ctx.channel.send({ embeds: [embed], components: rows, files: [attachment] });
+      s.tableMsgId = sent.id;
+    } catch (sendErr: unknown) {
+      const errMsg = sendErr instanceof Error ? sendErr.message : 'Unknown error';
+      const errCode = (sendErr as any)?.code;
+      console.error(`[TABLE ERROR] Failed to send new table message: ${errCode || errMsg}`);
+    }
+  } catch (err: unknown) {
+    // در صورت خطای کلی، شناسه پیام را پاک می‌کنیم تا دفعه بعد دوباره تلاش شود
     console.error('[TABLE ERROR] Failed to refresh table embed:', err);
+    const errCode = (err as any)?.code;
+    if (errCode === 10008) { // Unknown Message
+      s.tableMsgId = undefined;
+      console.log('[TABLE RECOVERY] Cleared tableMsgId due to Unknown Message error');
+    }
     // Don't throw - just log and continue
   }
 }
@@ -2886,6 +2928,40 @@ function toMathSansSerifBold(text: string): string {
   return text.split('').map(char => mathSansSerifBoldMap[char] || char).join('');
 }
 
+// Helper function to save current voice session times to the database
+async function saveCurrent(guildId: string) {
+  try {
+    const pMap = pairStarts.get(guildId);
+    if (!pMap || pMap.size === 0) return;
+    
+    const now = Date.now();
+    let count = 0;
+    
+    // For each active session
+    for (const [key, start] of pMap.entries()) {
+      const parts = key.split(':');
+      if (parts.length < 3) continue;
+      
+      const a = parts[0];
+      const b = parts[1];
+      const deltaMs = now - start;
+      
+      if (deltaMs > 0) {
+        await addDuration(guildId, a, b, deltaMs);
+        count++;
+        // Update start time to now
+        pMap.set(key, now);
+      }
+    }
+    
+    if (count > 0) {
+      console.log(`[FRIEND DATA] Saved ${count} current sessions for guild ${guildId}`);
+    }
+  } catch (err) {
+    console.error(`[FRIEND DATA] Error saving current sessions for guild ${guildId}:`, err);
+  }
+}
+
 // Dot-prefix command: .t <duration> [reason]
 client.on('messageCreate', async (msg: Message) => {
   if (!msg.inGuild()) return;
@@ -3369,40 +3445,6 @@ client.on('messageCreate', async (msg: Message) => {
       await msg.reply({ content: 'خطایی در محاسبه آمار دوستان روی داد. لطفا دوباره تلاش کنید.' });
     }
     return;
-  }
-  
-  // Helper to save current session times to the database
-  async function saveCurrent(guildId: string) {
-    try {
-      const pMap = pairStarts.get(guildId);
-      if (!pMap || pMap.size === 0) return;
-      
-      const now = Date.now();
-      let count = 0;
-      
-      // For each active session
-      for (const [key, start] of pMap.entries()) {
-        const parts = key.split(':');
-        if (parts.length < 3) continue;
-        
-        const a = parts[0];
-        const b = parts[1];
-        const deltaMs = now - start;
-        
-        if (deltaMs > 0) {
-          await addDuration(guildId, a, b, deltaMs);
-          count++;
-          // Update start time to now
-          pMap.set(key, now);
-        }
-      }
-      
-      if (count > 0) {
-        console.log(`[FRIEND DATA] Saved ${count} current sessions for guild ${guildId}`);
-      }
-    } catch (err) {
-      console.error(`[FRIEND DATA] Error saving current sessions for guild ${guildId}:`, err);
-    }
   }
 
   // .new — create room with join buttons (supports up to 4 concurrent sessions per channel)
@@ -3952,7 +3994,7 @@ client.on('messageCreate', async (msg: Message) => {
       `\`.new\` ⟹ ساخت اتاق بازی جدید\n` +
       `\`.a1 @user\` ⟹ افزودن به تیم ۱\n` +
       `\`.a2 @user\` ⟹ افزودن به تیم ۲\n` +
-      `\.rem @user\` ⟹ حذف از تیم‌ها\n` +
+      `\`.rem @user\` ⟹ حذف از تیم‌ها\n` +
       `\`.reset\` ⟹ ریست بازی با همان تیم‌ها\n` +
       `\`.end\` ⟹ پایان و حذف اتاق\n` +
       `\`.list\` ⟹ نمایش لیست/وضعیت\n` +
