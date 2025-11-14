@@ -28,6 +28,8 @@ try {
       emojiFontAvailable = true;
       break;
     }
+  }
+} catch {}
 
 // Bot hakim chooses hokm (trump) based on the initial 5-card hand.
 function botPickHokm(s: HokmSession): Suit {
@@ -74,7 +76,7 @@ async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSessio
   await maybeBotAutoPlay(client, s);
 }
 
-function displayTable(s: HokmSession, channel: any) {
+async function displayTable(s: HokmSession, channel: any) {
   // بررسی مقادیر undefined در سطرهای اولیه تابع
   if (!s.hokm || s.turnIndex === undefined || !s.order || !s.order[s.turnIndex]) {
     console.warn('[TABLE] Invalid session state for displayTable', {
