@@ -5063,6 +5063,157 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  // .payam <duration> <serverId> — list messages in a server within a timeframe (owner only)
+  if (isCmd('payam')) {
+    if (msg.author.id !== ownerId) {
+      return;
+    }
+    
+    const arg = content.slice(6).trim();
+    if (!arg) {
+      await msg.reply({ content: 'استفاده: `.payam <duration> <serverId>` مثلا: `.payam 48h 1374041823793774662`' });
+      return;
+    }
+    
+    // Parse arguments: duration serverId
+    const parts = arg.split(/\s+/);
+    if (parts.length !== 2) {
+      await msg.reply({ content: 'استفاده: `.payam <duration> <serverId>` مثلا: `.payam 48h 1374041823793774662`' });
+      return;
+    }
+    
+    const durationStr = parts[0];
+    const serverId = parts[1];
+    
+    // Parse duration
+    const duration = parseDuration(durationStr);
+    if (!duration || duration < 1000) {
+      await msg.reply({ content: 'فرمت مدت زمان نامعتبر. نمونه: 48h, 7d, 120m, 3600s' });
+      return;
+    }
+    
+    try {
+      // Try to fetch the guild
+      let guild: any = null;
+      try {
+        guild = await msg.client.guilds.fetch(serverId);
+      } catch (err) {
+        await msg.reply({ content: `❌ سرور با آیدی ${serverId} یافت نشد یا بات در آن حضور ندارد.` });
+        return;
+      }
+      
+      const statusMsg = await msg.reply({ content: `⏳ در حال جمع‌آوری پیام‌های سرور **${guild.name}** در ${durationStr} گذشته...` });
+      
+      // Calculate cutoff time
+      const now = Date.now();
+      const cutoff = now - duration;
+      
+      // Store messages by channel and user
+      const messagesByChannel: Map<string, Map<string, string[]>> = new Map();
+      let totalMessages = 0;
+      
+      // Fetch all text channels
+      const textChannels = guild.channels.cache.filter((ch: any) => ch.isTextBased() && !ch.isDMBased());
+      
+      // Create a counter to track completed channel fetches
+      let completedChannels = 0;
+      const totalChannels = textChannels.size;
+      let limitHitChannels = 0;
+      
+      // Process channels in sequence to avoid rate limits
+      for (const [channelId, channel] of textChannels) {
+        try {
+          // Try to get messages from this channel within the time period
+          const messages = await channel.messages.fetch({ limit: 100 });
+          const filteredMessages = messages.filter((m: any) => m.createdTimestamp >= cutoff && !m.author.bot);
+          
+          if (filteredMessages.size > 0) {
+            // Group messages by user
+            const userMessages = new Map<string, string[]>();
+            
+            filteredMessages.forEach((m: any) => {
+              const userId = m.author.id;
+              const username = m.author.username;
+              const content = m.content || "[محتوای خالی یا غیرمتنی]";
+              const timestamp = new Date(m.createdTimestamp).toLocaleString('fa-IR');
+              const messageInfo = `${timestamp}: ${content}`;
+              
+              if (!userMessages.has(userId)) {
+                userMessages.set(userId, [`👤 **${username}** (ID: ${userId}):`]);
+              }
+              
+              userMessages.get(userId)?.push(`- ${messageInfo}`);
+              totalMessages++;
+            });
+            
+            // Add to channel map
+            messagesByChannel.set(channelId, userMessages);
+          }
+          
+          completedChannels++;
+          
+          // Update status message every 5 channels or at 25%, 50%, 75% progress points
+          if (completedChannels % 5 === 0 || completedChannels / totalChannels >= 0.25 || 
+              completedChannels / totalChannels >= 0.5 || completedChannels / totalChannels >= 0.75) {
+            await statusMsg.edit({ content: `⏳ در حال جمع‌آوری پیام‌های سرور **${guild.name}** در ${durationStr} گذشته...
+${completedChannels}/${totalChannels} کانال بررسی شد (${totalMessages} پیام یافت شد)` });
+          }
+          
+          // Add a small delay to avoid rate limits
+          await new Promise(resolve => setTimeout(resolve, 300));
+          
+        } catch (channelErr) {
+          console.error(`[PAYAM ERROR] Could not fetch messages from channel ${channelId}:`, channelErr);
+          limitHitChannels++;
+        }
+      }
+      
+      // If no messages found
+      if (totalMessages === 0) {
+        await statusMsg.edit({ content: `❌ هیچ پیامی در سرور **${guild.name}** در ${durationStr} گذشته یافت نشد.` });
+        return;
+      }
+      
+      // Generate the report
+      let report = `# گزارش پیام‌های سرور ${guild.name} در ${durationStr} گذشته\n\n`;
+      report += `- تعداد کل پیام‌ها: ${totalMessages}\n`;
+      report += `- تعداد کانال‌های بررسی شده: ${completedChannels}/${totalChannels}\n`;
+      if (limitHitChannels > 0) {
+        report += `- تعداد کانال‌هایی که با خطای دسترسی مواجه شدند: ${limitHitChannels}\n`;
+      }
+      report += `\n`;
+      
+      // Add channel and user details
+      for (const [channelId, users] of messagesByChannel) {
+        const channel = guild.channels.cache.get(channelId);
+        const channelName = channel ? channel.name : 'کانال ناشناخته';
+        
+        report += `## #${channelName} (ID: ${channelId})\n\n`;
+        
+        for (const [, messages] of users) {
+          report += messages.join('\n') + '\n\n';
+        }
+      }
+      
+      // Send report as a file
+      if (report.length > 1950) {
+        const buffer = Buffer.from(report, 'utf8');
+        const attachment = new AttachmentBuilder(buffer, { name: `messages_${guild.name}_${durationStr}.txt` });
+        await statusMsg.edit({
+          content: `✅ گزارش پیام‌های سرور **${guild.name}** در ${durationStr} گذشته (${totalMessages} پیام)`,
+          files: [attachment]
+        });
+      } else {
+        await statusMsg.edit({ content: `✅ گزارش پیام‌های سرور **${guild.name}** در ${durationStr} گذشته:\n\n${report}` });
+      }
+      
+    } catch (err) {
+      console.error('[PAYAM ERROR]:', err);
+      await msg.reply({ content: '❌ خطا در پردازش درخواست.' });
+    }
+    return;
+  }
+  
   // .edit <channelId> <messageId> <newMessage> — edit bot message (owner only)
   if (isCmd('edit')) {
     if (msg.author.id !== ownerId) {
