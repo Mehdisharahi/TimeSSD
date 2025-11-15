@@ -1432,6 +1432,37 @@ async function renderTableSVG(s: HokmSession) {
   return Buffer.from(svg, 'utf8');
 }
 
+// Helper function to retry Discord API calls with exponential backoff
+async function retryDiscordCall<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 2,
+  baseDelay: number = 500
+): Promise<T | null> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const isNetworkError = err?.code === 'UND_ERR_SOCKET' || 
+                             err?.code === 'ECONNRESET' || 
+                             err?.code === 'ETIMEDOUT' ||
+                             err?.message?.includes('network') ||
+                             err?.message?.includes('socket');
+      
+      // اگر خطای شبکه است و تلاش‌های بیشتری مانده، صبر کن و دوباره امتحان کن
+      if (isNetworkError && attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.log(`[RETRY] Network error (${err?.code}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      
+      // در غیر این صورت خطا را رها کن
+      throw err;
+    }
+  }
+  return null;
+}
+
 async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
   try {
     // Validate session state before rendering
@@ -1472,35 +1503,61 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
     // اگر پیام قبلی وجود دارد، سعی کنید آن را به‌روزرسانی کنید
     if (s.tableMsgId) {
       try {
-        const m = await ctx.channel.messages.fetch(s.tableMsgId).catch(()=>null);
+        const m = await retryDiscordCall(() => ctx.channel.messages.fetch(s.tableMsgId)) as any;
         if (m) { 
-          await m.edit({ embeds: [embed], components: rows, files: [attachment] }).catch((e: any) => {
-            console.warn(`[TABLE WARNING] Failed to edit message: ${e?.code || e?.message || 'Unknown error'}`);
-            throw e; // رها کردن برای ایجاد پیام جدید
-          }); 
-          return; 
+          const editResult = await retryDiscordCall(() => 
+            m.edit({ embeds: [embed], components: rows, files: [attachment] })
+          ) as any;
+          
+          if (editResult) {
+            // ویرایش موفق بود
+            return;
+          } else {
+            // تمام تلاش‌ها ناموفق بودند - فقط لاگ کن و ادامه نده
+            console.warn(`[TABLE WARNING] Failed to edit message after retries, skipping update`);
+            return; // خروج بدون ایجاد پیام جدید
+          }
         } else {
           // پیام یافت نشد، پاکسازی شناسه قبلی
           console.log(`[TABLE INFO] Message with ID ${s.tableMsgId} not found, creating new one`);
           s.tableMsgId = undefined;
         }
       } catch (editErr: unknown) {
-        // خطا در ویرایش، احتمالاً پیام حذف شده - ایجاد جدید
         const errMsg = editErr instanceof Error ? editErr.message : 'Unknown error';
         const errCode = (editErr as any)?.code;
-        console.warn(`[TABLE WARNING] Error editing message: ${errCode || errMsg}`);
+        
+        // فقط برای خطاهای غیر شبکه‌ای پیام جدید بساز
+        const isNetworkError = errCode === 'UND_ERR_SOCKET' || 
+                               errCode === 'ECONNRESET' || 
+                               errCode === 'ETIMEDOUT';
+        
+        if (isNetworkError) {
+          console.warn(`[TABLE WARNING] Network error editing message: ${errCode}, skipping update`);
+          return; // خروج بدون ایجاد پیام جدید
+        }
+        
+        // برای خطاهای دیگر (مثل پیام حذف شده)، پیام جدید بساز
+        console.warn(`[TABLE WARNING] Error editing message: ${errCode || errMsg}, creating new message`);
         s.tableMsgId = undefined;
       }
     }
     
-    // ایجاد پیام جدید
-    try {
-      const sent = await ctx.channel.send({ embeds: [embed], components: rows, files: [attachment] });
-      s.tableMsgId = sent.id;
-    } catch (sendErr: unknown) {
-      const errMsg = sendErr instanceof Error ? sendErr.message : 'Unknown error';
-      const errCode = (sendErr as any)?.code;
-      console.error(`[TABLE ERROR] Failed to send new table message: ${errCode || errMsg}`);
+    // ایجاد پیام جدید (فقط اگر tableMsgId تنظیم نشده باشد)
+    if (!s.tableMsgId) {
+      try {
+        const sent = await retryDiscordCall(() => 
+          ctx.channel.send({ embeds: [embed], components: rows, files: [attachment] })
+        ) as any;
+        if (sent) {
+          s.tableMsgId = sent.id;
+        } else {
+          console.error(`[TABLE ERROR] Failed to send new table message after retries`);
+        }
+      } catch (sendErr: unknown) {
+        const errMsg = sendErr instanceof Error ? sendErr.message : 'Unknown error';
+        const errCode = (sendErr as any)?.code;
+        console.error(`[TABLE ERROR] Failed to send new table message: ${errCode || errMsg}`);
+      }
     }
   } catch (err: unknown) {
     // در صورت خطای کلی، شناسه پیام را پاک می‌کنیم تا دفعه بعد دوباره تلاش شود
