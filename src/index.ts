@@ -3399,12 +3399,19 @@ client.on('messageCreate', async (msg: Message) => {
     entries.sort((a, b) => b[1] - a[1]);
     const top = entries.slice(0, 10);
     const fmt = (ms: number) => {
-      let s = Math.floor(ms / 1000);
-      const h = Math.floor(s / 3600); s -= h * 3600;
-      const m = Math.floor(s / 60); s -= m * 60;
-      if (h > 0) return `${h}h ${m}m`;
-      if (m > 0) return `${m}m ${s}s`;
-      return `${s}s`;
+      const totalSeconds = Math.floor(ms / 1000);
+      const days = Math.floor(totalSeconds / 86400);
+      const hours = Math.floor((totalSeconds % 86400) / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      
+      if (days > 0) {
+        // اگر روز داشتیم، فقط روز و ساعت نشان می‌دهیم (دقیقه نه)
+        return `${days}d ${hours}h`;
+      }
+      if (hours > 0) return `${hours}h ${minutes}m`;
+      if (minutes > 0) return `${minutes}m ${seconds}s`;
+      return `${seconds}s`;
     };
     const lines: string[] = [];
     top.forEach(([pid, ms], i) => {
@@ -3526,16 +3533,18 @@ client.on('messageCreate', async (msg: Message) => {
             const [x, y] = a < b ? [a, b] : [b, a];
             const key = `${x}:${y}`;
             
-            // دریافت یا ایجاد رکورد برای این جفت
-            const pair = pairTotals.get(key) || { a: x, b: y, ms: 0 };
-            
-            // برای هر جفت، باید فقط یک بار محاسبه شود (a->b و b->a در یک هتسند)
-            // بنابراین، ما میتوانیم نصف مقدار را بگیریم چون هر جفت دو بار ظاهر می‌شود
-            // نکته: این ممکن است باعث شود تعداد کمی متفاوت باشد از زمانی که رابطه متقارن نیست
-            pair.ms += ms;
-            
-            // ذخیره به‌روز شده در مجموعه
-            pairTotals.set(key, pair);
+            // فقط زمانی که a < b است محاسبه می‌کنیم تا دوباره‌کاری نشود
+            // چون در partnerTotals هر جفت دو طرفه ذخیره شده (a->b و b->a)
+            if (a < b) {
+              // دریافت یا ایجاد رکورد برای این جفت
+              const pair = pairTotals.get(key) || { a: x, b: y, ms: 0 };
+              
+              // فقط یکبار زمان را اضافه می‌کنیم (زمان مشترک واقعی)
+              pair.ms += ms;
+              
+              // ذخیره به‌روز شده در مجموعه
+              pairTotals.set(key, pair);
+            }
           }
         }
       }
@@ -3579,20 +3588,25 @@ client.on('messageCreate', async (msg: Message) => {
       const allPairs = Array.from(pairTotals.values())
         .sort((p, q) => q.ms - p.ms);
       
-      // تابع قالب‌بندی زمان
+      // تابع قالب‌بندی زمان با پشتیبانی از روز
       const fmt = (ms: number) => {
         const totalSeconds = Math.floor(ms / 1000);
-        const hours = Math.floor(totalSeconds / 3600);
+        const days = Math.floor(totalSeconds / 86400);
+        const hours = Math.floor((totalSeconds % 86400) / 3600);
         const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
         
+        if (days > 0) {
+          // اگر روز داشتیم، فقط روز و ساعت نشان می‌دهیم (دقیقه نه)
+          return `${days}d ${hours}h`;
+        }
         if (hours > 0) {
           return `${hours}h ${minutes}m`;
         }
         if (minutes > 0) {
-          const seconds = totalSeconds % 60;
           return `${minutes}m ${seconds}s`;
         }
-        return `${totalSeconds}s`;
+        return `${seconds}s`;
       };
       
       // ایجاد خطوط نتیجه برای 10 جفت برتر (بدون بات‌ها)
