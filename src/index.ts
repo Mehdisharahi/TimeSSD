@@ -64,74 +64,15 @@ async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSessio
   s.leaderIndex = s.order.indexOf(s.hakim); if (s.leaderIndex < 0) s.leaderIndex = 0;
   s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
   s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
-  const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
-    .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>`);
-  try {
-    if (s.tableMsgId && channel) {
-      const m = await channel.messages.fetch(s.tableMsgId).catch(()=>null);
-      if (m) await m.edit({ embeds: [tableEmbed] });
-    }
-  } catch {}
+  
+  // فقط refreshTableEmbed را صدا می‌زنیم که تصویر و دکمه‌ها را نمایش می‌دهد
   if (channel) await refreshTableEmbed({ channel }, s);
   // Start turn timeout for the first player
   await startTurnTimeout(client, s);
   await maybeBotAutoPlay(client, s);
 }
 
-async function displayTable(s: HokmSession, channel: any) {
-  // بررسی مقادیر undefined در سطرهای اولیه تابع
-  if (!s.hokm || s.turnIndex === undefined || !s.order || !s.order[s.turnIndex]) {
-    console.warn('[TABLE] Invalid session state for displayTable', {
-      hasSuit: !!s.hokm, 
-      turnIndex: s.turnIndex,
-      hasOrder: !!s.order,
-      playerCount: s.order?.length
-    });
-    return;
-  }
-  
-  const suitEmoji = s.hokm ? SUIT_EMOJI[s.hokm] : '?';
-  const playerMention = `<@${s.order[s.turnIndex]}>`;
-  
-  const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
-    .setDescription(`حکم: ${suitEmoji} — نوبت: ${playerMention}`);
-  
-  try {
-    if (s.tableMsgId && channel) {
-      try {
-        const m = await channel.messages.fetch(s.tableMsgId).catch(() => null);
-        if (m) {
-          await m.edit({ embeds: [tableEmbed] }).catch((err: any) => {
-            if (err?.code === 10008) { // Unknown Message
-              console.log('[TABLE] Clearing invalid tableMsgId');
-              s.tableMsgId = undefined;
-            } else {
-              console.warn(`[TABLE] Edit error: ${err?.code || err?.message || 'Unknown error'}`);
-            }
-          });
-        } else {
-          // پیام یافت نشد
-          s.tableMsgId = undefined;
-        }
-      } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : 'Unknown error';
-        const errCode = (err as any)?.code;
-        console.warn(`[TABLE] Error fetching message: ${errCode || errMsg}`);
-        if (errCode === 10008) { // Unknown Message
-          s.tableMsgId = undefined;
-        }
-      }
-    }
-  } catch (err: unknown) {
-    console.error('[TABLE] General error in displayTable:', err);
-    // در صورت خطای کلی، شناسه پیام را پاک می‌کنیم
-    s.tableMsgId = undefined;
-  }
-  if (channel) await refreshTableEmbed({ channel }, s);
-  // Start turn timeout for the first player
-  await startTurnTimeout(client, s);
-  await maybeBotAutoPlay(client, s);
-}
+// تابع displayTable حذف شد - refreshTableEmbed جایگزین آن است
 
 // ===== Hokm Phase 1 state =====
 type Suit = 'S' | 'H' | 'D' | 'C';
@@ -2762,17 +2703,10 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       s.leaderIndex = s.order.indexOf(s.hakim); if (s.leaderIndex < 0) s.leaderIndex = 0;
       s.turnIndex = s.leaderIndex; s.table = []; s.leadSuit = null; s.tricksTeam1 = 0; s.tricksTeam2 = 0;
       s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
-      // update or create table message
-      const tableEmbed = new EmbedBuilder().setTitle('Hokm — میز بازی')
-        .setDescription(`حکم: ${SUIT_EMOJI[s.hokm]} — نوبت: <@${s.order[s.turnIndex]}>`);
-      try {
-        if (s.tableMsgId) {
-          const m = await (interaction.channel as any).messages.fetch(s.tableMsgId).catch(()=>null);
-          if (m) await m.edit({ embeds: [tableEmbed] });
-        }
-      } catch {}
+      
       // Schedule announce message deletion after 2.5 seconds
       await scheduleAnnounceMessageDeletion(interaction.channel, s);
+      // فقط refreshTableEmbed را صدا می‌زنیم که تصویر و دکمه‌ها را نمایش می‌دهد
       await refreshTableEmbed({ channel: interaction.channel }, s);
       // no per-player channel hand messages; users open hand ephemerally via table button
       await interaction.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]}. بازی شروع شد. برای دیدن دست خود، روی دکمه "دست من" زیر میز بزن.`, flags: [MessageFlags.Ephemeral] });
