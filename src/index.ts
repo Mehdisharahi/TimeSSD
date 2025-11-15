@@ -73,6 +73,8 @@ async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSessio
     }
   } catch {}
   if (channel) await refreshTableEmbed({ channel }, s);
+  // Start turn timeout for the first player
+  await startTurnTimeout(client, s);
   await maybeBotAutoPlay(client, s);
 }
 
@@ -126,6 +128,8 @@ async function displayTable(s: HokmSession, channel: any) {
     s.tableMsgId = undefined;
   }
   if (channel) await refreshTableEmbed({ channel }, s);
+  // Start turn timeout for the first player
+  await startTurnTimeout(client, s);
   await maybeBotAutoPlay(client, s);
 }
 
@@ -234,6 +238,189 @@ interface HokmSession {
   hakemKotTeam2?: number; // Count of Hakem Kot for Team 2
   // Total tricks across all sets
   allTricksByPlayer?: Map<string, number>; // userId -> total tricks across all sets
+  // Turn timeout tracking
+  lastTurnTime?: number; // timestamp of last turn start
+  turnTimeoutId?: NodeJS.Timeout; // timeout handle for auto-forfeit
+}
+
+// ===== Turn Timeout Management =====
+const TURN_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour in milliseconds
+
+function clearTurnTimeout(s: HokmSession) {
+  if (s.turnTimeoutId) {
+    clearTimeout(s.turnTimeoutId);
+    s.turnTimeoutId = undefined;
+  }
+}
+
+async function startTurnTimeout(client: Client, s: HokmSession) {
+  // Clear any existing timeout
+  clearTurnTimeout(s);
+  
+  // Don't set timeout for bots
+  if (s.turnIndex !== undefined && isVirtualBot(s.order[s.turnIndex])) {
+    return;
+  }
+  
+  // Set last turn time
+  s.lastTurnTime = Date.now();
+  
+  // Set new timeout
+  s.turnTimeoutId = setTimeout(async () => {
+    try {
+      // Verify game is still in playing state
+      if (s.state !== 'playing' || s.turnIndex === undefined) {
+        return;
+      }
+      
+      const currentPlayerId = s.order[s.turnIndex];
+      const playerTeam = s.team1.includes(currentPlayerId) ? 1 : 2;
+      
+      console.log(`[TIMEOUT] Player ${currentPlayerId} (Team ${playerTeam}) timed out after 1 hour`);
+      
+      // Award all remaining sets to opponent team
+      const targetSets = s.targetSets ?? 1;
+      s.setsTeam1 = s.setsTeam1 || 0;
+      s.setsTeam2 = s.setsTeam2 || 0;
+      
+      // Set winner team to have enough sets to win
+      if (playerTeam === 1) {
+        s.setsTeam2 = targetSets;
+      } else {
+        s.setsTeam1 = targetSets;
+      }
+      
+      s.state = 'finished';
+      
+      // Update stats
+      try {
+        const t1 = s.team1;
+        const t2 = s.team2;
+        const winners = playerTeam === 1 ? t2 : t1;
+        
+        // Add games played
+        for (const u of [...t1, ...t2]) {
+          ensureUserStat(s.guildId, u).games += 1;
+        }
+        
+        // Add wins
+        for (const u of winners) {
+          ensureUserStat(s.guildId, u).wins += 1;
+        }
+        
+        // Add tricks to stats
+        if (s.allTricksByPlayer) {
+          for (const [uid, tricks] of s.allTricksByPlayer.entries()) {
+            const stat = ensureUserStat(s.guildId, uid);
+            stat.tricks = (stat.tricks || 0) + tricks;
+          }
+        }
+        
+        // Add current set tricks to total
+        if (s.tricksByPlayer) {
+          for (const [uid, tricks] of s.tricksByPlayer.entries()) {
+            const stat = ensureUserStat(s.guildId, uid);
+            stat.tricks = (stat.tricks || 0) + tricks;
+            const totalTricks = (s.allTricksByPlayer?.get(uid) || 0) + tricks;
+            if (s.allTricksByPlayer) {
+              s.allTricksByPlayer.set(uid, totalTricks);
+            }
+          }
+        }
+        
+        // Add Kot stats if any
+        if (s.kotTeam1 && s.kotTeam1 > 0) {
+          for (const u of t1) {
+            const stat = ensureUserStat(s.guildId, u);
+            stat.kot = (stat.kot || 0) + s.kotTeam1;
+          }
+        }
+        if (s.kotTeam2 && s.kotTeam2 > 0) {
+          for (const u of t2) {
+            const stat = ensureUserStat(s.guildId, u);
+            stat.kot = (stat.kot || 0) + s.kotTeam2;
+          }
+        }
+        
+        // Add Hakem Kot stats if any
+        if (s.hakemKotTeam1 && s.hakemKotTeam1 > 0) {
+          for (const u of t1) {
+            const stat = ensureUserStat(s.guildId, u);
+            stat.hakemKot = (stat.hakemKot || 0) + s.hakemKotTeam1;
+          }
+        }
+        if (s.hakemKotTeam2 && s.hakemKotTeam2 > 0) {
+          for (const u of t2) {
+            const stat = ensureUserStat(s.guildId, u);
+            stat.hakemKot = (stat.hakemKot || 0) + s.hakemKotTeam2;
+          }
+        }
+        
+        // Add teammate wins
+        if (winners.length === 2) {
+          const [a, b] = winners;
+          ensureUserStat(s.guildId, a).teammateWins[b] = (ensureUserStat(s.guildId, a).teammateWins[b] || 0) + 1;
+          ensureUserStat(s.guildId, b).teammateWins[a] = (ensureUserStat(s.guildId, b).teammateWins[a] || 0) + 1;
+        }
+        
+        saveHokmStats();
+      } catch (err) {
+        console.error('[TIMEOUT STATS ERROR]:', err);
+      }
+      
+      // Get channel and send result
+      try {
+        const channel = await client.channels.fetch(s.channelId).catch(() => null) as any;
+        if (channel) {
+          await refreshTableEmbed({ channel }, s);
+          
+          const t1Set = s.setsTeam1 ?? 0;
+          const t2Set = s.setsTeam2 ?? 0;
+          const starter = s.ownerId ? `<@${s.ownerId}>` : '—';
+          
+          const lines: string[] = [];
+          lines.push(`### ✹Starter: ${starter}`);
+          lines.push(`### ✹Sets: ${s.targetSets ?? 1}`);
+          lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+          lines.push(`### ✹Team 1: ${s.team1.map(u => `<@${u}>`).join(' , ')} ➤ ${t1Set}`);
+          lines.push('════════════════════');
+          lines.push(`### ✹Team 2: ${s.team2.map(u => `<@${u}>`).join(' , ')} ➤ ${t2Set}`);
+          lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+          lines.push(`### ✹Winner: Team ${t1Set > t2Set ? 1 : 2} ✅`);
+          lines.push(`\n**⏰ بازیکن <@${currentPlayerId}> (تیم ${playerTeam}) به دلیل عدم بازی به مدت 1 ساعت، بازی را واگذار کرد.**`);
+          
+          // Add final stats
+          if (s.allTricksByPlayer && s.allTricksByPlayer.size > 0) {
+            lines.push('\n**📊 آمار نهایی:**');
+            for (const [uid, tricks] of s.allTricksByPlayer.entries()) {
+              const currentSetTricks = s.tricksByPlayer?.get(uid) || 0;
+              const totalTricks = tricks + currentSetTricks;
+              lines.push(`<@${uid}>: ${totalTricks} تریک`);
+            }
+          }
+          
+          // Add Kot/Hakem Kot stats if any
+          if ((s.kotTeam1 ?? 0) > 0 || (s.kotTeam2 ?? 0) > 0 || (s.hakemKotTeam1 ?? 0) > 0 || (s.hakemKotTeam2 ?? 0) > 0) {
+            lines.push('\n**🏆 کت و حاکم کت:**');
+            if ((s.kotTeam1 ?? 0) > 0) lines.push(`تیم 1: ${s.kotTeam1} کت`);
+            if ((s.kotTeam2 ?? 0) > 0) lines.push(`تیم 2: ${s.kotTeam2} کت`);
+            if ((s.hakemKotTeam1 ?? 0) > 0) lines.push(`تیم 1: ${s.hakemKotTeam1} حاکم کت`);
+            if ((s.hakemKotTeam2 ?? 0) > 0) lines.push(`تیم 2: ${s.hakemKotTeam2} حاکم کت`);
+          }
+          
+          const emb = new EmbedBuilder()
+            .setDescription(lines.join('\n'))
+            .setColor(t1Set > t2Set ? 0x3b82f6 : 0xef4444);
+          
+          await channel.send({ embeds: [emb] });
+        }
+      } catch (err) {
+        console.error('[TIMEOUT RESULT ERROR]:', err);
+      }
+    } catch (err) {
+      console.error('[TIMEOUT HANDLER ERROR]:', err);
+    }
+  }, TURN_TIMEOUT_MS);
 }
 
 // ===== Bot Auto-Play =====
@@ -414,6 +601,9 @@ async function maybeBotAutoPlay(client: Client, s: HokmSession) {
       const nextTurn = ((s.turnIndex ?? 0) + 1) % s.order.length;
       s.turnIndex = nextTurn;
       
+      // Clear timeout since bot played
+      clearTurnTimeout(s);
+      
       // Only render if we're at end of trick or if it's a human's turn next
       const shouldRender = s.table.length === 4 || !isVirtualBot(s.order[s.turnIndex]);
       if (shouldRender) {
@@ -426,6 +616,10 @@ async function maybeBotAutoPlay(client: Client, s: HokmSession) {
       if (s.table.length === 4) {
         await resolveTrickAndContinue({ client } as any, s);
       } else {
+        // Start timeout for next player if it's a human
+        if (!isVirtualBot(s.order[s.turnIndex])) {
+          await startTurnTimeout(client, s);
+        }
         // Continue with next bot (non-recursive for better performance)
         setImmediate(() => maybeBotAutoPlay(client, s));
       }
@@ -1409,6 +1603,8 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     if (winnerTeam==='t1') s.setsTeam1 += add; else s.setsTeam2 += add;
     const targetSets = s.targetSets ?? 1;
     if ((s.setsTeam1>=targetSets) || (s.setsTeam2>=targetSets)) {
+      // Clear turn timeout since game is finished
+      clearTurnTimeout(s);
       s.state = 'finished';
       // update stats
       try {
@@ -1523,6 +1719,10 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     }
     // prepare next hand in same match
     console.log(`[NEW SET] Starting new set. Current score: Team1=${s.setsTeam1}, Team2=${s.setsTeam2}`);
+    
+    // Clear turn timeout since we're starting a new set
+    clearTurnTimeout(s);
+    
     s.deck = shuffle(makeDeck());
     s.hands.clear(); 
     s.order.forEach(u=>s.hands.set(u, []));
@@ -1578,6 +1778,8 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     if (gameChannel) renderPromises.push(refreshTableEmbed({ channel: gameChannel }, s));
     renderPromises.push(refreshAllDMs({ client: (interaction.client as Client) }, s));
     await Promise.all(renderPromises);
+    // Start turn timeout for the next player
+    await startTurnTimeout(interaction.client as Client, s);
     // trigger bot auto-play if next turn is bot
     await maybeBotAutoPlay(interaction.client as Client, s);
   } catch (err) {
@@ -2513,6 +2715,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       await refreshTableEmbed({ channel: interaction.channel }, s);
       // no per-player channel hand messages; users open hand ephemerally via table button
       await interaction.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]}. بازی شروع شد. برای دیدن دست خود، روی دکمه "دست من" زیر میز بزن.`, flags: [MessageFlags.Ephemeral] });
+      // Start turn timeout for the first player
+      await startTurnTimeout(interaction.client as Client, s);
       // trigger bot auto-play if first turn is a bot
       await maybeBotAutoPlay(interaction.client as Client, s);
       return;
@@ -2591,6 +2795,14 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       
       // Determine user's team
       const userTeam = s.team1.includes(uid) ? 1 : 2;
+      
+      // Check if team has won at least one trick
+      const teamTricks = userTeam === 1 ? (s.tricksTeam1 || 0) : (s.tricksTeam2 || 0);
+      if (teamTricks === 0) {
+        await interaction.reply({ content: 'برای تسلیم شدن، تیم شما باید حداقل یک تریک برنده شده باشد.', flags: [MessageFlags.Ephemeral] });
+        return;
+      }
+      
       s.surrenderVotesTeam1 = s.surrenderVotesTeam1 || new Set<string>();
       s.surrenderVotesTeam2 = s.surrenderVotesTeam2 || new Set<string>();
       const votes = userTeam === 1 ? s.surrenderVotesTeam1 : s.surrenderVotesTeam2;
@@ -2620,6 +2832,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         
         // Check if match is finished
         if ((s.setsTeam1 >= targetSets) || (s.setsTeam2 >= targetSets)) {
+          // Clear turn timeout since game is finished
+          clearTurnTimeout(s);
           s.state = 'finished';
           // Update stats
           try {
@@ -2658,6 +2872,10 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         
         // Start new set
         console.log(`[SURRENDER] Team ${userTeam} surrendered. Starting new set. Score: Team1=${s.setsTeam1}, Team2=${s.setsTeam2}`);
+        
+        // Clear turn timeout since we're starting a new set
+        clearTurnTimeout(s);
+        
         s.deck = shuffle(makeDeck());
         s.hands.clear(); 
         s.order.forEach(u=>s.hands.set(u, []));
@@ -2785,6 +3003,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         hand.splice(idx,1); s.hands.set(uid, hand);
         s.table = s.table || []; s.table.push({ userId: uid, card });
         s.turnIndex = (s.turnIndex + 1) % s.order.length;
+        
+        // Clear the current turn timeout since player made their move
+        clearTurnTimeout(s);
         // update the ephemeral hand panel dynamically
         {
           const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId, s.sessionId, s.hokm);
@@ -2813,6 +3034,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
           if (s.table.length === 4) {
             await resolveTrickAndContinue(interaction, s);
           } else {
+            // Start timeout for next player if trick is not complete
+            await startTurnTimeout(interaction.client as Client, s);
             await maybeBotAutoPlay(interaction.client as Client, s);
           }
         } catch (err) {
@@ -3600,6 +3823,8 @@ client.on('messageCreate', async (msg: Message) => {
     if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
     const s = ensureSession(msg.guildId!, msg.channelId);
     if (!s.ownerId || msg.author.id !== s.ownerId) { await msg.reply('فقط سازنده اتاق می‌تواند پایان دهد.'); return; }
+    // Clear turn timeout before ending game
+    clearTurnTimeout(s);
     // delete control and table messages if exist
     try { if (s.controlMsgId) { const m = await (msg.channel as any).messages.fetch(s.controlMsgId).catch(()=>null); if (m) await m.delete().catch(()=>{}); } } catch {}
     try { if (s.tableMsgId) { const m2 = await (msg.channel as any).messages.fetch(s.tableMsgId).catch(()=>null); if (m2) await m2.delete().catch(()=>{}); } } catch {}
@@ -3831,6 +4056,9 @@ client.on('messageCreate', async (msg: Message) => {
     }
     
     // Reset game to initial state (like .new) while preserving teams
+    // Clear turn timeout before resetting
+    clearTurnTimeout(s);
+    
     s.state = 'waiting';
     s.hokm = undefined;
     s.hakim = undefined;
