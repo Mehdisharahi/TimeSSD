@@ -1479,10 +1479,13 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
     
     const img = await renderTableImage(s);
     const attachment = new AttachmentBuilder(img, { name: 'table.png' });
-    const embed = new EmbedBuilder()
-      .setTitle('Hokm — میز بازی')
-      .setColor(0x2f3136)
-      .setImage('attachment://table.png');
+    
+    // متن پیام برای انتخاب حکم (بدون embed)
+    let messageContent = '';
+    if (s.state === 'choosing_hokm' && s.hakim) {
+      messageContent = `حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.`;
+    }
+    
     const openRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId(`hokm-open-hand-${s.guildId}-${s.channelId}-${s.sessionId}`).setLabel('دست من').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`hokm-surrender-${s.guildId}-${s.channelId}-${s.sessionId}`).setLabel('تسلیم').setStyle(ButtonStyle.Danger)
@@ -1496,7 +1499,6 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
         new ButtonBuilder().setCustomId(`hokm-choose-D-${s.sessionId}`).setLabel('♦️ خشت').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(`hokm-choose-C-${s.sessionId}`).setLabel('♣️ گیشنیز').setStyle(ButtonStyle.Success),
       );
-      embed.setDescription(`حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.`);
       rows.push(chooseRow);
     }
     
@@ -1505,9 +1507,10 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
       try {
         const m = await retryDiscordCall(() => ctx.channel.messages.fetch(s.tableMsgId)) as any;
         if (m) { 
-          const editResult = await retryDiscordCall(() => 
-            m.edit({ embeds: [embed], components: rows, files: [attachment] })
-          ) as any;
+          const editPayload: any = { components: rows, files: [attachment] };
+          if (messageContent) editPayload.content = messageContent;
+          
+          const editResult = await retryDiscordCall(() => m.edit(editPayload)) as any;
           
           if (editResult) {
             // ویرایش موفق بود
@@ -1545,9 +1548,10 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
     // ایجاد پیام جدید (فقط اگر tableMsgId تنظیم نشده باشد)
     if (!s.tableMsgId) {
       try {
-        const sent = await retryDiscordCall(() => 
-          ctx.channel.send({ embeds: [embed], components: rows, files: [attachment] })
-        ) as any;
+        const sendPayload: any = { components: rows, files: [attachment] };
+        if (messageContent) sendPayload.content = messageContent;
+        
+        const sent = await retryDiscordCall(() => ctx.channel.send(sendPayload)) as any;
         if (sent) {
           s.tableMsgId = sent.id;
         } else {
