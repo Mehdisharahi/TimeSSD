@@ -66,7 +66,8 @@ async function botChooseHokmAndStart(client: Client, channel: any, s: HokmSessio
   s.tricksByPlayer = new Map(); s.order.forEach(u=>s.tricksByPlayer!.set(u,0));
   
   // فقط refreshTableEmbed را صدا می‌زنیم که تصویر و دکمه‌ها را نمایش می‌دهد
-  if (channel) await refreshTableEmbed({ channel }, s);
+  // forceRender=true چون شروع بازی جدید است
+  if (channel) await refreshTableEmbed({ channel }, s, true);
   // Start turn timeout for the first player
   await startTurnTimeout(client, s);
   await maybeBotAutoPlay(client, s);
@@ -182,6 +183,8 @@ interface HokmSession {
   // Turn timeout tracking
   lastTurnTime?: number; // timestamp of last turn start
   turnTimeoutId?: NodeJS.Timeout; // timeout handle for auto-forfeit
+  // Smart rendering optimization
+  lastRenderedHash?: string; // hash of last rendered state to avoid unnecessary re-renders
 }
 
 // ===== Turn Timeout Management =====
@@ -313,7 +316,8 @@ async function startTurnTimeout(client: Client, s: HokmSession) {
       try {
         const channel = await client.channels.fetch(s.channelId).catch(() => null) as any;
         if (channel) {
-          await refreshTableEmbed({ channel }, s);
+          // forceRender=true چون timeout و پایان بازی
+          await refreshTableEmbed({ channel }, s, true);
           
           const t1Set = s.setsTeam1 ?? 0;
           const t2Set = s.setsTeam2 ?? 0;
@@ -550,7 +554,8 @@ async function maybeBotAutoPlay(client: Client, s: HokmSession) {
       if (shouldRender) {
         let ch: any = null; 
         try { ch = await client.channels.fetch(s.channelId).catch(()=>null); } catch {}
-        if (ch) await refreshTableEmbed({ channel: ch }, s);
+        // forceRender=false - حرکت عادی بات
+        if (ch) await refreshTableEmbed({ channel: ch }, s, false);
       }
       
       // resolve trick if complete
@@ -1404,7 +1409,26 @@ async function retryDiscordCall<T>(
   return null;
 }
 
-async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
+// محاسبه hash از state بازی برای تشخیص تغییرات
+function calculateGameStateHash(s: HokmSession): string {
+  const tableCards = s.table?.map(t => `${t.userId}:${t.card.s}${t.card.r}`).join('|') || '';
+  const lastTrickCards = s.lastTrick?.map(t => `${t.userId}:${t.card.s}${t.card.r}`).join('|') || '';
+  
+  return [
+    s.state,
+    s.hokm || '',
+    s.turnIndex ?? '',
+    tableCards,
+    lastTrickCards,
+    s.tricksTeam1 ?? 0,
+    s.tricksTeam2 ?? 0,
+    s.setsTeam1 ?? 0,
+    s.setsTeam2 ?? 0,
+    s.leaderIndex ?? ''
+  ].join(':');
+}
+
+async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession, forceRender: boolean = false) {
   try {
     // Validate session state before rendering
     if (!s || !s.guildId || !s.channelId) {
@@ -1416,6 +1440,23 @@ async function refreshTableEmbed(ctx: { channel: any }, s: HokmSession) {
     if (!s.order || s.order.length === 0) {
       console.error('[TABLE ERROR] No players in order array');
       return;
+    }
+    
+    // Smart rendering: فقط زمانی render کن که state واقعاً تغییر کرده
+    if (!forceRender) {
+      const currentHash = calculateGameStateHash(s);
+      if (s.lastRenderedHash === currentHash) {
+        // هیچ تغییری نیست، render نکن
+        console.log('[RENDER SKIP] No state changes detected, skipping render');
+        return;
+      }
+      // به‌روزرسانی hash برای دفعه بعد
+      s.lastRenderedHash = currentHash;
+      console.log('[RENDER] State changed, rendering table');
+    } else {
+      // force render بود، hash را به‌روز کن
+      s.lastRenderedHash = calculateGameStateHash(s);
+      console.log('[RENDER FORCE] Force rendering table');
     }
     
     const img = await renderTableImage(s);
@@ -1665,7 +1706,8 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
       } catch (error) {
         console.error('[STATS ERROR]', error);
       }
-      if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
+      // forceRender=true چون بازی تمام شده
+      if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s, true);
       // result embed
       if (gameChannel) {
         const t1Set = s.setsTeam1 ?? 0; const t2Set = s.setsTeam2 ?? 0;
@@ -1769,15 +1811,17 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
       const announceMsg = await gameChannel.send({ content: `ست جدید آغاز شد. حاکم: <@${s.hakim}> — لطفاً حکم را انتخاب کن.` });
       s.newSetAnnounceMsgId = announceMsg.id;
     }
-    if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
+    // forceRender=true چون ست جدید شروع شده
+    if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s, true);
     await refreshAllDMs({ client: (interaction.client as Client) }, s);
     if (isVirtualBot(s.hakim)) { await botChooseHokmAndStart(interaction.client as Client, gameChannel, s); }
     return;
   }
 
     // Parallel render for better performance
+    // forceRender=false چون فقط یک کارت جدید افزوده شده (hash تغییر کرده)
     const renderPromises = [];
-    if (gameChannel) renderPromises.push(refreshTableEmbed({ channel: gameChannel }, s));
+    if (gameChannel) renderPromises.push(refreshTableEmbed({ channel: gameChannel }, s, false));
     renderPromises.push(refreshAllDMs({ client: (interaction.client as Client) }, s));
     await Promise.all(renderPromises);
     // Start turn timeout for the next player
@@ -1789,7 +1833,8 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
     // Try to recover by refreshing table
     try {
       const gameChannel = await (interaction.client as Client).channels.fetch(s.channelId).catch(()=>null);
-      if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s);
+      // forceRender=true برای recovery
+      if (gameChannel) await refreshTableEmbed({ channel: gameChannel }, s, true);
     } catch {}
   }
 }
@@ -2670,7 +2715,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
           s.newSetAnnounceMsgId = announceMsg.id;
         }
       } catch {}
-      if (interaction.guild) await refreshTableEmbed({ channel: interaction.channel as any }, s);
+      // forceRender=true چون ست جدید بعد از surrender
+      if (interaction.guild) await refreshTableEmbed({ channel: interaction.channel as any }, s, true);
       await refreshAllDMs({ client: interaction.client }, s);
       if (isVirtualBot(s.hakim)) { await botChooseHokmAndStart(interaction.client as Client, interaction.channel as any, s); }
       return;
@@ -2707,7 +2753,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
       // Schedule announce message deletion after 2.5 seconds
       await scheduleAnnounceMessageDeletion(interaction.channel, s);
       // فقط refreshTableEmbed را صدا می‌زنیم که تصویر و دکمه‌ها را نمایش می‌دهد
-      await refreshTableEmbed({ channel: interaction.channel }, s);
+      // forceRender=true چون حکم انتخاب شده و بازی شروع شده
+      await refreshTableEmbed({ channel: interaction.channel }, s, true);
       // no per-player channel hand messages; users open hand ephemerally via table button
       await interaction.reply({ content: `حکم انتخاب شد: ${SUIT_EMOJI[s.hokm]}. بازی شروع شد. برای دیدن دست خود، روی دکمه "دست من" زیر میز بزن.`, flags: [MessageFlags.Ephemeral] });
       // Start turn timeout for the first player
@@ -2844,7 +2891,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
             saveHokmStats();
           } catch {}
           
-          await refreshTableEmbed({ channel: interaction.channel }, s);
+          // forceRender=true چون بازی تمام شده (surrender تمام کننده)
+          await refreshTableEmbed({ channel: interaction.channel }, s, true);
           
           // Result embed
           const t1Set = s.setsTeam1 ?? 0; const t2Set = s.setsTeam2 ?? 0;
@@ -2907,7 +2955,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         const announceMsg = await (interaction.channel as any).send({ content: `تیم ${userTeam} تسلیم کرد. ست جدید آغاز شد. حاکم: <@${s.hakim!}> — لطفاً حکم را انتخاب کن.` });
         s.newSetAnnounceMsgId = announceMsg.id;
         
-        await refreshTableEmbed({ channel: interaction.channel }, s);
+        // forceRender=true چون ست جدید بعد از surrender
+        await refreshTableEmbed({ channel: interaction.channel }, s, true);
         await refreshAllDMs({ client: (interaction.client as Client) }, s);
         
         if (isVirtualBot(s.hakim!)) { 
@@ -3020,7 +3069,8 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         // update table only
         try {
           const ch = await interaction.client.channels.fetch(cId).catch(()=>null) as any;
-          if (ch) await refreshTableEmbed({ channel: ch }, s);
+          // forceRender=false - render معمولی بعد از حرکت بات
+          if (ch) await refreshTableEmbed({ channel: ch }, s, false);
         } catch (err) {
           console.error('[HOKM TABLE UPDATE ERROR]:', err);
         }
@@ -4006,8 +4056,9 @@ client.on('messageCreate', async (msg: Message) => {
     
     // Refresh table if game is active
     if (s.state !== 'waiting') {
-      try { 
-        await refreshTableEmbed({ channel: msg.channel }, s); 
+      try {
+        // forceRender=true چون بعد از replace/swap
+        await refreshTableEmbed({ channel: msg.channel }, s, true); 
         // Trigger bot auto-play if it's now bot's turn
         if (s.state === 'playing') {
           await maybeBotAutoPlay(msg.client as Client, s);
@@ -4178,7 +4229,8 @@ client.on('messageCreate', async (msg: Message) => {
     }
     
     // Render fresh table
-    try { await refreshTableEmbed({ channel: msg.channel }, s); } catch {}
+    // forceRender=true چون .reset command
+    try { await refreshTableEmbed({ channel: msg.channel }, s, true); } catch {}
     return;
   }
 
