@@ -1593,6 +1593,15 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
       console.error(`[TRICK ERROR] Invalid table state: ${s.table?.length} cards`);
       return;
     }
+
+    // Attempt to recover missing leadSuit from the first card on table when possible
+    if ((!s.leadSuit || !s.hokm) && s.table && s.table.length === 4 && (s.table[0] as any)?.card) {
+      if (!s.leadSuit) {
+        s.leadSuit = s.table[0].card.s;
+        console.warn('[TRICK RECOVERY] Missing leadSuit, inferred from first card on table');
+      }
+    }
+
     if (!s.leadSuit || !s.hokm) {
       console.error(`[TRICK ERROR] Missing lead suit or hokm`);
       return;
@@ -1616,7 +1625,20 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
       if (currentIsLead && winnerIsLead && c.r>winnerCard.r) { winnerIdxInTrick=i; winnerCard=c; continue; }
     }
   }
-  const trickStartIndex = s.leaderIndex!;
+  let trickStartIndex = s.leaderIndex ?? -1;
+  if (trickStartIndex < 0 || trickStartIndex >= s.order.length) {
+    const firstUserId = s.table[0]?.userId;
+    const inferredIndex = firstUserId ? s.order.indexOf(firstUserId) : -1;
+    if (inferredIndex >= 0) {
+      trickStartIndex = inferredIndex;
+      s.leaderIndex = inferredIndex;
+      console.warn(`[TRICK RECOVERY] Fixed invalid leaderIndex using table: ${inferredIndex}`);
+    } else {
+      trickStartIndex = 0;
+      s.leaderIndex = 0;
+      console.warn('[TRICK RECOVERY] leaderIndex invalid and could not be inferred; defaulting to 0');
+    }
+  }
   const winnerTurnIndex = (trickStartIndex + winnerIdxInTrick) % 4;
   const winnerUserId = s.order[winnerTurnIndex];
   const team = s.team1.includes(winnerUserId) ? 't1' : 't2';
@@ -2826,10 +2848,27 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         return;
       }
       
-      const hand = s.hands.get(uid) || [];
+      let hand = s.hands.get(uid) || [];
       
       // Check if user has cards
       if (hand.length === 0) {
+        // Recovery: if game is in playing state and table has 4 cards, try to auto-resolve stuck trick
+        if (s.state === 'playing' && s.table && s.table.length === 4) {
+          console.warn(`[HAND RECOVERY] Detected full table with 4 cards and empty hand for user ${uid}. Attempting auto-resolve.`);
+          try {
+            await resolveTrickAndContinue(interaction, s);
+          } catch (err) {
+            console.error('[HAND RECOVERY ERROR] Failed to auto-resolve stuck trick:', err);
+          }
+          hand = s.hands.get(uid) || [];
+          if (hand.length > 0 && s.state === 'playing') {
+            const rows = buildHandRowsSimple(hand, uid, s.guildId, s.channelId, s.sessionId, s.hokm);
+            const content = `حکم: ${s.hokm?SUIT_EMOJI[s.hokm]:''} — ${uid===s.order[s.turnIndex??0]?'نوبت شماست.':'منتظر نوبت بمانید.'}`;
+            await interaction.reply({ content, components: rows, flags: [MessageFlags.Ephemeral] });
+            return;
+          }
+        }
+
         let msg = 'شما کارتی ندارید.';
         if (s.state === 'choosing_hokm') {
           msg = 'شما هنوز کارتی ندارید. فقط حاکم در این مرحله کارت دارد.';
@@ -2838,7 +2877,9 @@ client.on('interactionCreate', async (interaction: Interaction) => {
         } else if (s.state === 'finished') {
           msg = 'بازی پایان یافته است.';
         }
-        console.error(`[HAND ERROR] User ${uid} has no cards. State: ${s.state}, Order: ${s.order.length}`);
+        if (s.state === 'playing') {
+          console.warn(`[HAND WARNING] User ${uid} opened hand with no cards during playing state. Order: ${s.order.length}`);
+        }
         await interaction.reply({ content: msg, flags: [MessageFlags.Ephemeral] });
         return;
       }
