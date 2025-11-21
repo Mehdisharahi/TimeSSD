@@ -272,31 +272,60 @@ async function startTurnTimeout(client: Client, s: HokmSession) {
           }
         }
         
-        // Add Kot stats if any
+        // Add Kot and Hakem Kot stats properly - winners and losers
+        // Team 1 kots and hakem kots
         if (s.kotTeam1 && s.kotTeam1 > 0) {
+          // Add kot to team 1 players
           for (const u of t1) {
             const stat = ensureUserStat(s.guildId, u);
             stat.kot = (stat.kot || 0) + s.kotTeam1;
           }
+          // Add kot losses to team 2 players
+          for (const u of t2) {
+            const stat = ensureUserStat(s.guildId, u);
+            stat.kotLose = (stat.kotLose || 0) + s.kotTeam1;
+          }
         }
+        
+        // Team 2 kots
         if (s.kotTeam2 && s.kotTeam2 > 0) {
+          // Add kot to team 2 players
           for (const u of t2) {
             const stat = ensureUserStat(s.guildId, u);
             stat.kot = (stat.kot || 0) + s.kotTeam2;
           }
+          // Add kot losses to team 1 players
+          for (const u of t1) {
+            const stat = ensureUserStat(s.guildId, u);
+            stat.kotLose = (stat.kotLose || 0) + s.kotTeam2;
+          }
         }
         
-        // Add Hakem Kot stats if any
+        // Team 1 hakem kots
         if (s.hakemKotTeam1 && s.hakemKotTeam1 > 0) {
+          // Add hakem kot to team 1 players
           for (const u of t1) {
             const stat = ensureUserStat(s.guildId, u);
             stat.hakemKot = (stat.hakemKot || 0) + s.hakemKotTeam1;
           }
+          // Add hakem kot losses to team 2 players
+          for (const u of t2) {
+            const stat = ensureUserStat(s.guildId, u);
+            stat.hakemKotLose = (stat.hakemKotLose || 0) + s.hakemKotTeam1;
+          }
         }
+        
+        // Team 2 hakem kots
         if (s.hakemKotTeam2 && s.hakemKotTeam2 > 0) {
+          // Add hakem kot to team 2 players
           for (const u of t2) {
             const stat = ensureUserStat(s.guildId, u);
             stat.hakemKot = (stat.hakemKot || 0) + s.hakemKotTeam2;
+          }
+          // Add hakem kot losses to team 1 players
+          for (const u of t1) {
+            const stat = ensureUserStat(s.guildId, u);
+            stat.hakemKotLose = (stat.hakemKotLose || 0) + s.hakemKotTeam2;
           }
         }
         
@@ -1674,22 +1703,34 @@ async function resolveTrickAndContinue(interaction: Interaction, s: HokmSession)
             const setCount = winners === t1 ? (s.setsTeam1 || 0) : (s.setsTeam2 || 0);
             stat.sets = (stat.sets || 0) + setCount;
             
-            // Kot and Hakem Kot for winners
+            // Kot and Hakem Kot stats for winners - only count ones your team made
             const userTeam = t1.includes(uid) ? 't1' : 't2';
             if (userTeam === 't1') {
               if (s.kotTeam1 && s.kotTeam1 > 0) stat.kot = (stat.kot || 0) + s.kotTeam1;
               if (s.hakemKotTeam1 && s.hakemKotTeam1 > 0) stat.hakemKot = (stat.hakemKot || 0) + s.hakemKotTeam1;
-            } else {
-              if (s.kotTeam2 && s.kotTeam2 > 0) stat.kot = (stat.kot || 0) + s.kotTeam2;
-              if (s.hakemKotTeam2 && s.hakemKotTeam2 > 0) stat.hakemKot = (stat.hakemKot || 0) + s.hakemKotTeam2;
-            }
-          } else {
-            // Kot and Hakem Kot loss tracking for losers
-            const userTeam = t1.includes(uid) ? 't1' : 't2';
-            if (userTeam === 't1') {
+              // Team 1 member also tracks Team 2's kots as losses
               if (s.kotTeam2 && s.kotTeam2 > 0) stat.kotLose = (stat.kotLose || 0) + s.kotTeam2;
               if (s.hakemKotTeam2 && s.hakemKotTeam2 > 0) stat.hakemKotLose = (stat.hakemKotLose || 0) + s.hakemKotTeam2;
             } else {
+              if (s.kotTeam2 && s.kotTeam2 > 0) stat.kot = (stat.kot || 0) + s.kotTeam2;
+              if (s.hakemKotTeam2 && s.hakemKotTeam2 > 0) stat.hakemKot = (stat.hakemKot || 0) + s.hakemKotTeam2;
+              // Team 2 member also tracks Team 1's kots as losses
+              if (s.kotTeam1 && s.kotTeam1 > 0) stat.kotLose = (stat.kotLose || 0) + s.kotTeam1;
+              if (s.hakemKotTeam1 && s.hakemKotTeam1 > 0) stat.hakemKotLose = (stat.hakemKotLose || 0) + s.hakemKotTeam1;
+            }
+          } else {
+            // Kot and Hakem Kot stats for losers - only count ones your team made
+            const userTeam = t1.includes(uid) ? 't1' : 't2';
+            if (userTeam === 't1') {
+              if (s.kotTeam1 && s.kotTeam1 > 0) stat.kot = (stat.kot || 0) + s.kotTeam1;
+              if (s.hakemKotTeam1 && s.hakemKotTeam1 > 0) stat.hakemKot = (stat.hakemKot || 0) + s.hakemKotTeam1;
+              // Team 1 member also tracks Team 2's kots as losses
+              if (s.kotTeam2 && s.kotTeam2 > 0) stat.kotLose = (stat.kotLose || 0) + s.kotTeam2;
+              if (s.hakemKotTeam2 && s.hakemKotTeam2 > 0) stat.hakemKotLose = (stat.hakemKotLose || 0) + s.hakemKotTeam2;
+            } else {
+              if (s.kotTeam2 && s.kotTeam2 > 0) stat.kot = (stat.kot || 0) + s.kotTeam2;
+              if (s.hakemKotTeam2 && s.hakemKotTeam2 > 0) stat.hakemKot = (stat.hakemKot || 0) + s.hakemKotTeam2;
+              // Team 2 member also tracks Team 1's kots as losses
               if (s.kotTeam1 && s.kotTeam1 > 0) stat.kotLose = (stat.kotLose || 0) + s.kotTeam1;
               if (s.hakemKotTeam1 && s.hakemKotTeam1 > 0) stat.hakemKotLose = (stat.hakemKotLose || 0) + s.hakemKotTeam1;
             }
