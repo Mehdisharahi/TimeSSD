@@ -1,11 +1,26 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember, AttachmentBuilder, ActivityType, MessageFlags } from 'discord.js';
-import { createCanvas, GlobalFonts, loadImage, Canvas } from '@napi-rs/canvas';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
 import { PgFriendStore } from './storage/pgFriendStore';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
+
+let createCanvas: any;
+let GlobalFonts: any;
+let loadImage: any;
+type Canvas = any;
+let canvasAvailable = false;
+
+try {
+  const canvasModule = require('@napi-rs/canvas') as any;
+  createCanvas = canvasModule.createCanvas;
+  GlobalFonts = canvasModule.GlobalFonts;
+  loadImage = canvasModule.loadImage;
+  canvasAvailable = true;
+} catch (err) {
+  console.warn('[canvas] @napi-rs/canvas not available, image features disabled');
+}
 
 const token = process.env.BOT_TOKEN;
 const ownerId = process.env.OWNER_ID || '';
@@ -15,21 +30,23 @@ let botReady = false;
 
 // Emoji font registration (optional)
 let emojiFontAvailable = false;
-try {
-  const candidates = [
-    path.join(process.cwd(), 'fonts', 'NotoColorEmoji.ttf'),
-    path.join(process.cwd(), 'fonts', 'NotoColorEmoji-Regular.ttf'),
-    path.join(process.cwd(), 'fonts', 'NotoColorEmojiCompat.ttf'),
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) {
-      const buf = fs.readFileSync(p);
-      GlobalFonts.register(buf, 'Noto Color Emoji');
-      emojiFontAvailable = true;
-      break;
+if (canvasAvailable) {
+  try {
+    const candidates = [
+      path.join(process.cwd(), 'fonts', 'NotoColorEmoji.ttf'),
+      path.join(process.cwd(), 'fonts', 'NotoColorEmoji-Regular.ttf'),
+      path.join(process.cwd(), 'fonts', 'NotoColorEmojiCompat.ttf'),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) {
+        const buf = fs.readFileSync(p);
+        GlobalFonts.register(buf, 'Noto Color Emoji');
+        emojiFontAvailable = true;
+        break;
+      }
     }
-  }
-} catch {}
+  } catch {}
+}
 
 // Bot hakim chooses hokm (trump) based on the initial 5-card hand.
 function botPickHokm(s: HokmSession): Suit {
