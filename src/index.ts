@@ -22,6 +22,7 @@ try {
   canvasAvailable = true;
 } catch (err) {
   console.warn('[canvas] @napi-rs/canvas not available, image features disabled');
+  console.error('[canvas] load error:', err);
 }
 
 const token = process.env.BOT_TOKEN;
