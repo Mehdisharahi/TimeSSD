@@ -1,4 +1,3 @@
-import './keep-alive';  // ← همین یک خط کافیه!
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember, AttachmentBuilder, ActivityType, MessageFlags } from 'discord.js';
 import { createCanvas, GlobalFonts, loadImage, Canvas } from '@napi-rs/canvas';
