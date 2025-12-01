@@ -12,7 +12,7 @@ RUN apt-get update \
 
 # Install dependencies first (better cache)
 COPY package*.json ./
-RUN npm install
+RUN npm install && npm rebuild @napi-rs/canvas
 
 # Copy rest of the source
 COPY . .
