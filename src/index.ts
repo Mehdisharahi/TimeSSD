@@ -920,6 +920,9 @@ async function getMemberVisual(guildId: string, userId: string): Promise<{ tag: 
     const tag = userId.replace('BOT', 'Bot');
     return { tag, img: null };
   }
+  if (!canvasAvailable || !loadImage) {
+    return { tag: userId, img: null };
+  }
   try {
     const g = await client.guilds.fetch(guildId).catch(()=>null);
     if (!g) return { tag: userId, img: null };
@@ -985,6 +988,9 @@ async function renderTableImage(s: HokmSession): Promise<Buffer> {
   if (!s || !s.order || s.order.length !== 4) {
     console.error('[RENDER ERROR] Invalid session state - order:', s?.order?.length);
     throw new Error('Invalid session state for rendering');
+  }
+  if (!canvasAvailable || !createCanvas) {
+    throw new Error('Canvas not available in this environment');
   }
   
   // square canvas to avoid layout overlap on edges
@@ -5057,6 +5063,10 @@ client.on('messageCreate', async (msg: Message) => {
     if (llInFlight.has(msg.id)) return;
     llInFlight.add(msg.id);
     try {
+      if (!canvasAvailable || !createCanvas || !loadImage) {
+        await msg.reply({ content: 'امکان ساخت تصویر عشق در این سرور فعال نیست، ولی می‌تونی از دستور به‌صورت متنی استفاده کنی.' });
+        return;
+      }
       const arg = content.slice(3).trim();
       let userA = msg.author;
       let userB = msg.mentions.users.first() || null;
