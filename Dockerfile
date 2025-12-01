@@ -10,8 +10,10 @@ RUN apt-get update \
      fonts-dejavu-core \
   && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies first (better cache)
-COPY package*.json ./
+# Install dependencies first (better cache). We intentionally avoid package-lock.json
+# inside the container to let npm resolve optional native deps (like @napi-rs/canvas)
+# for Linux without hitting known npm optional dependency bugs.
+COPY package.json ./
 RUN npm install && npm rebuild @napi-rs/canvas
 
 # Copy rest of the source
