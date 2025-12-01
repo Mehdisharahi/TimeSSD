@@ -11,8 +11,6 @@
     "register:commands": "ts-node-dev --transpile-only src/register-commands.ts"
   },
   "dependencies": {
-    "discord.js": "^14.x.x",
-    "express": "^4.18.2",
     "@napi-rs/canvas": "^0.1.81",
     "@types/better-sqlite3": "^7.6.13",
     "better-sqlite3": "^12.4.1",
