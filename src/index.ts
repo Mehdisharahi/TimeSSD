@@ -6,6 +6,8 @@ import http from 'http';
 import { PgFriendStore } from './storage/pgFriendStore';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
 
+declare const require: any;
+
 let createCanvas: any;
 let GlobalFonts: any;
 let loadImage: any;
