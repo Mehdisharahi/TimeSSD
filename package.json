@@ -1,6 +1,9 @@
 {
   "name": "timessd",
   "version": "1.0.0",
+  "engines": {
+    "node": "20.x"
+  },
   "private": true,
   "main": "dist/index.js",
   "license": "MIT",
