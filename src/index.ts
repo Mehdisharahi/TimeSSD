@@ -27,6 +27,49 @@ try {
 
 const token = process.env.BOT_TOKEN;
 const ownerId = process.env.OWNER_ID || '';
+const openAiApiKey = process.env.OPENAI_API_KEY || '';
+
+async function generateAiReply(prompt: string, userId: string): Promise<string> {
+  if (!openAiApiKey) {
+    throw new Error('OPENAI_API_KEY is not set');
+  }
+
+  const body = {
+    model: 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You are a helpful Persian-speaking assistant inside a Discord bot. Answer briefly and clearly. Avoid explicit hate, threats, or sexual content. You can be a bit casual, but keep things respectful.',
+      },
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ],
+    max_tokens: 400,
+  };
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${openAiApiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    throw new Error(`OpenAI API error: ${res.status}`);
+  }
+
+  const data: any = await res.json();
+  const text: string = data?.choices?.[0]?.message?.content || '';
+  if (!text) {
+    throw new Error('Empty response from AI');
+  }
+  return text.trim();
+}
 
 // Bot ready status for health checks
 let botReady = false;
@@ -3652,8 +3695,6 @@ client.on('messageCreate', async (msg: Message) => {
     lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
     lines.push(`### 🫂 Best Teamate: ${mateText}`);
     lines.push(`### 🃏 Favorite hokm: ${favText}`);
-    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-    
     const embedBaz = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
     await msg.reply({ embeds: [embedBaz] });
     return;
@@ -3763,7 +3804,7 @@ client.on('messageCreate', async (msg: Message) => {
       };
       
       // ایجاد خطوط نتیجه برای 10 جفت برتر (بدون بات‌ها)
-      const lines: string[] = [];
+      const linesTop: string[] = [];
       const processedCount = { total: 0, bots: 0, added: 0, missing: 0 };
       
       // ابتدا سعی کنید بات‌ها را از کش شناسایی کنید تا در ادامه از آن‌ها اجتناب شود
@@ -3773,7 +3814,7 @@ client.on('messageCreate', async (msg: Message) => {
       
       // پردازش جفت‌ها برای ایجاد خطوط نتیجه
       for (const p of allPairs) {
-        if (lines.length >= 10) break;
+        if (linesTop.length >= 10) break;
         processedCount.total++;
         
         // بررسی سریع برای بات‌ها از کش
@@ -3812,12 +3853,12 @@ client.on('messageCreate', async (msg: Message) => {
         }
         
         // افزودن به نتایج
-        lines.push(`${lines.length + 1}. <@${p.a}> + <@${p.b}> — ${fmt(p.ms)}`);
+        linesTop.push(`${linesTop.length + 1}. <@${p.a}> + <@${p.b}> — ${fmt(p.ms)}`);
         processedCount.added++;
       }
       
       // بررسی برای نتایج خالی
-      if (lines.length === 0) {
+      if (linesTop.length === 0) {
         await msg.reply({ content: 'هیچ زوج غیر باتی یافت نشد.' });
         return;
       }
@@ -3829,12 +3870,41 @@ client.on('messageCreate', async (msg: Message) => {
       // ایجاد امبد زیبا و پاسخ
       const embed = new EmbedBuilder()
         .setTitle('top friends')
-        .setDescription(lines.join('\n'))
+        .setDescription(linesTop.join('\n'))
         .setColor(0x2f3136);
       await msg.reply({ embeds: [embed] });
     } catch (err) {
       console.error('[TOPFRIENDS ERROR]', err);
       await msg.reply({ content: 'خطایی در محاسبه آمار دوستان روی داد. لطفا دوباره تلاش کنید.' });
+    }
+    return;
+  }
+
+  // .chat / .چت — AI text chat (general questions)
+  if (isCmd('chat') || isCmd('چت')) {
+    const cmdLen = content.startsWith('.چت') ? 3 : 5;
+    const prompt = content.slice(cmdLen).trim();
+    if (!prompt) {
+      await msg.reply({ content: 'استفاده: `.chat سوالت` یا `.چت سوالت`' });
+      return;
+    }
+
+    try {
+      try {
+        await msg.channel.sendTyping();
+      } catch {}
+      const aiText = await generateAiReply(prompt, msg.author.id);
+      let replyText = aiText.trim();
+      if (!replyText) {
+        replyText = 'پاسخی از هوش مصنوعی دریافت نشد.';
+      }
+      if (replyText.length > 1900) {
+        replyText = replyText.slice(0, 1900) + '\n...';
+      }
+      await msg.reply({ content: replyText });
+    } catch (err) {
+      console.error('[AI CHAT ERROR]', err);
+      await msg.reply({ content: '❌ خطا در تماس با هوش مصنوعی. لطفاً بعداً دوباره تلاش کن.' });
     }
     return;
   }
@@ -3860,12 +3930,12 @@ client.on('messageCreate', async (msg: Message) => {
       return;
     }
     // Create brand-new session for this request
-    const s = createNewSession(gId, cId, msg.author.id);
-    s.team1 = []; s.team2 = []; s.order = []; s.hakim = undefined; s.hokm = undefined; s.deck = []; s.hands.clear(); s.state = 'waiting'; s.tableMsgId = undefined;
-    const contentText = `🎮 **میز ${s.sessionId}**\n${controlListText(s)}`;
-    const rows = buildControlButtons(s.sessionId);
-    const sent = await msg.reply({ content: contentText, components: rows });
-    s.controlMsgId = sent.id;
+    const sNew = createNewSession(gId, cId, msg.author.id);
+    sNew.team1 = []; sNew.team2 = []; sNew.order = []; sNew.hakim = undefined; sNew.hokm = undefined; sNew.deck = []; sNew.hands.clear(); sNew.state = 'waiting'; sNew.tableMsgId = undefined;
+    const contentTextNew = `🎮 **میز ${sNew.sessionId}**\n${controlListText(sNew)}`;
+    const rowsNew = buildControlButtons(sNew.sessionId);
+    const sentNew = await msg.reply({ content: contentTextNew, components: rowsNew });
+    sNew.controlMsgId = sentNew.id;
     return;
   }
 
