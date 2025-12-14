@@ -8,7 +8,7 @@ import { GoogleGenAI } from '@google/genai';
 
 declare const require: any;
 
-const config = require('./config.json') as {
+const config = require('../config.json') as {
   BOT_TOKEN: string;
   APPLICATION_ID?: string;
   OWNER_ID?: string;
