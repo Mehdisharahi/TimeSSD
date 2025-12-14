@@ -1,10 +1,11 @@
-import 'dotenv/config';
+import config from './config.json';
 import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember, AttachmentBuilder, ActivityType, MessageFlags } from 'discord.js';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
 import { PgFriendStore } from './storage/pgFriendStore';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
+import { GoogleGenAI } from '@google/genai';
 
 declare const require: any;
 
@@ -25,9 +26,23 @@ try {
   console.error('[canvas] load error:', err);
 }
 
-const token = process.env.BOT_TOKEN;
-const ownerId = process.env.OWNER_ID || '';
-const openAiApiKey = process.env.OPENAI_API_KEY || '';
+const token = config.BOT_TOKEN;
+const ownerId = config.OWNER_ID || '';
+const openAiApiKey = config.OPENAI_API_KEY || '';
+const geminiApiKey = process.env.GEMINI_API_KEY || (config as any).GEMINI_API_KEY || '';
+
+// Gemini (Nano Banana / Nano Banana Pro) image client
+let geminiClient: GoogleGenAI | null = null;
+if (geminiApiKey) {
+  try {
+    geminiClient = new GoogleGenAI({ apiKey: geminiApiKey });
+  } catch (err) {
+    console.error('[GEMINI INIT ERROR]', err);
+    geminiClient = null;
+  }
+} else {
+  console.warn('[GEMINI] GEMINI_API_KEY not set, .هوش/.hosh commands will be disabled');
+}
 
 async function generateAiReply(prompt: string, userId: string): Promise<string> {
   if (!openAiApiKey) {
@@ -69,6 +84,61 @@ async function generateAiReply(prompt: string, userId: string): Promise<string> 
     throw new Error('Empty response from AI');
   }
   return text.trim();
+}
+type GeminiImageMode = 'generate' | 'edit';
+
+async function callGeminiImageAPI(options: {
+  prompt: string;
+  mode: GeminiImageMode;
+  imageBuffer?: Buffer;
+  mimeType?: string;
+}): Promise<Buffer> {
+  if (!geminiClient || !geminiApiKey) {
+    throw new Error('GEMINI_API_KEY is not configured');
+  }
+
+  const model = 'gemini-2.5-flash-image';
+
+  const contents: any[] = [];
+
+  if (options.mode === 'edit' && options.imageBuffer && options.mimeType) {
+    contents.push({
+      role: 'user',
+      parts: [
+        {
+          inlineData: {
+            data: options.imageBuffer.toString('base64'),
+            mimeType: options.mimeType,
+          },
+        },
+        { text: options.prompt },
+      ],
+    });
+  } else {
+    contents.push({
+      role: 'user',
+      parts: [{ text: options.prompt }],
+    });
+  }
+
+  const response: any = await geminiClient.models.generateContent({
+    model,
+    contents,
+  } as any);
+
+  const candidates = (response as any).candidates || [];
+  if (!candidates.length) {
+    throw new Error('No candidates in Gemini response');
+  }
+
+  const parts = candidates[0].content?.parts || [];
+  const imagePart = parts.find((p: any) => p.inlineData && p.inlineData.data);
+  if (!imagePart) {
+    throw new Error('No image data in Gemini response');
+  }
+
+  const b64 = imagePart.inlineData.data as string;
+  return Buffer.from(b64, 'base64');
 }
 
 // Bot ready status for health checks
@@ -2464,6 +2534,41 @@ async function fetchBuffer(url: string): Promise<Buffer> {
       reject(e);
     }
   });
+}
+
+async function resolveImageForHosh(msg: Message): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  const pick = (m: Message) => {
+    const att = m.attachments.find(a => {
+      const ct = a.contentType || '';
+      const name = (a.name || '').toLowerCase();
+      if (ct.startsWith('image/')) return true;
+      return name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.webp');
+    });
+    return att || null;
+  };
+
+  let attachment = pick(msg);
+  if (!attachment && msg.reference?.messageId) {
+    try {
+      const replied = await msg.channel.messages.fetch(msg.reference.messageId);
+      attachment = pick(replied);
+    } catch {
+      // ignore
+    }
+  }
+  if (!attachment) return null;
+
+  let mimeType = attachment.contentType || '';
+  if (!mimeType) {
+    const name = (attachment.name || '').toLowerCase();
+    if (name.endsWith('.png')) mimeType = 'image/png';
+    else if (name.endsWith('.jpg') || name.endsWith('.jpeg')) mimeType = 'image/jpeg';
+    else if (name.endsWith('.webp')) mimeType = 'image/webp';
+  }
+  if (!mimeType) mimeType = 'image/png';
+
+  const buffer = await fetchBuffer(attachment.url);
+  return { buffer, mimeType };
 }
 
 client.once('clientReady', async () => {
@@ -5128,6 +5233,55 @@ client.on('messageCreate', async (msg: Message) => {
     await msg.reply({ content: '📝 لطفاً پیام مورد نظر برای ارسال به دایرکت کاربران را ارسال کنید.\n\n(برای لغو از دستور `.cancel` استفاده کنید)' });
     return;
   }
+
+  // دستورات هوش مصنوعی عکس 
+if (isCmd('hosh') || isCmd('هوش')) {
+  if (!geminiClient || !geminiApiKey) {
+    await msg.reply({ content: 'قابلیت هوش مصنوعی فعال نیست. لطفاً با مالک بات تماس بگیر.' });
+    return;
+  }
+
+  let prompt = '';
+  if (content.startsWith('.هوش')) {
+    prompt = content.slice(4).trim();
+  } else if (content.toLowerCase().startsWith('.hosh')) {
+    prompt = content.slice(5).trim();
+  } else {
+    const parts = content.split(/\s+/);
+    prompt = parts.slice(1).join(' ').trim();
+  }
+
+  if (!prompt) {
+    await msg.reply({ content: 'استفاده: `.هوش توضیح تصویر` یا `.hosh prompt`' });
+    return;
+  }
+
+  let imageData: { buffer: Buffer; mimeType: string } | null = null;
+  try {
+    imageData = await resolveImageForHosh(msg);
+  } catch (err) {
+    console.error('[GEMINI IMAGE INPUT ERROR]:', err);
+  }
+
+  const mode: GeminiImageMode = imageData ? 'edit' : 'generate';
+
+  try {
+    await msg.channel.sendTyping();
+    const buffer = await callGeminiImageAPI({
+      prompt,
+      mode,
+      imageBuffer: imageData?.buffer,
+      mimeType: imageData?.mimeType,
+    });
+    const attachment = new AttachmentBuilder(buffer, { name: 'hosh.png' });
+    await msg.reply({ files: [attachment] });
+    return;
+  } catch (err) {
+    console.error('[GEMINI IMAGE ERROR]:', err);
+    await msg.reply({ content: 'خطا در ساخت تصویر. لطفاً بعداً دوباره تلاش کن.' });
+    return;
+  }
+}
 
   // .ll command
   if (isCmd('ll')) {
