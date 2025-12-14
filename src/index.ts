@@ -30,16 +30,72 @@ const ownerId = process.env.OWNER_ID || '';
 const openAiApiKey = process.env.OPENAI_API_KEY || '';
 const hfApiKey = process.env.HF_API_KEY || '';
 
-// Hugging Face Inference API (image generation / editing)
-// Use models that are actually served by the hf-inference provider to avoid 404
-// See: https://huggingface.co/models?inference_provider=hf-inference&pipeline_tag=text-to-image
-const HF_TEXT_TO_IMAGE_MODEL = 'black-forest-labs/FLUX.1-dev';
-const HF_IMAGE_TO_IMAGE_MODEL = 'timbrooks/instruct-pix2pix';
+type ChatHistoryMessage = { role: 'user' | 'assistant'; content: string };
+const chatHistories = new Map<string, ChatHistoryMessage[]>();
 
-async function generateAiReply(prompt: string, userId: string): Promise<string> {
+function getChatHistoryKey(userId: string, channelId: string): string {
+  return `${channelId}:${userId}`;
+}
+
+// Minimal web search helper using DuckDuckGo Instant Answer API (no API key required).
+// This is best-effort and may not always return fresh or detailed results.
+async function webSearchSummary(query: string): Promise<string | null> {
+  try {
+    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+    const res = await fetch(url, { method: 'GET' as const });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+
+    const parts: string[] = [];
+    if (data.AbstractText) {
+      parts.push(data.AbstractText as string);
+    }
+    if (Array.isArray(data.RelatedTopics)) {
+      for (const topic of data.RelatedTopics.slice(0, 3)) {
+        if (topic && typeof topic.Text === 'string') {
+          parts.push(topic.Text as string);
+        } else if (topic && topic.Topics && Array.isArray(topic.Topics)) {
+          for (const t of topic.Topics.slice(0, 2)) {
+            if (t && typeof t.Text === 'string') parts.push(t.Text as string);
+          }
+        }
+      }
+    }
+    if (!parts.length) return null;
+    return parts.join('\n');
+  } catch {
+    return null;
+  }
+}
+
+async function generateAiReply(
+  prompt: string,
+  userId: string,
+  channelId: string,
+  replyText?: string,
+  replyImageUrl?: string | null
+): Promise<string> {
   if (!openAiApiKey) {
     throw new Error('OPENAI_API_KEY is not set');
   }
+
+  const historyKey = getChatHistoryKey(userId, channelId);
+  const history = chatHistories.get(historyKey) || [];
+
+  let baseText = prompt;
+  if (replyText) {
+    baseText = `پیام ارجاع‌شده:\n"${replyText}"\n\nدرخواست من: ${prompt}`;
+  }
+
+  let userContent: any = baseText;
+  if (replyImageUrl) {
+    userContent = [
+      { type: 'text', text: baseText },
+      { type: 'image_url', image_url: { url: replyImageUrl } },
+    ];
+  }
+
+  const webSummary = await webSearchSummary(baseText).catch(() => null);
 
   const body = {
     model: 'gpt-4o-mini',
@@ -49,9 +105,21 @@ async function generateAiReply(prompt: string, userId: string): Promise<string> 
         content:
           'You are a helpful Persian-speaking assistant inside a Discord bot. Answer briefly and clearly. Avoid explicit hate, threats, or sexual content. You can be a bit casual, but keep things respectful.',
       },
+      ...history,
+      ...(webSummary
+        ? [
+            {
+              role: 'system' as const,
+              content:
+                'خلاصه نتایج جستجوی وب برای پرسش فعلی:\n' +
+                webSummary +
+                '\n\nدر صورت مفید بودن از این اطلاعات استفاده کن و اگر متناقض یا قدیمی هستند، توضیح بده.',
+            },
+          ]
+        : []),
       {
         role: 'user',
-        content: prompt,
+        content: userContent,
       },
     ],
     max_tokens: 400,
@@ -75,150 +143,21 @@ async function generateAiReply(prompt: string, userId: string): Promise<string> 
   if (!text) {
     throw new Error('Empty response from AI');
   }
-  return text.trim();
-}
+  const trimmed = text.trim();
 
-// Try to translate Persian prompts to English for image generation if possible
-async function maybeTranslatePromptForImage(prompt: string): Promise<string> {
-  // Quick detection for Arabic/Persian characters
-  const hasPersian = /[\u0600-\u06FF]/.test(prompt);
-  if (!hasPersian) return prompt;
-  if (!openAiApiKey) return prompt;
+  const updatedHistory: ChatHistoryMessage[] = [
+    ...history,
+    { role: 'user', content: baseText },
+    { role: 'assistant', content: trimmed },
+  ];
+  const maxHistoryMessages = 10;
+  const finalHistory =
+    updatedHistory.length > maxHistoryMessages
+      ? updatedHistory.slice(updatedHistory.length - maxHistoryMessages)
+      : updatedHistory;
+  chatHistories.set(historyKey, finalHistory);
 
-  try {
-    const body = {
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content:
-            "You are a translation engine for image generation prompts. Translate the user's Persian text into a concise English prompt suitable for a text-to-image model. Respond with English only, no explanations.",
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      max_tokens: 200,
-    };
-
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${openAiApiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      // If translation fails, just fall back to original prompt
-      return prompt;
-    }
-
-    const data: any = await res.json();
-    const text: string = data?.choices?.[0]?.message?.content || '';
-    return text.trim() || prompt;
-  } catch {
-    // On any error, use original prompt
-    return prompt;
-  }
-}
-
-type HfImageMode = 'generate' | 'edit';
-
-async function callHfImageAPI(options: {
-  prompt: string;
-  mode: HfImageMode;
-  imageBuffer?: Buffer;
-  mimeType?: string;
-}): Promise<Buffer> {
-  if (!hfApiKey) {
-    throw new Error('HF_API_KEY is not configured');
-  }
-
-  const headers: any = {
-    Authorization: `Bearer ${hfApiKey}`,
-  };
-
-  // Helper to perform a single HF request with a given prompt
-  const performRequest = async (promptForModel: string): Promise<Buffer> => {
-    if (options.mode === 'edit' && options.imageBuffer) {
-      // Image-to-image with text instruction using InstructPix2Pix-style endpoint
-      const endpoint = `https://router.huggingface.co/hf-inference/models/${encodeURIComponent(HF_IMAGE_TO_IMAGE_MODEL)}`;
-      const payload = {
-        inputs: options.imageBuffer.toString('base64'),
-        parameters: {
-          prompt: promptForModel,
-          // Try to avoid generating people when user wants objects
-          negative_prompt: 'disfigured, blurry, low quality, deformed, people, person, human, face, nude, nsfw',
-        },
-      };
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          ...headers,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`HF image edit failed: ${res.status} ${res.statusText} ${text}`);
-      }
-
-      const arrayBuffer = await res.arrayBuffer();
-      const buf = Buffer.from(arrayBuffer as ArrayBuffer);
-      return buf;
-    } else {
-      // Text-to-image
-      const endpoint = `https://router.huggingface.co/hf-inference/models/${encodeURIComponent(HF_TEXT_TO_IMAGE_MODEL)}`;
-      const payload = {
-        inputs: promptForModel,
-        parameters: {
-          // Try to avoid generating people when user wants objects
-          negative_prompt: 'disfigured, blurry, low quality, deformed, people, person, human, face, nude, nsfw',
-        },
-      };
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          ...headers,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`HF text-to-image failed: ${res.status} ${res.statusText} ${text}`);
-      }
-
-      const arrayBuffer = await res.arrayBuffer();
-      const buf = Buffer.from(arrayBuffer as ArrayBuffer);
-      return buf;
-    }
-  };
-
-  // Priority 1: try with the original (possibly Persian) prompt
-  try {
-    return await performRequest(options.prompt);
-  } catch (err) {
-    // If the original prompt seems Persian, try translating to English and retry once
-    const hasPersian = /[\u0600-\u06FF]/.test(options.prompt);
-    if (!hasPersian) throw err;
-
-    const translated = await maybeTranslatePromptForImage(options.prompt);
-    if (!translated || translated === options.prompt) {
-      // No useful translation, surface original error
-      throw err;
-    }
-
-    return await performRequest(translated);
-  }
+  return trimmed;
 }
 
 // Bot ready status for health checks
@@ -4065,28 +4004,63 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .chat / .چت — AI text chat (general questions)
+  // .chat / .چت — AI text chat (general questions, with history and reply context)
   if (isCmd('chat') || isCmd('چت')) {
     const cmdLen = content.startsWith('.چت') ? 3 : 5;
-    const prompt = content.slice(cmdLen).trim();
-    if (!prompt) {
-      await msg.reply({ content: 'استفاده: `.chat سوالت` یا `.چت سوالت`' });
+    let prompt = content.slice(cmdLen).trim();
+
+    let replyText: string | undefined;
+    let replyImageUrl: string | null = null;
+
+    if (msg.reference?.messageId) {
+      try {
+        const replied = await msg.channel.messages.fetch(msg.reference.messageId);
+        if (replied.content) {
+          replyText = replied.content;
+        }
+        const att = replied.attachments.find(a => {
+          const ct = a.contentType || '';
+          const name = (a.name || '').toLowerCase();
+          if (ct.startsWith('image/')) return true;
+          return name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.webp');
+        });
+        if (att) {
+          replyImageUrl = att.url;
+        }
+      } catch {
+        // ignore fetch errors
+      }
+    }
+
+    if (!prompt && !replyText && !replyImageUrl) {
+      await msg.reply({ content: 'استفاده: `.chat سوالت` یا `.چت سوالت` (می‌توانی روی یک پیام یا عکس هم ریپلای کنی)' });
       return;
+    }
+
+    // If only reply exists and no explicit prompt, create a generic request
+    if (!prompt && (replyText || replyImageUrl)) {
+      if (replyText && !replyImageUrl) {
+        prompt = 'این پیام را تحلیل و در صورت نیاز ترجمه کن.';
+      } else if (replyImageUrl && !replyText) {
+        prompt = 'این تصویر را توصیف و تحلیل کن.';
+      } else {
+        prompt = 'بر اساس این پیام و تصویر پاسخ مناسب بده.';
+      }
     }
 
     try {
       try {
         await msg.channel.sendTyping();
       } catch {}
-      const aiText = await generateAiReply(prompt, msg.author.id);
-      let replyText = aiText.trim();
-      if (!replyText) {
-        replyText = 'پاسخی از هوش مصنوعی دریافت نشد.';
+      const aiText = await generateAiReply(prompt, msg.author.id, msg.channelId, replyText, replyImageUrl);
+      let reply = aiText.trim();
+      if (!reply) {
+        reply = 'پاسخی از هوش مصنوعی دریافت نشد.';
       }
-      if (replyText.length > 1900) {
-        replyText = replyText.slice(0, 1900) + '\n...';
+      if (reply.length > 1900) {
+        reply = reply.slice(0, 1900) + '\n...';
       }
-      await msg.reply({ content: replyText });
+      await msg.reply({ content: reply });
     } catch (err) {
       console.error('[AI CHAT ERROR]', err);
       await msg.reply({ content: '❌ خطا در تماس با هوش مصنوعی. لطفاً بعداً دوباره تلاش کن.' });
@@ -5313,55 +5287,6 @@ client.on('messageCreate', async (msg: Message) => {
     await msg.reply({ content: '📝 لطفاً پیام مورد نظر برای ارسال به دایرکت کاربران را ارسال کنید.\n\n(برای لغو از دستور `.cancel` استفاده کنید)' });
     return;
   }
-
-  // دستورات هوش مصنوعی عکس (Hugging Face)
-if (isCmd('hosh') || isCmd('هوش')) {
-  if (!hfApiKey) {
-    await msg.reply({ content: 'قابلیت ساخت تصویر با هوش مصنوعی در حال حاضر فعال نیست. لطفاً با مالک بات تماس بگیر تا HF_API_KEY را تنظیم کند.' });
-    return;
-  }
-
-  let prompt = '';
-  if (content.startsWith('.هوش')) {
-    prompt = content.slice(4).trim();
-  } else if (content.toLowerCase().startsWith('.hosh')) {
-    prompt = content.slice(5).trim();
-  } else {
-    const parts = content.split(/\s+/);
-    prompt = parts.slice(1).join(' ').trim();
-  }
-
-  if (!prompt) {
-    await msg.reply({ content: 'استفاده: `.هوش توضیح تصویر` یا `.hosh prompt`' });
-    return;
-  }
-
-  let imageData: { buffer: Buffer; mimeType: string } | null = null;
-  try {
-    imageData = await resolveImageForHosh(msg);
-  } catch (err) {
-    console.error('[HF IMAGE INPUT ERROR]:', err);
-  }
-
-  const mode: HfImageMode = imageData ? 'edit' : 'generate';
-
-  try {
-    await msg.channel.sendTyping();
-    const buffer = await callHfImageAPI({
-      prompt,
-      mode,
-      imageBuffer: imageData?.buffer,
-      mimeType: imageData?.mimeType,
-    });
-    const attachment = new AttachmentBuilder(buffer, { name: 'hosh.png' });
-    await msg.reply({ files: [attachment] });
-    return;
-  } catch (err) {
-    console.error('[HF IMAGE ERROR]:', err);
-    await msg.reply({ content: 'خطا در ساخت تصویر. لطفاً بعداً دوباره تلاش کن.' });
-    return;
-  }
-}
 
   // .ll command
   if (isCmd('ll')) {
