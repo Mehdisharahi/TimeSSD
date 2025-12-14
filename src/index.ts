@@ -100,6 +100,8 @@ async function callHfImageAPI(options: {
       inputs: options.imageBuffer.toString('base64'),
       parameters: {
         prompt: options.prompt,
+        // Try to avoid generating people when user wants objects
+        negative_prompt: 'disfigured, blurry, low quality, deformed, people, person, human, face, nude, nsfw',
       },
     };
 
@@ -117,13 +119,18 @@ async function callHfImageAPI(options: {
       throw new Error(`HF image edit failed: ${res.status} ${res.statusText} ${text}`);
     }
 
-    const buf = await res.buffer();
+    const arrayBuffer = await res.arrayBuffer();
+    const buf = Buffer.from(arrayBuffer as ArrayBuffer);
     return buf;
   } else {
     // Text-to-image
     const endpoint = `https://router.huggingface.co/hf-inference/models/${encodeURIComponent(HF_TEXT_TO_IMAGE_MODEL)}`;
     const payload = {
       inputs: options.prompt,
+      parameters: {
+        // Try to avoid generating people when user wants objects
+        negative_prompt: 'disfigured, blurry, low quality, deformed, people, person, human, face, nude, nsfw',
+      },
     };
 
     const res = await fetch(endpoint, {
@@ -140,7 +147,8 @@ async function callHfImageAPI(options: {
       throw new Error(`HF text-to-image failed: ${res.status} ${res.statusText} ${text}`);
     }
 
-    const buf = await res.buffer();
+    const arrayBuffer = await res.arrayBuffer();
+    const buf = Buffer.from(arrayBuffer as ArrayBuffer);
     return buf;
   }
 }
