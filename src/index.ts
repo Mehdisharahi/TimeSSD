@@ -77,6 +77,54 @@ async function generateAiReply(prompt: string, userId: string): Promise<string> 
   }
   return text.trim();
 }
+
+// Try to translate Persian prompts to English for image generation if possible
+async function maybeTranslatePromptForImage(prompt: string): Promise<string> {
+  // Quick detection for Arabic/Persian characters
+  const hasPersian = /[\u0600-\u06FF]/.test(prompt);
+  if (!hasPersian) return prompt;
+  if (!openAiApiKey) return prompt;
+
+  try {
+    const body = {
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content:
+            "You are a translation engine for image generation prompts. Translate the user's Persian text into a concise English prompt suitable for a text-to-image model. Respond with English only, no explanations.",
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      max_tokens: 200,
+    };
+
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${openAiApiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      // If translation fails, just fall back to original prompt
+      return prompt;
+    }
+
+    const data: any = await res.json();
+    const text: string = data?.choices?.[0]?.message?.content || '';
+    return text.trim() || prompt;
+  } catch {
+    // On any error, use original prompt
+    return prompt;
+  }
+}
+
 type HfImageMode = 'generate' | 'edit';
 
 async function callHfImageAPI(options: {
@@ -93,63 +141,83 @@ async function callHfImageAPI(options: {
     Authorization: `Bearer ${hfApiKey}`,
   };
 
-  if (options.mode === 'edit' && options.imageBuffer) {
-    // Image-to-image with text instruction using InstructPix2Pix-style endpoint
-    const endpoint = `https://router.huggingface.co/hf-inference/models/${encodeURIComponent(HF_IMAGE_TO_IMAGE_MODEL)}`;
-    const payload = {
-      inputs: options.imageBuffer.toString('base64'),
-      parameters: {
-        prompt: options.prompt,
-        // Try to avoid generating people when user wants objects
-        negative_prompt: 'disfigured, blurry, low quality, deformed, people, person, human, face, nude, nsfw',
-      },
-    };
+  // Helper to perform a single HF request with a given prompt
+  const performRequest = async (promptForModel: string): Promise<Buffer> => {
+    if (options.mode === 'edit' && options.imageBuffer) {
+      // Image-to-image with text instruction using InstructPix2Pix-style endpoint
+      const endpoint = `https://router.huggingface.co/hf-inference/models/${encodeURIComponent(HF_IMAGE_TO_IMAGE_MODEL)}`;
+      const payload = {
+        inputs: options.imageBuffer.toString('base64'),
+        parameters: {
+          prompt: promptForModel,
+          // Try to avoid generating people when user wants objects
+          negative_prompt: 'disfigured, blurry, low quality, deformed, people, person, human, face, nude, nsfw',
+        },
+      };
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        ...headers,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`HF image edit failed: ${res.status} ${res.statusText} ${text}`);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`HF image edit failed: ${res.status} ${res.statusText} ${text}`);
+      }
+
+      const arrayBuffer = await res.arrayBuffer();
+      const buf = Buffer.from(arrayBuffer as ArrayBuffer);
+      return buf;
+    } else {
+      // Text-to-image
+      const endpoint = `https://router.huggingface.co/hf-inference/models/${encodeURIComponent(HF_TEXT_TO_IMAGE_MODEL)}`;
+      const payload = {
+        inputs: promptForModel,
+        parameters: {
+          // Try to avoid generating people when user wants objects
+          negative_prompt: 'disfigured, blurry, low quality, deformed, people, person, human, face, nude, nsfw',
+        },
+      };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`HF text-to-image failed: ${res.status} ${res.statusText} ${text}`);
+      }
+
+      const arrayBuffer = await res.arrayBuffer();
+      const buf = Buffer.from(arrayBuffer as ArrayBuffer);
+      return buf;
+    }
+  };
+
+  // Priority 1: try with the original (possibly Persian) prompt
+  try {
+    return await performRequest(options.prompt);
+  } catch (err) {
+    // If the original prompt seems Persian, try translating to English and retry once
+    const hasPersian = /[\u0600-\u06FF]/.test(options.prompt);
+    if (!hasPersian) throw err;
+
+    const translated = await maybeTranslatePromptForImage(options.prompt);
+    if (!translated || translated === options.prompt) {
+      // No useful translation, surface original error
+      throw err;
     }
 
-    const arrayBuffer = await res.arrayBuffer();
-    const buf = Buffer.from(arrayBuffer as ArrayBuffer);
-    return buf;
-  } else {
-    // Text-to-image
-    const endpoint = `https://router.huggingface.co/hf-inference/models/${encodeURIComponent(HF_TEXT_TO_IMAGE_MODEL)}`;
-    const payload = {
-      inputs: options.prompt,
-      parameters: {
-        // Try to avoid generating people when user wants objects
-        negative_prompt: 'disfigured, blurry, low quality, deformed, people, person, human, face, nude, nsfw',
-      },
-    };
-
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        ...headers,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`HF text-to-image failed: ${res.status} ${res.statusText} ${text}`);
-    }
-
-    const arrayBuffer = await res.arrayBuffer();
-    const buf = Buffer.from(arrayBuffer as ArrayBuffer);
-    return buf;
+    return await performRequest(translated);
   }
 }
 
