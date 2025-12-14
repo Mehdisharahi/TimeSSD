@@ -8,15 +8,6 @@ import { GoogleGenAI } from '@google/genai';
 
 declare const require: any;
 
-const config = require('../config.json') as {
-  BOT_TOKEN: string;
-  APPLICATION_ID?: string;
-  OWNER_ID?: string;
-  OPENAI_API_KEY?: string;
-  GUILD_ID?: string;
-  GEMINI_API_KEY?: string;
-};
-
 let createCanvas: any;
 let GlobalFonts: any;
 let loadImage: any;
@@ -34,10 +25,10 @@ try {
   console.error('[canvas] load error:', err);
 }
 
-const token = config.BOT_TOKEN;
-const ownerId = config.OWNER_ID || '';
-const openAiApiKey = config.OPENAI_API_KEY || '';
-const geminiApiKey = process.env.GEMINI_API_KEY || (config as any).GEMINI_API_KEY || '';
+const token = process.env.BOT_TOKEN || '';
+const ownerId = process.env.OWNER_ID || '';
+const openAiApiKey = process.env.OPENAI_API_KEY || '';
+const geminiApiKey = process.env.GEMINI_API_KEY || '';
 
 // Gemini (Nano Banana / Nano Banana Pro) image client
 let geminiClient: GoogleGenAI | null = null;
