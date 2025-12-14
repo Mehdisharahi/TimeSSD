@@ -4,7 +4,6 @@ import path from 'path';
 import http from 'http';
 import { PgFriendStore } from './storage/pgFriendStore';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
-import { GoogleGenAI } from '@google/genai';
 import fetch from 'node-fetch';
 
 declare const require: any;
@@ -29,21 +28,7 @@ try {
 const token = process.env.BOT_TOKEN || '';
 const ownerId = process.env.OWNER_ID || '';
 const openAiApiKey = process.env.OPENAI_API_KEY || '';
-const geminiApiKey = process.env.GEMINI_API_KEY || '';
 const hfApiKey = process.env.HF_API_KEY || '';
-
-// Gemini (Nano Banana / Nano Banana Pro) image client (kept for other features, but not used for image generation anymore)
-let geminiClient: GoogleGenAI | null = null;
-if (geminiApiKey) {
-  try {
-    geminiClient = new GoogleGenAI({ apiKey: geminiApiKey });
-  } catch (err) {
-    console.error('[GEMINI INIT ERROR]', err);
-    geminiClient = null;
-  }
-} else {
-  console.warn('[GEMINI] GEMINI_API_KEY not set');
-}
 
 // Hugging Face Inference API (image generation / editing)
 const HF_TEXT_TO_IMAGE_MODEL = 'black-forest-labs/FLUX.1-Krea-dev';
@@ -92,7 +77,7 @@ async function generateAiReply(prompt: string, userId: string): Promise<string> 
 }
 type HfImageMode = 'generate' | 'edit';
 
-async function callGeminiImageAPI(options: {
+async function callHfImageAPI(options: {
   prompt: string;
   mode: HfImageMode;
   imageBuffer?: Buffer;
@@ -108,7 +93,7 @@ async function callGeminiImageAPI(options: {
 
   if (options.mode === 'edit' && options.imageBuffer) {
     // Image-to-image with text instruction using InstructPix2Pix-style endpoint
-    const endpoint = `https://api-inference.huggingface.co/models/${encodeURIComponent(HF_IMAGE_TO_IMAGE_MODEL)}`;
+    const endpoint = `https://router.huggingface.co/hf-inference/models/${encodeURIComponent(HF_IMAGE_TO_IMAGE_MODEL)}`;
     const payload = {
       inputs: options.imageBuffer.toString('base64'),
       parameters: {
@@ -134,7 +119,7 @@ async function callGeminiImageAPI(options: {
     return buf;
   } else {
     // Text-to-image
-    const endpoint = `https://api-inference.huggingface.co/models/${encodeURIComponent(HF_TEXT_TO_IMAGE_MODEL)}`;
+    const endpoint = `https://router.huggingface.co/hf-inference/models/${encodeURIComponent(HF_TEXT_TO_IMAGE_MODEL)}`;
     const payload = {
       inputs: options.prompt,
     };
@@ -5284,7 +5269,7 @@ if (isCmd('hosh') || isCmd('هوش')) {
 
   try {
     await msg.channel.sendTyping();
-    const buffer = await callGeminiImageAPI({
+    const buffer = await callHfImageAPI({
       prompt,
       mode,
       imageBuffer: imageData?.buffer,
