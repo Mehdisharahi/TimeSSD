@@ -31,7 +31,9 @@ const openAiApiKey = process.env.OPENAI_API_KEY || '';
 const hfApiKey = process.env.HF_API_KEY || '';
 
 // Hugging Face Inference API (image generation / editing)
-const HF_TEXT_TO_IMAGE_MODEL = 'black-forest-labs/FLUX.1-Krea-dev';
+// Use models that are actually served by the hf-inference provider to avoid 404
+// See: https://huggingface.co/models?inference_provider=hf-inference&pipeline_tag=text-to-image
+const HF_TEXT_TO_IMAGE_MODEL = 'black-forest-labs/FLUX.1-dev';
 const HF_IMAGE_TO_IMAGE_MODEL = 'timbrooks/instruct-pix2pix';
 
 async function generateAiReply(prompt: string, userId: string): Promise<string> {
