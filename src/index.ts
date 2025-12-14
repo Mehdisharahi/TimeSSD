@@ -1,4 +1,3 @@
-import config from './config.json';
 import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember, AttachmentBuilder, ActivityType, MessageFlags } from 'discord.js';
 import fs from 'fs';
 import path from 'path';
@@ -8,6 +7,15 @@ import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed 
 import { GoogleGenAI } from '@google/genai';
 
 declare const require: any;
+
+const config = require('./config.json') as {
+  BOT_TOKEN: string;
+  APPLICATION_ID?: string;
+  OWNER_ID?: string;
+  OPENAI_API_KEY?: string;
+  GUILD_ID?: string;
+  GEMINI_API_KEY?: string;
+};
 
 let createCanvas: any;
 let GlobalFonts: any;
