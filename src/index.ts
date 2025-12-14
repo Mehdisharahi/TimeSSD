@@ -5,6 +5,7 @@ import http from 'http';
 import { PgFriendStore } from './storage/pgFriendStore';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
 import { GoogleGenAI } from '@google/genai';
+import fetch from 'node-fetch';
 
 declare const require: any;
 
@@ -29,8 +30,9 @@ const token = process.env.BOT_TOKEN || '';
 const ownerId = process.env.OWNER_ID || '';
 const openAiApiKey = process.env.OPENAI_API_KEY || '';
 const geminiApiKey = process.env.GEMINI_API_KEY || '';
+const hfApiKey = process.env.HF_API_KEY || '';
 
-// Gemini (Nano Banana / Nano Banana Pro) image client
+// Gemini (Nano Banana / Nano Banana Pro) image client (kept for other features, but not used for image generation anymore)
 let geminiClient: GoogleGenAI | null = null;
 if (geminiApiKey) {
   try {
@@ -40,8 +42,12 @@ if (geminiApiKey) {
     geminiClient = null;
   }
 } else {
-  console.warn('[GEMINI] GEMINI_API_KEY not set, .هوش/.hosh commands will be disabled');
+  console.warn('[GEMINI] GEMINI_API_KEY not set');
 }
+
+// Hugging Face Inference API (image generation / editing)
+const HF_TEXT_TO_IMAGE_MODEL = 'black-forest-labs/FLUX.1-Krea-dev';
+const HF_IMAGE_TO_IMAGE_MODEL = 'timbrooks/instruct-pix2pix';
 
 async function generateAiReply(prompt: string, userId: string): Promise<string> {
   if (!openAiApiKey) {
@@ -84,60 +90,72 @@ async function generateAiReply(prompt: string, userId: string): Promise<string> 
   }
   return text.trim();
 }
-type GeminiImageMode = 'generate' | 'edit';
+type HfImageMode = 'generate' | 'edit';
 
 async function callGeminiImageAPI(options: {
   prompt: string;
-  mode: GeminiImageMode;
+  mode: HfImageMode;
   imageBuffer?: Buffer;
   mimeType?: string;
 }): Promise<Buffer> {
-  if (!geminiClient || !geminiApiKey) {
-    throw new Error('GEMINI_API_KEY is not configured');
+  if (!hfApiKey) {
+    throw new Error('HF_API_KEY is not configured');
   }
 
-  const model = 'gemini-2.5-flash-image';
+  const headers: any = {
+    Authorization: `Bearer ${hfApiKey}`,
+  };
 
-  const contents: any[] = [];
+  if (options.mode === 'edit' && options.imageBuffer) {
+    // Image-to-image with text instruction using InstructPix2Pix-style endpoint
+    const endpoint = `https://api-inference.huggingface.co/models/${encodeURIComponent(HF_IMAGE_TO_IMAGE_MODEL)}`;
+    const payload = {
+      inputs: options.imageBuffer.toString('base64'),
+      parameters: {
+        prompt: options.prompt,
+      },
+    };
 
-  if (options.mode === 'edit' && options.imageBuffer && options.mimeType) {
-    contents.push({
-      role: 'user',
-      parts: [
-        {
-          inlineData: {
-            data: options.imageBuffer.toString('base64'),
-            mimeType: options.mimeType,
-          },
-        },
-        { text: options.prompt },
-      ],
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
     });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HF image edit failed: ${res.status} ${res.statusText} ${text}`);
+    }
+
+    const buf = await res.buffer();
+    return buf;
   } else {
-    contents.push({
-      role: 'user',
-      parts: [{ text: options.prompt }],
+    // Text-to-image
+    const endpoint = `https://api-inference.huggingface.co/models/${encodeURIComponent(HF_TEXT_TO_IMAGE_MODEL)}`;
+    const payload = {
+      inputs: options.prompt,
+    };
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
     });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HF text-to-image failed: ${res.status} ${res.statusText} ${text}`);
+    }
+
+    const buf = await res.buffer();
+    return buf;
   }
-
-  const response: any = await geminiClient.models.generateContent({
-    model,
-    contents,
-  } as any);
-
-  const candidates = (response as any).candidates || [];
-  if (!candidates.length) {
-    throw new Error('No candidates in Gemini response');
-  }
-
-  const parts = candidates[0].content?.parts || [];
-  const imagePart = parts.find((p: any) => p.inlineData && p.inlineData.data);
-  if (!imagePart) {
-    throw new Error('No image data in Gemini response');
-  }
-
-  const b64 = imagePart.inlineData.data as string;
-  return Buffer.from(b64, 'base64');
 }
 
 // Bot ready status for health checks
@@ -5233,10 +5251,10 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // دستورات هوش مصنوعی عکس 
+  // دستورات هوش مصنوعی عکس (Hugging Face)
 if (isCmd('hosh') || isCmd('هوش')) {
-  if (!geminiClient || !geminiApiKey) {
-    await msg.reply({ content: 'قابلیت هوش مصنوعی فعال نیست. لطفاً با مالک بات تماس بگیر.' });
+  if (!hfApiKey) {
+    await msg.reply({ content: 'قابلیت ساخت تصویر با هوش مصنوعی در حال حاضر فعال نیست. لطفاً با مالک بات تماس بگیر تا HF_API_KEY را تنظیم کند.' });
     return;
   }
 
@@ -5259,10 +5277,10 @@ if (isCmd('hosh') || isCmd('هوش')) {
   try {
     imageData = await resolveImageForHosh(msg);
   } catch (err) {
-    console.error('[GEMINI IMAGE INPUT ERROR]:', err);
+    console.error('[HF IMAGE INPUT ERROR]:', err);
   }
 
-  const mode: GeminiImageMode = imageData ? 'edit' : 'generate';
+  const mode: HfImageMode = imageData ? 'edit' : 'generate';
 
   try {
     await msg.channel.sendTyping();
@@ -5276,7 +5294,7 @@ if (isCmd('hosh') || isCmd('هوش')) {
     await msg.reply({ files: [attachment] });
     return;
   } catch (err) {
-    console.error('[GEMINI IMAGE ERROR]:', err);
+    console.error('[HF IMAGE ERROR]:', err);
     await msg.reply({ content: 'خطا در ساخت تصویر. لطفاً بعداً دوباره تلاش کن.' });
     return;
   }
