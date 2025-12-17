@@ -28,7 +28,7 @@ try {
 const token = process.env.BOT_TOKEN || '';
 const ownerId = process.env.OWNER_ID || '';
 const openAiApiKey = process.env.OPENAI_API_KEY || '';
-const openAiModel = process.env.OPENAI_MODEL || 'gpt-5.2';
+const openAiModel = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const openAiVisionModel = process.env.OPENAI_VISION_MODEL || openAiModel;
 const aiWebSearchMode = (process.env.AI_WEB_SEARCH_MODE || 'auto').toLowerCase();
 const tavilyApiKey = process.env.TAVILY_API_KEY || '';
@@ -4420,7 +4420,7 @@ client.on('messageCreate', async (msg: Message) => {
       await msg.reply({ content: reply });
     } catch (err) {
       console.error('[AI CHAT ERROR]', err);
-      await msg.reply({ content: '❌ خطا در تماس با هوش مصنوعی. لطفاً بعداً دوباره تلاش کن.' });
+      await msg.reply({ content: 'خطا در تماس با هوش مصنوعی. لطفاً بعداً دوباره تلاش کن.' });
     }
     return;
   }
