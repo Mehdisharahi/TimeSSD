@@ -1,10 +1,10 @@
+import 'dotenv/config';
 import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceState, Collection, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember, AttachmentBuilder, ActivityType, MessageFlags } from 'discord.js';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
 import { PgFriendStore } from './storage/pgFriendStore';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
-import fetch from 'node-fetch';
 
 declare const require: any;
 
@@ -28,6 +28,12 @@ try {
 const token = process.env.BOT_TOKEN || '';
 const ownerId = process.env.OWNER_ID || '';
 const openAiApiKey = process.env.OPENAI_API_KEY || '';
+const openAiModel = process.env.OPENAI_MODEL || 'gpt-5.2';
+const openAiVisionModel = process.env.OPENAI_VISION_MODEL || openAiModel;
+const aiWebSearchMode = (process.env.AI_WEB_SEARCH_MODE || 'auto').toLowerCase();
+const tavilyApiKey = process.env.TAVILY_API_KEY || '';
+const braveApiKey = process.env.BRAVE_API_KEY || '';
+const serpApiKey = process.env.SERPAPI_API_KEY || '';
 const hfApiKey = process.env.HF_API_KEY || '';
 
 type ChatHistoryMessage = { role: 'user' | 'assistant'; content: string };
@@ -37,36 +43,379 @@ function getChatHistoryKey(userId: string, channelId: string): string {
   return `${channelId}:${userId}`;
 }
 
+function shouldUseWebSearch(query: string): boolean {
+  if (aiWebSearchMode === 'off' || aiWebSearchMode === '0' || aiWebSearchMode === 'false') return false;
+  if (aiWebSearchMode === 'always' || aiWebSearchMode === 'on' || aiWebSearchMode === '1' || aiWebSearchMode === 'true') return true;
+
+  const q = query.toLowerCase();
+  const keywords = [
+    'قیمت',
+    'نرخ',
+    'الان',
+    'امروز',
+    'لحظه',
+    'بروز',
+    'بهروز',
+    'به روز',
+    'خبر',
+    'اخبار',
+    'دلار',
+    'یورو',
+    'پوند',
+    'تتر',
+    'طلا',
+    'سکه',
+    'بورس',
+    'سهام',
+    'btc',
+    'bitcoin',
+    'eth',
+    'ethereum',
+    'usd',
+    'dollar',
+    'price',
+    'rate',
+    'news',
+    'today',
+    'now',
+    'weather',
+    'آب و هوا',
+    'match',
+    'score',
+    'scores',
+    'live',
+    'result',
+    'game',
+    'sports',
+    'فوتبال',
+    'والیبال',
+    'بسکتبال',
+    'نتیجه',
+    'بازی',
+    'مسابقه',
+    'گل',
+    'دقیقه',
+  ];
+  return keywords.some(k => q.includes(k));
+}
+
 // Minimal web search helper using DuckDuckGo Instant Answer API (no API key required).
 // This is best-effort and may not always return fresh or detailed results.
 async function webSearchSummary(query: string): Promise<string | null> {
-  try {
-    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-    const res = await fetch(url, { method: 'GET' as const });
-    if (!res.ok) return null;
-    const data: any = await res.json();
-
-    const parts: string[] = [];
-    if (data.AbstractText) {
-      parts.push(data.AbstractText as string);
+  const fetchJsonWithTimeout = async (url: string, init: any, timeoutMs: number): Promise<any> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}${errText ? ` - ${errText}` : ''}`);
+      }
+      return await res.json();
+    } finally {
+      clearTimeout(timer);
     }
-    if (Array.isArray(data.RelatedTopics)) {
-      for (const topic of data.RelatedTopics.slice(0, 3)) {
-        if (topic && typeof topic.Text === 'string') {
-          parts.push(topic.Text as string);
-        } else if (topic && topic.Topics && Array.isArray(topic.Topics)) {
-          for (const t of topic.Topics.slice(0, 2)) {
-            if (t && typeof t.Text === 'string') parts.push(t.Text as string);
+  };
+
+  try {
+    const qLower = query.toLowerCase();
+    const hasFa = /[\u0600-\u06FF]/.test(query);
+    const isFinance =
+      /\b(usd|dollar|btc|bitcoin|eth|ethereum|price|rate|gold|coin|currency|fx)\b/.test(qLower) ||
+      /قیمت|نرخ|دلار|یورو|پوند|تتر|طلا|سکه|بورس|سهام|ارز/.test(query);
+    const isNews = /\bnews\b/.test(qLower) || /خبر|اخبار/.test(query);
+    const isSports =
+      /\b(match|score|scores|goal|goals|minute|league|vs|live)\b/.test(qLower) ||
+      /فوتبال|والیبال|بسکتبال|گل|نتیجه|چند چند|دقیقه|بازی|مسابقه|لیگ|استقلال|پرسپولیس/.test(query);
+    const needsFresh = /الان|امروز|لحظه|live|today|now|minute|score|price|rate/i.test(query);
+    const topic = isFinance ? 'finance' : isNews ? 'news' : 'general';
+
+    type ProviderSummary = { provider: string; text: string; urls: string[] };
+
+    const providerTasks: Array<Promise<ProviderSummary | null>> = [];
+
+    if (tavilyApiKey) {
+      providerTasks.push(
+        (async (): Promise<ProviderSummary | null> => {
+          try {
+            const body: any = {
+              query,
+              topic,
+              search_depth: 'basic',
+              max_results: 6,
+              include_answer: 'basic',
+              include_raw_content: false,
+              time_range: needsFresh ? 'day' : undefined,
+            };
+
+            const data: any = await fetchJsonWithTimeout(
+              'https://api.tavily.com/search',
+              {
+                method: 'POST' as const,
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${tavilyApiKey}`,
+                },
+                body: JSON.stringify(body),
+              },
+              9000
+            );
+
+            const parts: string[] = [];
+            const urls: string[] = [];
+            if (typeof data?.answer === 'string' && data.answer.trim()) {
+              parts.push(data.answer.trim());
+            }
+            if (Array.isArray(data?.results)) {
+              for (const r of data.results.slice(0, 6)) {
+                const title = typeof r?.title === 'string' ? r.title : '';
+                const url = typeof r?.url === 'string' ? r.url : '';
+                const content = typeof r?.content === 'string' ? r.content : '';
+                if (url) urls.push(url);
+                const block = [title, url, content].filter(Boolean).join('\n');
+                if (block) parts.push(block);
+              }
+            }
+            const joined = parts.join('\n\n').trim();
+            if (!joined) return null;
+            return { provider: 'tavily', text: joined, urls };
+          } catch {
+            return null;
+          }
+        })()
+      );
+    }
+
+    if (braveApiKey) {
+      providerTasks.push(
+        (async (): Promise<ProviderSummary | null> => {
+          try {
+            const params = new URLSearchParams();
+            params.set('q', query);
+            params.set('count', '6');
+            params.set('country', hasFa ? 'IR' : 'US');
+            params.set('search_lang', hasFa ? 'fa' : 'en');
+
+            const data: any = await fetchJsonWithTimeout(
+              `https://api.search.brave.com/res/v1/web/search?${params.toString()}`,
+              {
+                method: 'GET' as const,
+                headers: {
+                  'X-Subscription-Token': braveApiKey,
+                },
+              },
+              9000
+            );
+
+            const results: any[] =
+              (Array.isArray(data?.web?.results) && data.web.results) ||
+              (Array.isArray(data?.results) && data.results) ||
+              [];
+
+            const parts: string[] = [];
+            const urls: string[] = [];
+            for (const r of results.slice(0, 6)) {
+              const title = typeof r?.title === 'string' ? r.title : typeof r?.name === 'string' ? r.name : '';
+              const url = typeof r?.url === 'string' ? r.url : typeof r?.link === 'string' ? r.link : '';
+              const desc =
+                typeof r?.description === 'string'
+                  ? r.description
+                  : typeof r?.snippet === 'string'
+                    ? r.snippet
+                    : '';
+              const extraSnips = Array.isArray(r?.extra_snippets)
+                ? (r.extra_snippets.filter((x: any) => typeof x === 'string') as string[]).slice(0, 2)
+                : [];
+              if (url) urls.push(url);
+              const block = [title, url, desc, ...extraSnips].filter(Boolean).join('\n');
+              if (block) parts.push(block);
+            }
+
+            const joined = parts.join('\n\n').trim();
+            if (!joined) return null;
+            return { provider: 'brave', text: joined, urls };
+          } catch {
+            return null;
+          }
+        })()
+      );
+    }
+
+    if (serpApiKey) {
+      providerTasks.push(
+        (async (): Promise<ProviderSummary | null> => {
+          try {
+            const params = new URLSearchParams();
+            params.set('engine', isSports ? 'google_sports_results' : 'google');
+            params.set('q', query);
+            params.set('api_key', serpApiKey);
+            params.set('num', '7');
+            params.set('hl', hasFa ? 'fa' : 'en');
+            params.set('gl', hasFa ? 'ir' : 'us');
+
+            const data: any = await fetchJsonWithTimeout(
+              `https://serpapi.com/search.json?${params.toString()}`,
+              { method: 'GET' as const },
+              12000
+            );
+
+            if (typeof data?.error === 'string' && data.error.trim()) {
+              return null;
+            }
+
+            const parts: string[] = [];
+            const urls: string[] = [];
+
+            const sports = data?.sports_results?.game_spotlight;
+            if (isSports && sports && Array.isArray(sports?.teams)) {
+              const status = typeof sports?.status === 'string' ? sports.status : '';
+              const league = typeof sports?.league === 'string' ? sports.league : '';
+              const stage = typeof sports?.stage === 'string' ? sports.stage : '';
+              const timeHash = sports?.in_game_time;
+              const minute = typeof timeHash?.minute === 'number' ? timeHash.minute : null;
+              const stoppage = typeof timeHash?.stoppage === 'number' ? timeHash.stoppage : 0;
+              const timeText = minute !== null ? `${minute}${stoppage ? `+${stoppage}` : ''}` : '';
+
+              const teams = sports.teams as any[];
+              const teamLine = teams
+                .map(t => {
+                  const name = typeof t?.name === 'string' ? t.name : '';
+                  const score =
+                    typeof t?.score === 'string'
+                      ? t.score
+                      : typeof t?.score === 'number'
+                        ? String(t.score)
+                        : '';
+                  const pen = typeof t?.penalty_score === 'number' ? ` (pen ${t.penalty_score})` : '';
+                  return [name, score ? `(${score})` : '', pen].filter(Boolean).join(' ');
+                })
+                .filter(Boolean)
+                .join(' vs ');
+
+              const lines: string[] = [];
+              lines.push([league, stage].filter(Boolean).join(' — '));
+              lines.push([status, timeText ? `دقیقه ${timeText}` : ''].filter(Boolean).join(' — '));
+              if (teamLine) lines.push(teamLine);
+
+              for (const t of teams) {
+                const tName = typeof t?.name === 'string' ? t.name : '';
+                const goalSummary = Array.isArray(t?.goal_summary) ? (t.goal_summary as any[]) : [];
+                const scorerBits: string[] = [];
+                for (const gs of goalSummary.slice(0, 12)) {
+                  const pName = typeof gs?.player?.name === 'string' ? gs.player.name : '';
+                  const goalsArr = Array.isArray(gs?.goals) ? (gs.goals as any[]) : [];
+                  const times: string[] = [];
+                  for (const g of goalsArr.slice(0, 6)) {
+                    const gt = g?.in_game_time;
+                    const m = typeof gt?.minute === 'number' ? gt.minute : null;
+                    const st = typeof gt?.stoppage === 'number' ? gt.stoppage : 0;
+                    if (m !== null) times.push(`${m}${st ? `+${st}` : ''}`);
+                  }
+                  if (pName && times.length) scorerBits.push(`${pName} (${times.join('، ')}')`);
+                }
+                if (tName && scorerBits.length) {
+                  lines.push(`گل‌های ${tName}: ${scorerBits.join(' | ')}`);
+                }
+              }
+
+              const watchOn = typeof sports?.watch_on === 'string' ? sports.watch_on : '';
+              if (watchOn) {
+                urls.push(watchOn);
+                lines.push(watchOn);
+              }
+              const highlight = typeof sports?.video_highlights?.link === 'string' ? sports.video_highlights.link : '';
+              if (highlight) {
+                urls.push(highlight);
+                lines.push(highlight);
+              }
+
+              const joinedSports = lines.filter(Boolean).join('\n').trim();
+              if (joinedSports) parts.push(joinedSports);
+            }
+
+            if (Array.isArray(data?.organic_results)) {
+              for (const r of (data.organic_results as any[]).slice(0, 6)) {
+                const title = typeof r?.title === 'string' ? r.title : '';
+                const link = typeof r?.link === 'string' ? r.link : '';
+                const snippet = typeof r?.snippet === 'string' ? r.snippet : '';
+                if (link) urls.push(link);
+                const block = [title, link, snippet].filter(Boolean).join('\n');
+                if (block) parts.push(block);
+              }
+            }
+
+            const joined = parts.join('\n\n').trim();
+            if (!joined) return null;
+            return { provider: 'serpapi', text: joined, urls };
+          } catch {
+            return null;
+          }
+        })()
+      );
+    }
+
+    const settled = await Promise.allSettled(providerTasks);
+    const providerSummaries: ProviderSummary[] = [];
+    for (const s of settled) {
+      if (s.status === 'fulfilled' && s.value) providerSummaries.push(s.value);
+    }
+
+    const ddgFallback = async (): Promise<string | null> => {
+      try {
+        const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+        const res = await fetch(url, { method: 'GET' as const });
+        if (!res.ok) return null;
+        const data: any = await res.json();
+
+        const parts: string[] = [];
+        if (data.AbstractText) {
+          parts.push(data.AbstractText as string);
+        }
+        if (Array.isArray(data.RelatedTopics)) {
+          for (const topic of data.RelatedTopics.slice(0, 3)) {
+            if (topic && typeof topic.Text === 'string') {
+              parts.push(topic.Text as string);
+            } else if (topic && topic.Topics && Array.isArray(topic.Topics)) {
+              for (const t of topic.Topics.slice(0, 2)) {
+                if (t && typeof t.Text === 'string') parts.push(t.Text as string);
+              }
+            }
           }
         }
+        if (!parts.length) return null;
+        return parts.join('\n');
+      } catch {
+        return null;
+      }
+    };
+
+    if (providerSummaries.length === 0) {
+      return await ddgFallback();
+    }
+
+    const fetchedAt = new Date().toISOString();
+    const header = `زمان دریافت نتایج: ${fetchedAt}`;
+    const blocks: string[] = [header];
+    const allUrls = new Set<string>();
+
+    for (const ps of providerSummaries) {
+      blocks.push(`\n---\n[${ps.provider}]\n${ps.text}`);
+      for (const u of ps.urls) {
+        if (u) allUrls.add(u);
       }
     }
-    if (!parts.length) return null;
-    return parts.join('\n');
+
+    if (allUrls.size > 0) {
+      blocks.push(`\n---\nمنابع (URLs):\n${Array.from(allUrls).slice(0, 15).join('\n')}`);
+    }
+
+    const joined = blocks.join('\n').trim();
+    return joined.length > 4500 ? joined.slice(0, 4500) + '…' : joined;
+
   } catch {
     return null;
   }
-}
+ }
 
 async function generateAiReply(
   prompt: string,
@@ -95,15 +444,22 @@ async function generateAiReply(
     ];
   }
 
-  const webSummary = await webSearchSummary(baseText).catch(() => null);
+  const webSummary = shouldUseWebSearch(baseText) ? await webSearchSummary(baseText).catch(() => null) : null;
+  const model = replyImageUrl ? openAiVisionModel : openAiModel;
 
   const body = {
-    model: 'gpt-4o-mini',
+    model,
     messages: [
       {
         role: 'system',
         content:
-          'You are a helpful Persian-speaking assistant inside a Discord bot. Answer briefly and clearly. Avoid explicit hate, threats, or sexual content. You can be a bit casual, but keep things respectful.',
+          'You are a helpful Persian-speaking assistant inside a Discord bot.\n' +
+          'Always answer in Persian unless the user explicitly asks for another language.\n' +
+          'For time-sensitive questions (live sports scores, prices, news, weather), do not guess. If web search results are provided, use them as the primary source of truth. If the provided results are insufficient, say so.\n' +
+          'When using web information, include a final section named "منابع:" with 2 to 5 source URLs.\n' +
+          'If sources conflict, mention the conflict briefly and prefer the most recent/credible source.\n' +
+          'Be clear and reasonably concise, but include key details when available (e.g., score + minute + scorers/times for live matches).\n' +
+          'Avoid explicit hate, threats, or sexual content. Be respectful.',
       },
       ...history,
       ...(webSummary
@@ -111,9 +467,9 @@ async function generateAiReply(
             {
               role: 'system' as const,
               content:
-                'خلاصه نتایج جستجوی وب برای پرسش فعلی:\n' +
+                'نتایج جستجوی وب برای پرسش فعلی (برای پاسخ دقیق و استناد):\n' +
                 webSummary +
-                '\n\nدر صورت مفید بودن از این اطلاعات استفاده کن و اگر متناقض یا قدیمی هستند، توضیح بده.',
+                '\n\nقوانین: درباره اطلاعات زمان-حساس فقط بر اساس این نتایج جواب بده و حدس نزن. اگر کافی نیست بگو اطلاعات کافی پیدا نشد. در انتهای پاسخ حتماً بخش «منابع:» را با چند لینک معتبر بنویس. اگر منابع متناقض‌اند، تناقض را توضیح بده و منبع تازه‌تر/معتبرتر را ترجیح بده.',
             },
           ]
         : []),
@@ -135,7 +491,8 @@ async function generateAiReply(
   });
 
   if (!res.ok) {
-    throw new Error(`OpenAI API error: ${res.status}`);
+    const errText = await res.text().catch(() => '');
+    throw new Error(`OpenAI API error: ${res.status}${errText ? ` - ${errText}` : ''}`);
   }
 
   const data: any = await res.json();
