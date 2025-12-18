@@ -270,6 +270,7 @@ type FootballTeam = {
   country: string | null;
   logo: string | null;
   venueName: string | null;
+  leagueId: string | null;
 };
 
 const footballTeamSearchCache = new Map<string, { at: number; value: FootballTeam | null }>();
@@ -348,6 +349,7 @@ async function findFootballTeamByQuery(rawQuery: string): Promise<FootballTeam |
           country: best.strCountry ?? null,
           logo: best.strBadge ?? best.strLogo ?? null,
           venueName: best.strStadium ?? null,
+          leagueId: best.idLeague ?? null,
         }
       : null;
     footballTeamSearchCache.set(cacheKey, { at: Date.now(), value: team });
@@ -369,39 +371,36 @@ type FootballMatchData = {
   awayTeam: { name: string; logo: string | null };
 };
 
-async function getNextEventForTeam(teamId: string): Promise<SportsDbEvent | null> {
-  console.log(`[FOOTBALL] Fetching next events for team ${teamId}`);
+async function getNextEventForTeam(teamId: string, leagueId: string): Promise<SportsDbEvent | null> {
+  console.log(`[FOOTBALL] Fetching next events for team ${teamId} in league ${leagueId}`);
   try {
-    const endpoint = `/eventsnext.php?id=${teamId}`;
+    // Use league-based endpoint to get all upcoming matches in the league
+    const endpoint = `/eventsnextleague.php?id=${leagueId}`;
     console.log(`[FOOTBALL] API endpoint: ${sportsDbBaseUrl}${endpoint}`);
     const resp = await sportsDbGet<{ events: SportsDbEvent[] | null }>(endpoint);
     const events = resp?.events || [];
-    console.log(`[FOOTBALL] Next events response:`, events.length, 'items');
+    console.log(`[FOOTBALL] League events response:`, events.length, 'items');
     
     if (events.length === 0) {
-      console.log(`[FOOTBALL] No events found for team ${teamId}`);
+      console.log(`[FOOTBALL] No events found in league ${leagueId}`);
       return null;
     }
     
-    console.log(`[FOOTBALL] First event raw data:`, JSON.stringify(events[0], null, 2));
-    
-    // CRITICAL FIX: Filter to only show events where our team is actually playing!
-    // TheSportsDB API sometimes returns wrong team's events (bug in their API)
-    const relevantEvents = events.filter(e => {
+    // Filter to only events where our team is playing
+    const teamEvents = events.filter(e => {
       const isHomeTeam = e.idHomeTeam === teamId;
       const isAwayTeam = e.idAwayTeam === teamId;
-      const isRelevant = isHomeTeam || isAwayTeam;
-      
-      if (!isRelevant) {
-        console.log(`[FOOTBALL] Skipping irrelevant event: ${e.strEvent} (Home: ${e.idHomeTeam}, Away: ${e.idAwayTeam}, Search: ${teamId})`);
-      }
-      
-      return isRelevant;
+      return isHomeTeam || isAwayTeam;
     });
     
-    console.log(`[FOOTBALL] Relevant events (after team filter): ${relevantEvents.length} out of ${events.length}`);
+    console.log(`[FOOTBALL] Found ${teamEvents.length} events for team ${teamId}`);
     
-    const upcoming = relevantEvents
+    if (teamEvents.length === 0) {
+      return null;
+    }
+    
+    // Filter to only upcoming matches (not started yet)
+    const upcoming = teamEvents
       .filter(e => e.strStatus === 'Not Started' || e.strStatus === '')
       .sort((a, b) => {
         const timeA = new Date(a.strTimestamp || a.dateEvent).getTime();
@@ -409,36 +408,41 @@ async function getNextEventForTeam(teamId: string): Promise<SportsDbEvent | null
         return timeA - timeB;
       });
     
-    console.log(`[FOOTBALL] Filtered upcoming events: ${upcoming.length}`);
+    console.log(`[FOOTBALL] Upcoming matches: ${upcoming.length}`);
     
     if (upcoming.length > 0) {
-      console.log(`[FOOTBALL] Next event found: ${upcoming[0].strEvent} (ID: ${upcoming[0].idEvent})`);
-      console.log(`[FOOTBALL] Home team ID: ${upcoming[0].idHomeTeam}, Away team ID: ${upcoming[0].idAwayTeam}, Search team ID: ${teamId}`);
+      console.log(`[FOOTBALL] Next match: ${upcoming[0].strEvent} on ${upcoming[0].dateEvent}`);
       return upcoming[0];
     }
     
     return null;
   } catch (err) {
-    console.error(`[FOOTBALL] Error fetching next event:`, err);
+    console.error(`[FOOTBALL] Error fetching league events:`, err);
     throw err;
   }
 }
 
 
 
-async function getMatchDataForTeam(teamId: string): Promise<FootballMatchData | null> {
-  console.log(`[FOOTBALL] Getting next match for team ${teamId}`);
-  const event = await getNextEventForTeam(teamId).catch((err) => {
+async function getMatchDataForTeam(team: FootballTeam): Promise<FootballMatchData | null> {
+  console.log(`[FOOTBALL] Getting next match for team ${team.name} (ID: ${team.id}, League: ${team.leagueId})`);
+  
+  if (!team.leagueId) {
+    console.log(`[FOOTBALL] No league ID for team ${team.name}`);
+    return null;
+  }
+  
+  const event = await getNextEventForTeam(team.id, team.leagueId).catch((err) => {
     console.error(`[FOOTBALL] Next event error:`, err);
     return null;
   });
   
   if (!event) {
-    console.log(`[FOOTBALL] No next event found for team ${teamId}`);
+    console.log(`[FOOTBALL] No next event found for team ${team.name}`);
     return null;
   }
   
-  console.log(`[FOOTBALL] Found next match for team ${teamId}: ${event.strEvent}`);
+  console.log(`[FOOTBALL] Found next match for team ${team.name}: ${event.strEvent}`);
   return {
     kind: 'next',
     event,
@@ -6145,9 +6149,9 @@ client.on('messageCreate', async (msg: Message) => {
         return;
       }
       
-      console.log(`[FOOTBALL] Found team: ${team.name} (ID: ${team.id}) for query "${rawQuery}"`);
+      console.log(`[FOOTBALL] Found team: ${team.name} (ID: ${team.id}, League: ${team.leagueId}) for query "${rawQuery}"`);
 
-      const match = await getMatchDataForTeam(team.id);
+      const match = await getMatchDataForTeam(team);
       if (!match) {
         console.log(`[FOOTBALL] No match found for team ${team.name} (${team.id})`);
         await statusMsg.edit({ content: `❌ برای تیم **${team.name}** بازی بعدی پیدا نشد.` });
