@@ -470,24 +470,66 @@ type ApiFootballFixtureStatisticsTeam = {
 };
 
 async function getLiveFixtureForTeam(teamId: number): Promise<ApiFootballFixtureItem | null> {
-  const fixtures = await apiFootballGet<ApiFootballFixtureItem[]>('/fixtures', {
-    team: teamId,
-    live: 'all',
-    timezone: 'Asia/Tehran',
-  });
-  if (!Array.isArray(fixtures) || fixtures.length === 0) return null;
-  fixtures.sort((a, b) => (a?.fixture?.timestamp ?? 0) - (b?.fixture?.timestamp ?? 0));
-  return fixtures[0] ?? null;
+  console.log(`[FOOTBALL] Fetching live fixture for team ${teamId}`);
+  try {
+    const fixtures = await apiFootballGet<ApiFootballFixtureItem[]>('/fixtures', {
+      team: teamId,
+      live: 'all',
+      timezone: 'Asia/Tehran',
+    });
+    console.log(`[FOOTBALL] Live fixtures response:`, fixtures?.length ?? 0, 'items');
+    if (!Array.isArray(fixtures) || fixtures.length === 0) return null;
+    fixtures.sort((a, b) => (a?.fixture?.timestamp ?? 0) - (b?.fixture?.timestamp ?? 0));
+    return fixtures[0] ?? null;
+  } catch (err) {
+    console.error(`[FOOTBALL] Error fetching live fixture:`, err);
+    throw err;
+  }
 }
 
 async function getNextFixtureForTeam(teamId: number): Promise<ApiFootballFixtureItem | null> {
-  const fixtures = await apiFootballGet<ApiFootballFixtureItem[]>('/fixtures', {
-    team: teamId,
-    next: 1,
-    timezone: 'Asia/Tehran',
-  });
-  if (!Array.isArray(fixtures) || fixtures.length === 0) return null;
-  return fixtures[0] ?? null;
+  console.log(`[FOOTBALL] Fetching next fixture for team ${teamId}`);
+  try {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+    const season = currentMonth >= 7 ? currentYear : currentYear - 1;
+    
+    const today = now.toISOString().split('T')[0];
+    const futureDate = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
+    const future = futureDate.toISOString().split('T')[0];
+    
+    console.log(`[FOOTBALL] Querying fixtures from ${today} to ${future} for season ${season}`);
+    
+    const fixtures = await apiFootballGet<ApiFootballFixtureItem[]>('/fixtures', {
+      team: teamId,
+      season: season,
+      from: today,
+      to: future,
+      timezone: 'Asia/Tehran',
+    });
+    
+    console.log(`[FOOTBALL] Next fixtures response:`, fixtures?.length ?? 0, 'items');
+    
+    if (!Array.isArray(fixtures) || fixtures.length === 0) return null;
+    
+    const upcoming = fixtures
+      .filter((f) => {
+        const status = f?.fixture?.status?.short;
+        return status === 'NS' || status === 'TBD' || status === 'PST';
+      })
+      .sort((a, b) => (a?.fixture?.timestamp ?? 0) - (b?.fixture?.timestamp ?? 0));
+    
+    if (upcoming.length > 0) {
+      console.log(`[FOOTBALL] Next fixture found:`, upcoming[0]?.fixture?.id, upcoming[0]?.teams?.home?.name, 'vs', upcoming[0]?.teams?.away?.name);
+      return upcoming[0];
+    }
+    
+    return null;
+  } catch (err) {
+    console.error(`[FOOTBALL] Error fetching next fixture:`, err);
+    throw err;
+  }
 }
 
 async function getFixtureEvents(fixtureId: number): Promise<ApiFootballFixtureEvent[]> {
@@ -508,8 +550,13 @@ type FootballMatchData = {
 };
 
 async function getLiveOrNextMatchForTeam(teamId: number): Promise<FootballMatchData | null> {
-  const live = await getLiveFixtureForTeam(teamId).catch(() => null);
+  console.log(`[FOOTBALL] Getting live or next match for team ${teamId}`);
+  const live = await getLiveFixtureForTeam(teamId).catch((err) => {
+    console.error(`[FOOTBALL] Live fixture error:`, err);
+    return null;
+  });
   if (live) {
+    console.log(`[FOOTBALL] Found live match for team ${teamId}`);
     const fixtureId = live.fixture.id;
     const [events, statistics] = await Promise.all([
       getFixtureEvents(fixtureId).catch(() => []),
@@ -517,8 +564,16 @@ async function getLiveOrNextMatchForTeam(teamId: number): Promise<FootballMatchD
     ]);
     return { kind: 'live', fixture: live, events, statistics };
   }
-  const next = await getNextFixtureForTeam(teamId).catch(() => null);
-  if (!next) return null;
+  console.log(`[FOOTBALL] No live match, checking next fixture...`);
+  const next = await getNextFixtureForTeam(teamId).catch((err) => {
+    console.error(`[FOOTBALL] Next fixture error:`, err);
+    return null;
+  });
+  if (!next) {
+    console.log(`[FOOTBALL] No next fixture found for team ${teamId}`);
+    return null;
+  }
+  console.log(`[FOOTBALL] Found next match for team ${teamId}`);
   return { kind: 'next', fixture: next, events: [], statistics: [] };
 }
 
@@ -6333,12 +6388,17 @@ client.on('messageCreate', async (msg: Message) => {
         await statusMsg.edit({ content: '❌ تیم پیدا نشد. اسم تیم را دقیق‌تر بنویس.' });
         return;
       }
+      
+      console.log(`[FOOTBALL] Found team: ${team.name} (ID: ${team.id}) for query "${rawQuery}"`);
 
       const match = await getLiveOrNextMatchForTeam(team.id);
       if (!match) {
+        console.log(`[FOOTBALL] No match found for team ${team.name} (${team.id})`);
         await statusMsg.edit({ content: `❌ برای تیم **${team.name}** بازی زنده یا بازی بعدی پیدا نشد.` });
         return;
       }
+      
+      console.log(`[FOOTBALL] Match found for ${team.name}: ${match.kind} - ${match.fixture.teams.home.name} vs ${match.fixture.teams.away.name}`);
 
       const buffer = await renderFootballMatchImage(team, match);
       const attachment = new AttachmentBuilder(buffer, { name: 'football.png' });
