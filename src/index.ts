@@ -35,6 +35,8 @@ const tavilyApiKey = process.env.TAVILY_API_KEY || '';
 const braveApiKey = process.env.BRAVE_API_KEY || '';
 const serpApiKey = process.env.SERPAPI_API_KEY || '';
 const hfApiKey = process.env.HF_API_KEY || '';
+const apiFootballKey = process.env.API_FOOTBALL_KEY || '';
+const apiFootballBaseUrl = 'https://v3.football.api-sports.io';
 
 type ChatHistoryMessage = { role: 'user' | 'assistant'; content: string };
 const chatHistories = new Map<string, ChatHistoryMessage[]>();
@@ -99,24 +101,625 @@ function shouldUseWebSearch(query: string): boolean {
   return keywords.some(k => q.includes(k));
 }
 
+async function fetchJsonWithTimeout<T>(url: string, init: RequestInit, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}${errText ? ` - ${errText}` : ''}`);
+    }
+    return (await res.json()) as T;
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+type ApiFootballEnvelope<T> = {
+  get?: string;
+  parameters?: Record<string, unknown>;
+  errors?: unknown;
+  results?: number;
+  paging?: { current: number; total: number };
+  response: T;
+};
+
+function apiFootballErrorsToMessage(errors: unknown): string | null {
+  if (!errors) return null;
+  if (Array.isArray(errors)) {
+    if (errors.length === 0) return null;
+    return errors
+      .map(e => {
+        if (typeof e === 'string') return e;
+        try {
+          return JSON.stringify(e);
+        } catch {
+          return String(e);
+        }
+      })
+      .join(', ');
+  }
+  if (typeof errors === 'object') {
+    const entries = Object.entries(errors as Record<string, unknown>);
+    if (entries.length === 0) return null;
+    return entries.map(([k, v]) => `${k}: ${String(v)}`).join(', ');
+  }
+  return String(errors);
+}
+
+async function apiFootballGet<T>(
+  endpointPath: string,
+  params?: Record<string, string | number | boolean | undefined>,
+  timeoutMs = 12_000
+): Promise<T> {
+  if (!apiFootballKey) {
+    throw new Error('Missing API_FOOTBALL_KEY in .env');
+  }
+  const url = new URL(
+    endpointPath.startsWith('/') ? `${apiFootballBaseUrl}${endpointPath}` : `${apiFootballBaseUrl}/${endpointPath}`
+  );
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      if (typeof v === 'undefined') continue;
+      url.searchParams.set(k, String(v));
+    }
+  }
+  const envelope = await fetchJsonWithTimeout<ApiFootballEnvelope<T>>(
+    url.toString(),
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'x-apisports-key': apiFootballKey,
+      },
+    },
+    timeoutMs
+  );
+  const errMsg = apiFootballErrorsToMessage(envelope?.errors);
+  if (errMsg) {
+    throw new Error(`API-Football error: ${errMsg}`);
+  }
+  return envelope.response;
+}
+
+function normalizeFootballQuery(input: string): string {
+  let s = (input || '').trim();
+  s = s
+    .replace(/\u200c/g, ' ')
+    .replace(/[ي]/g, 'ی')
+    .replace(/[ك]/g, 'ک')
+    .replace(/[ۀة]/g, 'ه')
+    .replace(/[إأٱآ]/g, 'ا')
+    .replace(/[ؤ]/g, 'و')
+    .replace(/[ئ]/g, 'ی');
+  s = s.replace(/[\u064B-\u065F\u0610-\u061A\u06D6-\u06ED]/g, '');
+  s = s.toLowerCase();
+  s = s.replace(/[_\-]+/g, ' ');
+  s = s.replace(/[^\p{L}\p{N}\s]+/gu, ' ');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+const footballTeamAliases = new Map<string, string>(
+  [
+    ['barca', 'barcelona'],
+    ['fc barcelona', 'barcelona'],
+    ['barcelona fc', 'barcelona'],
+    ['بارسا', 'barcelona'],
+    ['بارسلونا', 'barcelona'],
+    ['barcelona', 'barcelona'],
+
+    ['real madrid', 'real madrid'],
+    ['رئال', 'real madrid'],
+    ['رئال مادرید', 'real madrid'],
+
+    ['atletico madrid', 'atletico madrid'],
+    ['اتلتیکو', 'atletico madrid'],
+    ['اتلتیکو مادرید', 'atletico madrid'],
+
+    ['bayern', 'bayern munich'],
+    ['bayern munich', 'bayern munich'],
+    ['بایرن', 'bayern munich'],
+    ['بایرن مونیخ', 'bayern munich'],
+
+    ['man utd', 'manchester united'],
+    ['man united', 'manchester united'],
+    ['manchester united', 'manchester united'],
+    ['منچستر یونایتد', 'manchester united'],
+    ['من یو', 'manchester united'],
+
+    ['man city', 'manchester city'],
+    ['manchester city', 'manchester city'],
+    ['منچستر سیتی', 'manchester city'],
+
+    ['psg', 'paris saint germain'],
+    ['paris saint germain', 'paris saint germain'],
+    ['پاری سن ژرمن', 'paris saint germain'],
+
+    ['juventus', 'juventus'],
+    ['یوونتوس', 'juventus'],
+  ].map(([k, v]) => [normalizeFootballQuery(k), v])
+);
+
+type ApiFootballTeamSearchItem = {
+  team: {
+    id: number;
+    name: string;
+    code?: string | null;
+    country?: string | null;
+    founded?: number | null;
+    national?: boolean;
+    logo?: string | null;
+  };
+  venue?: {
+    id?: number | null;
+    name?: string | null;
+    city?: string | null;
+    capacity?: number | null;
+    surface?: string | null;
+    image?: string | null;
+  } | null;
+};
+
+type FootballTeam = {
+  id: number;
+  name: string;
+  country: string | null;
+  logo: string | null;
+  venueName: string | null;
+  venueCity: string | null;
+};
+
+const footballTeamSearchCache = new Map<string, { at: number; value: FootballTeam | null }>();
+const footballTeamSearchInFlight = new Map<string, Promise<FootballTeam | null>>();
+const FOOTBALL_TEAM_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function pickBestFootballTeamCandidate(
+  candidates: ApiFootballTeamSearchItem[],
+  searchTerm: string
+): ApiFootballTeamSearchItem | null {
+  const q = normalizeFootballQuery(searchTerm);
+  if (!candidates.length) return null;
+  let best: { score: number; item: ApiFootballTeamSearchItem } | null = null;
+  for (const item of candidates) {
+    const name = item?.team?.name;
+    if (!name) continue;
+    const n = normalizeFootballQuery(name);
+    let score = 0;
+    if (n === q) score += 1000;
+    if (n.startsWith(q)) score += 250;
+    if (n.includes(q)) score += 120;
+    if (item?.team?.national) score -= 20;
+    if (/\b(u\d{1,2}|ii|b|women|w)\b/i.test(name)) score -= 120;
+    score -= Math.min(60, Math.max(0, n.length - q.length));
+    if (!best || score > best.score) best = { score, item };
+  }
+  return best?.item ?? candidates[0] ?? null;
+}
+
+async function findFootballTeamByQuery(rawQuery: string): Promise<FootballTeam | null> {
+  const rawNorm = normalizeFootballQuery(rawQuery);
+  if (!rawNorm) return null;
+  const searchTerm = footballTeamAliases.get(rawNorm) || rawQuery.trim();
+  const cacheKey = normalizeFootballQuery(searchTerm);
+  if (!cacheKey) return null;
+
+  const now = Date.now();
+  const cached = footballTeamSearchCache.get(cacheKey);
+  if (cached && now - cached.at < FOOTBALL_TEAM_CACHE_TTL_MS) return cached.value;
+
+  const inFlight = footballTeamSearchInFlight.get(cacheKey);
+  if (inFlight) return inFlight;
+
+  const p = (async (): Promise<FootballTeam | null> => {
+    const resp = await apiFootballGet<ApiFootballTeamSearchItem[]>('/teams', { search: searchTerm }, 12_000);
+    const best = pickBestFootballTeamCandidate(resp || [], searchTerm);
+    const team: FootballTeam | null = best
+      ? {
+          id: best.team.id,
+          name: best.team.name,
+          country: best.team.country ?? null,
+          logo: best.team.logo ?? null,
+          venueName: best.venue?.name ?? null,
+          venueCity: best.venue?.city ?? null,
+        }
+      : null;
+    footballTeamSearchCache.set(cacheKey, { at: Date.now(), value: team });
+    return team;
+  })();
+
+  footballTeamSearchInFlight.set(cacheKey, p);
+  try {
+    return await p;
+  } finally {
+    footballTeamSearchInFlight.delete(cacheKey);
+  }
+}
+
+type ApiFootballFixtureTeam = {
+  id: number;
+  name: string;
+  logo?: string | null;
+  winner?: boolean | null;
+};
+
+type ApiFootballFixtureGoals = { home: number | null; away: number | null };
+
+type ApiFootballFixtureStatus = {
+  long: string;
+  short: string;
+  elapsed: number | null;
+};
+
+type ApiFootballFixture = {
+  id: number;
+  referee?: string | null;
+  timezone?: string | null;
+  date: string;
+  timestamp: number;
+  status: ApiFootballFixtureStatus;
+  venue?: { id?: number | null; name?: string | null; city?: string | null } | null;
+};
+
+type ApiFootballFixtureLeague = {
+  id: number;
+  name: string;
+  country?: string | null;
+  logo?: string | null;
+  flag?: string | null;
+  season?: number | null;
+  round?: string | null;
+};
+
+type ApiFootballFixtureScore = {
+  halftime?: ApiFootballFixtureGoals | null;
+  fulltime?: ApiFootballFixtureGoals | null;
+  extratime?: ApiFootballFixtureGoals | null;
+  penalty?: ApiFootballFixtureGoals | null;
+};
+
+type ApiFootballFixtureItem = {
+  fixture: ApiFootballFixture;
+  league: ApiFootballFixtureLeague;
+  teams: { home: ApiFootballFixtureTeam; away: ApiFootballFixtureTeam };
+  goals: ApiFootballFixtureGoals;
+  score?: ApiFootballFixtureScore | null;
+};
+
+type ApiFootballFixtureEvent = {
+  time: { elapsed: number | null; extra?: number | null };
+  team: { id: number; name: string; logo?: string | null };
+  player: { id?: number | null; name?: string | null };
+  assist?: { id?: number | null; name?: string | null } | null;
+  type: string;
+  detail: string;
+  comments?: string | null;
+};
+
+type ApiFootballFixtureStatisticsEntry = { type: string; value: number | string | null };
+type ApiFootballFixtureStatisticsTeam = {
+  team: { id: number; name: string; logo?: string | null };
+  statistics: ApiFootballFixtureStatisticsEntry[];
+};
+
+async function getLiveFixtureForTeam(teamId: number): Promise<ApiFootballFixtureItem | null> {
+  const fixtures = await apiFootballGet<ApiFootballFixtureItem[]>('/fixtures', {
+    team: teamId,
+    live: 'all',
+    timezone: 'Asia/Tehran',
+  });
+  if (!Array.isArray(fixtures) || fixtures.length === 0) return null;
+  fixtures.sort((a, b) => (a?.fixture?.timestamp ?? 0) - (b?.fixture?.timestamp ?? 0));
+  return fixtures[0] ?? null;
+}
+
+async function getNextFixtureForTeam(teamId: number): Promise<ApiFootballFixtureItem | null> {
+  const fixtures = await apiFootballGet<ApiFootballFixtureItem[]>('/fixtures', {
+    team: teamId,
+    next: 1,
+    timezone: 'Asia/Tehran',
+  });
+  if (!Array.isArray(fixtures) || fixtures.length === 0) return null;
+  return fixtures[0] ?? null;
+}
+
+async function getFixtureEvents(fixtureId: number): Promise<ApiFootballFixtureEvent[]> {
+  const events = await apiFootballGet<ApiFootballFixtureEvent[]>('/fixtures/events', { fixture: fixtureId }, 12_000);
+  return Array.isArray(events) ? events : [];
+}
+
+async function getFixtureStatistics(fixtureId: number): Promise<ApiFootballFixtureStatisticsTeam[]> {
+  const stats = await apiFootballGet<ApiFootballFixtureStatisticsTeam[]>('/fixtures/statistics', { fixture: fixtureId }, 12_000);
+  return Array.isArray(stats) ? stats : [];
+}
+
+type FootballMatchData = {
+  kind: 'live' | 'next';
+  fixture: ApiFootballFixtureItem;
+  events: ApiFootballFixtureEvent[];
+  statistics: ApiFootballFixtureStatisticsTeam[];
+};
+
+async function getLiveOrNextMatchForTeam(teamId: number): Promise<FootballMatchData | null> {
+  const live = await getLiveFixtureForTeam(teamId).catch(() => null);
+  if (live) {
+    const fixtureId = live.fixture.id;
+    const [events, statistics] = await Promise.all([
+      getFixtureEvents(fixtureId).catch(() => []),
+      getFixtureStatistics(fixtureId).catch(() => []),
+    ]);
+    return { kind: 'live', fixture: live, events, statistics };
+  }
+  const next = await getNextFixtureForTeam(teamId).catch(() => null);
+  if (!next) return null;
+  return { kind: 'next', fixture: next, events: [], statistics: [] };
+}
+
+function footballFormatEventMinute(time: { elapsed: number | null; extra?: number | null }): string {
+  const m = time?.elapsed;
+  if (typeof m !== 'number') return '';
+  const ex = time?.extra;
+  return typeof ex === 'number' && ex ? `${m}+${ex}` : String(m);
+}
+
+function footballFormatDateFa(dateStr: string): string {
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  try {
+    return d.toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' });
+  } catch {
+    return d.toLocaleString('fa-IR');
+  }
+}
+
+function footballEllipsize(ctx: any, input: string, maxWidth: number): string {
+  const text = (input || '').trim();
+  if (!text) return '';
+  try {
+    if (ctx.measureText(text).width <= maxWidth) return text;
+    let t = text;
+    while (t.length > 1 && ctx.measureText(`${t}…`).width > maxWidth) {
+      t = t.slice(0, -1);
+    }
+    return t.length > 1 ? `${t}…` : text;
+  } catch {
+    return text;
+  }
+}
+
+function footballValueToString(v: number | string | null | undefined): string {
+  if (v === null || typeof v === 'undefined') return '';
+  if (typeof v === 'number') return String(v);
+  return String(v);
+}
+
+function footballIsGoalEvent(e: ApiFootballFixtureEvent): boolean {
+  if (!e || e.type !== 'Goal') return false;
+  const d = (e.detail || '').toLowerCase();
+  if (d.includes('missed')) return false;
+  if (d.includes('cancel')) return false;
+  return true;
+}
+
+async function footballTryLoadImage(url: string | null | undefined): Promise<any | null> {
+  if (!url || !loadImage) return null;
+  try {
+    return await loadImage(url);
+  } catch {
+    return null;
+  }
+}
+
+function footballFindStat(teamStats: ApiFootballFixtureStatisticsTeam | null, statType: string): string {
+  if (!teamStats) return '';
+  const found = teamStats.statistics?.find(s => (s?.type || '').toLowerCase() === statType.toLowerCase());
+  return footballValueToString(found?.value);
+}
+
+async function renderFootballMatchImage(team: FootballTeam, data: FootballMatchData): Promise<Buffer> {
+  if (!canvasAvailable || !createCanvas || !loadImage) {
+    throw new Error('Canvas not available in this environment');
+  }
+
+  const size = { w: 1000, h: 620 };
+  const canvas = createCanvas(size.w, size.h);
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#1e1f22';
+  ctx.fillRect(0, 0, size.w, size.h);
+
+  const headerH = 70;
+  const headerGrad = ctx.createLinearGradient(0, 0, size.w, 0);
+  headerGrad.addColorStop(0, '#1b2a4a');
+  headerGrad.addColorStop(1, '#3b1b4a');
+  ctx.fillStyle = headerGrad;
+  ctx.fillRect(0, 0, size.w, headerH);
+
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffffff';
+
+  ctx.textAlign = 'left';
+  ctx.font = ssdFontAvailable ? `bold 30px "${ssdFontFamily}"` : 'bold 30px Arial';
+  ctx.fillText(footballEllipsize(ctx, team.name, size.w * 0.55), 28, Math.floor(headerH / 2));
+
+  ctx.textAlign = 'right';
+  ctx.font = ssdFontAvailable ? `bold 24px "${ssdFontFamily}"` : 'bold 24px Arial';
+  ctx.fillText(data.kind === 'live' ? 'زنده' : 'بازی بعدی', size.w - 28, Math.floor(headerH / 2));
+
+  const fixture = data.fixture;
+  const home = fixture.teams.home;
+  const away = fixture.teams.away;
+
+  const [homeImg, awayImg, leagueImg] = await Promise.all([
+    footballTryLoadImage(home.logo),
+    footballTryLoadImage(away.logo),
+    footballTryLoadImage(fixture.league.logo),
+  ]);
+
+  const leagueLine = [fixture.league.name, fixture.league.round].filter(Boolean).join(' — ');
+  ctx.textAlign = 'center';
+  ctx.font = ssdFontAvailable ? `bold 18px "${ssdFontFamily}"` : 'bold 18px Arial';
+  ctx.fillStyle = '#dfe3ea';
+  ctx.fillText(footballEllipsize(ctx, leagueLine, size.w * 0.85), Math.floor(size.w / 2), headerH + 18);
+  if (leagueImg) {
+    try {
+      const icon = 22;
+      ctx.drawImage(leagueImg, Math.floor(size.w / 2 - icon / 2), headerH + 30, icon, icon);
+    } catch {}
+  }
+
+  const panelX = 20;
+  const panelY = headerH + 48;
+  const panelW = size.w - panelX * 2;
+  const panelH = 190;
+  ctx.fillStyle = '#2b2d31';
+  ctx.fillRect(panelX, panelY, panelW, panelH);
+
+  const logoSize = 96;
+  const logoY = panelY + 22;
+  const homeLogoX = panelX + 42;
+  const awayLogoX = panelX + panelW - 42 - logoSize;
+  if (homeImg) ctx.drawImage(homeImg, homeLogoX, logoY, logoSize, logoSize);
+  if (awayImg) ctx.drawImage(awayImg, awayLogoX, logoY, logoSize, logoSize);
+
+  const nameY = logoY + logoSize + 30;
+  ctx.font = ssdFontAvailable ? `bold 22px "${ssdFontFamily}"` : 'bold 22px Arial';
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.fillText(footballEllipsize(ctx, home.name, 320), homeLogoX + Math.floor(logoSize / 2), nameY);
+  ctx.fillText(footballEllipsize(ctx, away.name, 320), awayLogoX + Math.floor(logoSize / 2), nameY);
+
+  const homeGoals = typeof fixture.goals.home === 'number' ? fixture.goals.home : null;
+  const awayGoals = typeof fixture.goals.away === 'number' ? fixture.goals.away : null;
+  const scoreText = homeGoals !== null && awayGoals !== null ? `${homeGoals} - ${awayGoals}` : 'VS';
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = ssdFontAvailable ? `bold 64px "${ssdFontFamily}"` : 'bold 64px Arial';
+  ctx.fillText(scoreText, Math.floor(size.w / 2), panelY + 84);
+
+  const elapsed = fixture.fixture.status?.elapsed;
+  const statusLong = fixture.fixture.status?.long || '';
+  const statusLine =
+    data.kind === 'live'
+      ? [statusLong, typeof elapsed === 'number' ? `دقیقه ${elapsed}` : ''].filter(Boolean).join(' — ')
+      : footballFormatDateFa(fixture.fixture.date);
+
+  ctx.font = ssdFontAvailable ? `bold 18px "${ssdFontFamily}"` : 'bold 18px Arial';
+  ctx.fillStyle = '#c9ced6';
+  ctx.fillText(footballEllipsize(ctx, statusLine, size.w * 0.78), Math.floor(size.w / 2), panelY + 150);
+
+  const venueLine = [fixture.fixture.venue?.name, fixture.fixture.venue?.city].filter(Boolean).join(' — ');
+  if (venueLine) {
+    ctx.font = ssdFontAvailable ? `16px "${ssdFontFamily}"` : '16px Arial';
+    ctx.fillStyle = '#aeb4be';
+    ctx.fillText(footballEllipsize(ctx, venueLine, size.w * 0.78), Math.floor(size.w / 2), panelY + 176);
+  }
+
+  const leftX = 20;
+  const rightX = Math.floor(size.w / 2) + 10;
+  const bottomY = panelY + panelH + 18;
+  const bottomH = size.h - bottomY - 20;
+  const boxW = Math.floor(size.w / 2) - 30;
+  const boxH = bottomH;
+
+  ctx.fillStyle = '#2b2d31';
+  ctx.fillRect(leftX, bottomY, boxW, boxH);
+  ctx.fillRect(rightX, bottomY, boxW, boxH);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = ssdFontAvailable ? `bold 18px "${ssdFontFamily}"` : 'bold 18px Arial';
+  ctx.fillText('گلزنان', leftX + 16, bottomY + 30);
+  ctx.fillText('آمار', rightX + 16, bottomY + 30);
+
+  const goalEvents = (data.events || []).filter(footballIsGoalEvent);
+  const homeGoalsList: string[] = [];
+  const awayGoalsList: string[] = [];
+  for (const e of goalEvents) {
+    const minute = footballFormatEventMinute(e.time);
+    const who = (e.player?.name || '').trim() || 'Unknown';
+    const line = `${who}${minute ? ` (${minute}')` : ''}`;
+    if (e.team?.id === home.id) homeGoalsList.push(line);
+    else if (e.team?.id === away.id) awayGoalsList.push(line);
+  }
+
+  const goalsLeftLines: string[] = [];
+  goalsLeftLines.push(footballEllipsize(ctx, `${home.name}:`, boxW - 32));
+  if (homeGoalsList.length) goalsLeftLines.push(...homeGoalsList.slice(0, 7).map(s => `- ${s}`));
+  else goalsLeftLines.push('- —');
+  goalsLeftLines.push('');
+  goalsLeftLines.push(footballEllipsize(ctx, `${away.name}:`, boxW - 32));
+  if (awayGoalsList.length) goalsLeftLines.push(...awayGoalsList.slice(0, 7).map(s => `- ${s}`));
+  else goalsLeftLines.push('- —');
+
+  ctx.font = ssdFontAvailable ? `16px "${ssdFontFamily}"` : '16px Arial';
+  ctx.fillStyle = '#dfe3ea';
+  let gy = bottomY + 56;
+  for (const line of goalsLeftLines) {
+    if (!line) {
+      gy += 10;
+      continue;
+    }
+    ctx.fillText(footballEllipsize(ctx, line, boxW - 32), leftX + 16, gy);
+    gy += 22;
+    if (gy > bottomY + boxH - 12) break;
+  }
+
+  const statsArr = Array.isArray(data.statistics) ? data.statistics : [];
+  const homeStats = statsArr.find(s => s?.team?.id === home.id) || null;
+  const awayStats = statsArr.find(s => s?.team?.id === away.id) || null;
+
+  const statRows: Array<{ label: string; key: string }> = [
+    { label: 'مالکیت', key: 'Ball Possession' },
+    { label: 'شوت', key: 'Total Shots' },
+    { label: 'شوت در چارچوب', key: 'Shots on Goal' },
+    { label: 'کرنر', key: 'Corner Kicks' },
+    { label: 'خطا', key: 'Fouls' },
+    { label: 'کارت زرد', key: 'Yellow Cards' },
+    { label: 'کارت قرمز', key: 'Red Cards' },
+  ];
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#dfe3ea';
+  ctx.font = ssdFontAvailable ? `16px "${ssdFontFamily}"` : '16px Arial';
+  let sy = bottomY + 60;
+  const colLabelX = rightX + 16;
+  const colHomeX = rightX + Math.floor(boxW * 0.62);
+  const colAwayX = rightX + boxW - 16;
+
+  ctx.fillStyle = '#aeb4be';
+  ctx.textAlign = 'left';
+  ctx.fillText(footballEllipsize(ctx, home.name, Math.floor(boxW * 0.32)), colHomeX, bottomY + 56);
+  ctx.textAlign = 'right';
+  ctx.fillText(footballEllipsize(ctx, away.name, Math.floor(boxW * 0.32)), colAwayX, bottomY + 56);
+
+  for (const row of statRows) {
+    const hv = footballFindStat(homeStats, row.key) || '—';
+    const av = footballFindStat(awayStats, row.key) || '—';
+    ctx.fillStyle = '#dfe3ea';
+    ctx.textAlign = 'left';
+    ctx.fillText(row.label, colLabelX, sy);
+    ctx.textAlign = 'left';
+    ctx.fillText(hv, colHomeX, sy);
+    ctx.textAlign = 'right';
+    ctx.fillText(av, colAwayX, sy);
+    sy += 24;
+    if (sy > bottomY + boxH - 12) break;
+  }
+
+  return canvas.toBuffer('image/png');
+}
+
 // Minimal web search helper using DuckDuckGo Instant Answer API (no API key required).
 // This is best-effort and may not always return fresh or detailed results.
 async function webSearchSummary(query: string): Promise<string | null> {
-  const fetchJsonWithTimeout = async (url: string, init: any, timeoutMs: number): Promise<any> => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetch(url, { ...init, signal: controller.signal });
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        throw new Error(`HTTP ${res.status}${errText ? ` - ${errText}` : ''}`);
-      }
-      return await res.json();
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-
   try {
     const qLower = query.toLowerCase();
     const hasFa = /[\u0600-\u06FF]/.test(query);
@@ -2625,14 +3228,15 @@ const client = new Client({ intents: [
 
 export const timerManager = new TimerManager(client);
 
-// simple per-process duplicate guard for messageCreate
-const processedMessages = new Set<string>();
-// additional guard to avoid double .ll replies per message
-const llInFlight = new Set<string>();
-
-// ===== Voice co-presence tracking (for .friend) =====
-// channelMembers[guildId][channelId] -> Set<userId>
-const channelMembers: Map<string, Map<string, Set<string>>> = new Map();
+ // simple per-process duplicate guard for messageCreate
+ const processedMessages = new Set<string>();
+ // additional guard to avoid double .ll replies per message
+ const llInFlight = new Set<string>();
+ const footballInFlight = new Set<string>();
+ 
+ // ===== Voice co-presence tracking (for .friend) =====
+ // channelMembers[guildId][channelId] -> Set<userId>
+ const channelMembers: Map<string, Map<string, Set<string>>> = new Map();
 // pairStarts[guildId][pairKey] -> startEpochMs (active session per channel)
 const pairStarts: Map<string, Map<string, number>> = new Map();
 // partnerTotals[guildId][userId][partnerId] -> totalMs
@@ -5643,6 +6247,49 @@ client.on('messageCreate', async (msg: Message) => {
     
     await msg.reply({ content: '📝 لطفاً پیام مورد نظر برای ارسال به دایرکت کاربران را ارسال کنید.\n\n(برای لغو از دستور `.cancel` استفاده کنید)' });
     return;
+  }
+
+  // .football / .فوتبال command
+  if (isCmd('football') || isCmd('فوتبال')) {
+    if (footballInFlight.has(msg.id)) return;
+    footballInFlight.add(msg.id);
+    try {
+      if (!canvasAvailable || !createCanvas || !loadImage) {
+        await msg.reply({ content: 'امکان ساخت تصویر فوتبال در این سرور فعال نیست.' });
+        return;
+      }
+
+      const cmdLen = isCmd('football') ? 9 : 7;
+      const rawQuery = content.slice(cmdLen).trim();
+      if (!rawQuery) {
+        await msg.reply({ content: 'استفاده: `.football <team>` یا `.فوتبال <team>`' });
+        return;
+      }
+
+      const statusMsg = await msg.reply({ content: '⏳ در حال دریافت اطلاعات بازی...' });
+      const team = await findFootballTeamByQuery(rawQuery);
+      if (!team) {
+        await statusMsg.edit({ content: '❌ تیم پیدا نشد. اسم تیم را دقیق‌تر بنویس.' });
+        return;
+      }
+
+      const match = await getLiveOrNextMatchForTeam(team.id);
+      if (!match) {
+        await statusMsg.edit({ content: `❌ برای تیم **${team.name}** بازی زنده یا بازی بعدی پیدا نشد.` });
+        return;
+      }
+
+      const buffer = await renderFootballMatchImage(team, match);
+      const attachment = new AttachmentBuilder(buffer, { name: 'football.png' });
+      await statusMsg.edit({ content: `**${team.name}**`, files: [attachment] });
+      return;
+    } catch (err) {
+      console.error('Error in .football command:', err);
+      await msg.reply({ content: '❌ خطا در دریافت/ساخت گزارش فوتبال. لطفاً کمی بعد دوباره تلاش کنید.' });
+      return;
+    } finally {
+      footballInFlight.delete(msg.id);
+    }
   }
 
   // .ll command
