@@ -317,15 +317,30 @@ async function findFootballTeamByQuery(rawQuery: string): Promise<FootballTeam |
 
   const now = Date.now();
   const cached = footballTeamSearchCache.get(cacheKey);
-  if (cached && now - cached.at < FOOTBALL_TEAM_CACHE_TTL_MS) return cached.value;
+  // Temporarily disable cache for debugging
+  // if (cached && now - cached.at < FOOTBALL_TEAM_CACHE_TTL_MS) return cached.value;
 
   const inFlight = footballTeamSearchInFlight.get(cacheKey);
   if (inFlight) return inFlight;
 
   const p = (async (): Promise<FootballTeam | null> => {
-    const resp = await sportsDbGet<{ teams: SportsDbTeam[] | null }>(`/searchteams.php?t=${encodeURIComponent(searchTerm)}`);
+    const endpoint = `/searchteams.php?t=${encodeURIComponent(searchTerm)}`;
+    console.log(`[FOOTBALL SEARCH] Searching for: "${searchTerm}" via ${sportsDbBaseUrl}${endpoint}`);
+    const resp = await sportsDbGet<{ teams: SportsDbTeam[] | null }>(endpoint);
     const teams = resp?.teams || [];
+    console.log(`[FOOTBALL SEARCH] Found ${teams.length} teams`);
+    
+    if (teams.length > 0) {
+      teams.forEach((t, i) => {
+        console.log(`[FOOTBALL SEARCH] Team ${i + 1}: ${t.strTeam} (ID: ${t.idTeam}, League: ${t.strLeague}, Country: ${t.strCountry}, Sport: ${t.strSport})`);
+      });
+    }
+    
     const best = pickBestSportsDbTeam(teams, searchTerm);
+    if (best) {
+      console.log(`[FOOTBALL SEARCH] Selected best match: ${best.strTeam} (ID: ${best.idTeam})`);
+    }
+    
     const team: FootballTeam | null = best
       ? {
           id: best.idTeam,
@@ -357,13 +372,36 @@ type FootballMatchData = {
 async function getNextEventForTeam(teamId: string): Promise<SportsDbEvent | null> {
   console.log(`[FOOTBALL] Fetching next events for team ${teamId}`);
   try {
-    const resp = await sportsDbGet<{ events: SportsDbEvent[] | null }>(`/eventsnext.php?id=${teamId}`);
+    const endpoint = `/eventsnext.php?id=${teamId}`;
+    console.log(`[FOOTBALL] API endpoint: ${sportsDbBaseUrl}${endpoint}`);
+    const resp = await sportsDbGet<{ events: SportsDbEvent[] | null }>(endpoint);
     const events = resp?.events || [];
     console.log(`[FOOTBALL] Next events response:`, events.length, 'items');
     
-    if (events.length === 0) return null;
+    if (events.length === 0) {
+      console.log(`[FOOTBALL] No events found for team ${teamId}`);
+      return null;
+    }
     
-    const upcoming = events
+    console.log(`[FOOTBALL] First event raw data:`, JSON.stringify(events[0], null, 2));
+    
+    // CRITICAL FIX: Filter to only show events where our team is actually playing!
+    // TheSportsDB API sometimes returns wrong team's events (bug in their API)
+    const relevantEvents = events.filter(e => {
+      const isHomeTeam = e.idHomeTeam === teamId;
+      const isAwayTeam = e.idAwayTeam === teamId;
+      const isRelevant = isHomeTeam || isAwayTeam;
+      
+      if (!isRelevant) {
+        console.log(`[FOOTBALL] Skipping irrelevant event: ${e.strEvent} (Home: ${e.idHomeTeam}, Away: ${e.idAwayTeam}, Search: ${teamId})`);
+      }
+      
+      return isRelevant;
+    });
+    
+    console.log(`[FOOTBALL] Relevant events (after team filter): ${relevantEvents.length} out of ${events.length}`);
+    
+    const upcoming = relevantEvents
       .filter(e => e.strStatus === 'Not Started' || e.strStatus === '')
       .sort((a, b) => {
         const timeA = new Date(a.strTimestamp || a.dateEvent).getTime();
@@ -371,8 +409,11 @@ async function getNextEventForTeam(teamId: string): Promise<SportsDbEvent | null
         return timeA - timeB;
       });
     
+    console.log(`[FOOTBALL] Filtered upcoming events: ${upcoming.length}`);
+    
     if (upcoming.length > 0) {
-      console.log(`[FOOTBALL] Next event found:`, upcoming[0].strEvent);
+      console.log(`[FOOTBALL] Next event found: ${upcoming[0].strEvent} (ID: ${upcoming[0].idEvent})`);
+      console.log(`[FOOTBALL] Home team ID: ${upcoming[0].idHomeTeam}, Away team ID: ${upcoming[0].idAwayTeam}, Search team ID: ${teamId}`);
       return upcoming[0];
     }
     
