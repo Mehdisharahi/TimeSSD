@@ -220,6 +220,7 @@ const footballTeamAliases = new Map<string, string>(
     ['رئال مادرید', 'real madrid'],
 
     ['atletico madrid', 'atletico madrid'],
+    ['atletico', 'atletico madrid'],
     ['اتلتیکو', 'atletico madrid'],
     ['اتلتیکو مادرید', 'atletico madrid'],
 
@@ -233,17 +234,64 @@ const footballTeamAliases = new Map<string, string>(
     ['manchester united', 'manchester united'],
     ['منچستر یونایتد', 'manchester united'],
     ['من یو', 'manchester united'],
+    ['یونایتد', 'manchester united'],
 
     ['man city', 'manchester city'],
     ['manchester city', 'manchester city'],
     ['منچستر سیتی', 'manchester city'],
+    ['سیتی', 'manchester city'],
+
+    ['liverpool', 'liverpool'],
+    ['لیورپول', 'liverpool'],
+
+    ['chelsea', 'chelsea'],
+    ['چلسی', 'chelsea'],
+
+    ['arsenal', 'arsenal'],
+    ['آرسنال', 'arsenal'],
+
+    ['tottenham', 'tottenham'],
+    ['spurs', 'tottenham'],
+    ['تاتنهام', 'tottenham'],
 
     ['psg', 'paris saint germain'],
     ['paris saint germain', 'paris saint germain'],
+    ['paris sg', 'paris saint germain'],
     ['پاری سن ژرمن', 'paris saint germain'],
+    ['پاریس', 'paris saint germain'],
 
     ['juventus', 'juventus'],
+    ['juve', 'juventus'],
     ['یوونتوس', 'juventus'],
+    ['یوونتس', 'juventus'],
+    ['یوو', 'juventus'],
+
+    ['inter', 'inter milan'],
+    ['inter milan', 'inter milan'],
+    ['internazionale', 'inter milan'],
+    ['اینتر', 'inter milan'],
+    ['اینتر میلان', 'inter milan'],
+
+    ['ac milan', 'ac milan'],
+    ['milan', 'ac milan'],
+    ['میلان', 'ac milan'],
+    ['ای سی میلان', 'ac milan'],
+
+    ['roma', 'roma'],
+    ['as roma', 'roma'],
+    ['رم', 'roma'],
+    ['آ اس رم', 'roma'],
+
+    ['lazio', 'lazio'],
+    ['لاتزیو', 'lazio'],
+
+    ['napoli', 'napoli'],
+    ['ناپولی', 'napoli'],
+
+    ['dortmund', 'borussia dortmund'],
+    ['borussia dortmund', 'borussia dortmund'],
+    ['bvb', 'borussia dortmund'],
+    ['دورتموند', 'borussia dortmund'],
   ].map(([k, v]) => [normalizeFootballQuery(k), v])
 );
 
@@ -291,12 +339,25 @@ function pickBestFootballTeamCandidate(
     const name = item?.team?.name;
     if (!name) continue;
     const n = normalizeFootballQuery(name);
+    const country = (item?.team?.country || '').toLowerCase();
     let score = 0;
+    
     if (n === q) score += 1000;
     if (n.startsWith(q)) score += 250;
     if (n.includes(q)) score += 120;
-    if (item?.team?.national) score -= 20;
-    if (/\b(u\d{1,2}|ii|b|women|w)\b/i.test(name)) score -= 120;
+    
+    if (item?.team?.national) score -= 50;
+    
+    const nameLower = name.toLowerCase();
+    if (/\b(u\d{1,2}|under.?\d{1,2})\b/i.test(nameLower)) score -= 500;
+    if (/\b(women|woman|femmes|feminine|femenino|ladies)\b/i.test(nameLower)) score -= 500;
+    if (/\b(youth|junior|academy|reserves?)\b/i.test(nameLower)) score -= 500;
+    if (/\b(ii|iii|iv|b team|c team)\b/i.test(nameLower)) score -= 500;
+    if (/\b(u19|u21|u23)\b/i.test(nameLower)) score -= 500;
+    
+    const topLeagueCountries = ['england', 'spain', 'germany', 'italy', 'france', 'portugal', 'netherlands'];
+    if (topLeagueCountries.includes(country)) score += 50;
+    
     score -= Math.min(60, Math.max(0, n.length - q.length));
     if (!best || score > best.score) best = { score, item };
   }
