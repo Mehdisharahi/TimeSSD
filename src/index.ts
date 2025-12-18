@@ -270,7 +270,6 @@ type FootballTeam = {
   country: string | null;
   logo: string | null;
   venueName: string | null;
-  leagueId: string | null;
 };
 
 const footballTeamSearchCache = new Map<string, { at: number; value: FootballTeam | null }>();
@@ -349,7 +348,6 @@ async function findFootballTeamByQuery(rawQuery: string): Promise<FootballTeam |
           country: best.strCountry ?? null,
           logo: best.strBadge ?? best.strLogo ?? null,
           venueName: best.strStadium ?? null,
-          leagueId: best.idLeague ?? null,
         }
       : null;
     footballTeamSearchCache.set(cacheKey, { at: Date.now(), value: team });
@@ -6144,7 +6142,7 @@ client.on('messageCreate', async (msg: Message) => {
         return;
       }
       
-      console.log(`[FOOTBALL] Found team: ${team.name} (ID: ${team.id}, League: ${team.leagueId}) for query "${rawQuery}"`);
+      console.log(`[FOOTBALL] Found team: ${team.name} (ID: ${team.id}) for query "${rawQuery}"`);
 
       const match = await getMatchDataForTeam(team);
       if (!match) {
