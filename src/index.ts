@@ -35,8 +35,7 @@ const tavilyApiKey = process.env.TAVILY_API_KEY || '';
 const braveApiKey = process.env.BRAVE_API_KEY || '';
 const serpApiKey = process.env.SERPAPI_API_KEY || '';
 const hfApiKey = process.env.HF_API_KEY || '';
-const apiFootballKey = process.env.API_FOOTBALL_KEY || '';
-const apiFootballBaseUrl = 'https://v3.football.api-sports.io';
+const sportsDbBaseUrl = 'https://www.thesportsdb.com/api/v1/json/3';
 
 type ChatHistoryMessage = { role: 'user' | 'assistant'; content: string };
 const chatHistories = new Map<string, ChatHistoryMessage[]>();
@@ -121,71 +120,10 @@ async function fetchJsonWithTimeout<T>(url: string, init: RequestInit, timeoutMs
   }
 }
 
-type ApiFootballEnvelope<T> = {
-  get?: string;
-  parameters?: Record<string, unknown>;
-  errors?: unknown;
-  results?: number;
-  paging?: { current: number; total: number };
-  response: T;
-};
-
-function apiFootballErrorsToMessage(errors: unknown): string | null {
-  if (!errors) return null;
-  if (Array.isArray(errors)) {
-    if (errors.length === 0) return null;
-    return errors
-      .map(e => {
-        if (typeof e === 'string') return e;
-        try {
-          return JSON.stringify(e);
-        } catch {
-          return String(e);
-        }
-      })
-      .join(', ');
-  }
-  if (typeof errors === 'object') {
-    const entries = Object.entries(errors as Record<string, unknown>);
-    if (entries.length === 0) return null;
-    return entries.map(([k, v]) => `${k}: ${String(v)}`).join(', ');
-  }
-  return String(errors);
-}
-
-async function apiFootballGet<T>(
-  endpointPath: string,
-  params?: Record<string, string | number | boolean | undefined>,
-  timeoutMs = 12_000
-): Promise<T> {
-  if (!apiFootballKey) {
-    throw new Error('Missing API_FOOTBALL_KEY in .env');
-  }
-  const url = new URL(
-    endpointPath.startsWith('/') ? `${apiFootballBaseUrl}${endpointPath}` : `${apiFootballBaseUrl}/${endpointPath}`
-  );
-  if (params) {
-    for (const [k, v] of Object.entries(params)) {
-      if (typeof v === 'undefined') continue;
-      url.searchParams.set(k, String(v));
-    }
-  }
-  const envelope = await fetchJsonWithTimeout<ApiFootballEnvelope<T>>(
-    url.toString(),
-    {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        'x-apisports-key': apiFootballKey,
-      },
-    },
-    timeoutMs
-  );
-  const errMsg = apiFootballErrorsToMessage(envelope?.errors);
-  if (errMsg) {
-    throw new Error(`API-Football error: ${errMsg}`);
-  }
-  return envelope.response;
+async function sportsDbGet<T>(endpoint: string, timeoutMs = 10_000): Promise<T> {
+  const url = `${sportsDbBaseUrl}${endpoint}`;
+  const data = await fetchJsonWithTimeout<T>(url, { method: 'GET' }, timeoutMs);
+  return data;
 }
 
 function normalizeFootballQuery(input: string): string {
@@ -295,62 +233,68 @@ const footballTeamAliases = new Map<string, string>(
   ].map(([k, v]) => [normalizeFootballQuery(k), v])
 );
 
-type ApiFootballTeamSearchItem = {
-  team: {
-    id: number;
-    name: string;
-    code?: string | null;
-    country?: string | null;
-    founded?: number | null;
-    national?: boolean;
-    logo?: string | null;
-  };
-  venue?: {
-    id?: number | null;
-    name?: string | null;
-    city?: string | null;
-    capacity?: number | null;
-    surface?: string | null;
-    image?: string | null;
-  } | null;
+type SportsDbTeam = {
+  idTeam: string;
+  strTeam: string;
+  strSport: string;
+  strLeague: string;
+  strCountry: string;
+  strBadge: string | null;
+  strLogo: string | null;
+  strStadium: string | null;
+  strGender: string;
+};
+
+type SportsDbEvent = {
+  idEvent: string;
+  strEvent: string;
+  strHomeTeam: string;
+  strAwayTeam: string;
+  intHomeScore: string | null;
+  intAwayScore: string | null;
+  strTimestamp: string;
+  dateEvent: string;
+  strTime: string;
+  strStatus: string;
+  strLeague: string;
+  idHomeTeam: string;
+  idAwayTeam: string;
+  strHomeTeamBadge: string | null;
+  strAwayTeamBadge: string | null;
+  strVenue: string | null;
 };
 
 type FootballTeam = {
-  id: number;
+  id: string;
   name: string;
   country: string | null;
   logo: string | null;
   venueName: string | null;
-  venueCity: string | null;
 };
 
 const footballTeamSearchCache = new Map<string, { at: number; value: FootballTeam | null }>();
 const footballTeamSearchInFlight = new Map<string, Promise<FootballTeam | null>>();
 const FOOTBALL_TEAM_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-function pickBestFootballTeamCandidate(
-  candidates: ApiFootballTeamSearchItem[],
-  searchTerm: string
-): ApiFootballTeamSearchItem | null {
+function pickBestSportsDbTeam(candidates: SportsDbTeam[], searchTerm: string): SportsDbTeam | null {
   const q = normalizeFootballQuery(searchTerm);
   if (!candidates.length) return null;
-  let best: { score: number; item: ApiFootballTeamSearchItem } | null = null;
+  let best: { score: number; item: SportsDbTeam } | null = null;
   for (const item of candidates) {
-    const name = item?.team?.name;
-    if (!name) continue;
+    const name = item?.strTeam;
+    if (!name || item?.strSport !== 'Soccer') continue;
     const n = normalizeFootballQuery(name);
-    const country = (item?.team?.country || '').toLowerCase();
+    const country = (item?.strCountry || '').toLowerCase();
     let score = 0;
     
     if (n === q) score += 1000;
     if (n.startsWith(q)) score += 250;
     if (n.includes(q)) score += 120;
     
-    if (item?.team?.national) score -= 50;
-    
     const nameLower = name.toLowerCase();
     if (/\b(u\d{1,2}|under.?\d{1,2})\b/i.test(nameLower)) score -= 500;
     if (/\b(women|woman|femmes|feminine|femenino|ladies)\b/i.test(nameLower)) score -= 500;
+    if (item?.strGender?.toLowerCase() === 'female') score -= 500;
     if (/\b(youth|junior|academy|reserves?)\b/i.test(nameLower)) score -= 500;
     if (/\b(ii|iii|iv|b team|c team)\b/i.test(nameLower)) score -= 500;
     if (/\b(u19|u21|u23)\b/i.test(nameLower)) score -= 500;
@@ -379,16 +323,16 @@ async function findFootballTeamByQuery(rawQuery: string): Promise<FootballTeam |
   if (inFlight) return inFlight;
 
   const p = (async (): Promise<FootballTeam | null> => {
-    const resp = await apiFootballGet<ApiFootballTeamSearchItem[]>('/teams', { search: searchTerm }, 12_000);
-    const best = pickBestFootballTeamCandidate(resp || [], searchTerm);
+    const resp = await sportsDbGet<{ teams: SportsDbTeam[] | null }>(`/searchteams.php?t=${encodeURIComponent(searchTerm)}`);
+    const teams = resp?.teams || [];
+    const best = pickBestSportsDbTeam(teams, searchTerm);
     const team: FootballTeam | null = best
       ? {
-          id: best.team.id,
-          name: best.team.name,
-          country: best.team.country ?? null,
-          logo: best.team.logo ?? null,
-          venueName: best.venue?.name ?? null,
-          venueCity: best.venue?.city ?? null,
+          id: best.idTeam,
+          name: best.strTeam,
+          country: best.strCountry ?? null,
+          logo: best.strBadge ?? best.strLogo ?? null,
+          venueName: best.strStadium ?? null,
         }
       : null;
     footballTeamSearchCache.set(cacheKey, { at: Date.now(), value: team });
@@ -403,186 +347,65 @@ async function findFootballTeamByQuery(rawQuery: string): Promise<FootballTeam |
   }
 }
 
-type ApiFootballFixtureTeam = {
-  id: number;
-  name: string;
-  logo?: string | null;
-  winner?: boolean | null;
+type FootballMatchData = {
+  kind: 'next';
+  event: SportsDbEvent;
+  homeTeam: { name: string; logo: string | null };
+  awayTeam: { name: string; logo: string | null };
 };
 
-type ApiFootballFixtureGoals = { home: number | null; away: number | null };
-
-type ApiFootballFixtureStatus = {
-  long: string;
-  short: string;
-  elapsed: number | null;
-};
-
-type ApiFootballFixture = {
-  id: number;
-  referee?: string | null;
-  timezone?: string | null;
-  date: string;
-  timestamp: number;
-  status: ApiFootballFixtureStatus;
-  venue?: { id?: number | null; name?: string | null; city?: string | null } | null;
-};
-
-type ApiFootballFixtureLeague = {
-  id: number;
-  name: string;
-  country?: string | null;
-  logo?: string | null;
-  flag?: string | null;
-  season?: number | null;
-  round?: string | null;
-};
-
-type ApiFootballFixtureScore = {
-  halftime?: ApiFootballFixtureGoals | null;
-  fulltime?: ApiFootballFixtureGoals | null;
-  extratime?: ApiFootballFixtureGoals | null;
-  penalty?: ApiFootballFixtureGoals | null;
-};
-
-type ApiFootballFixtureItem = {
-  fixture: ApiFootballFixture;
-  league: ApiFootballFixtureLeague;
-  teams: { home: ApiFootballFixtureTeam; away: ApiFootballFixtureTeam };
-  goals: ApiFootballFixtureGoals;
-  score?: ApiFootballFixtureScore | null;
-};
-
-type ApiFootballFixtureEvent = {
-  time: { elapsed: number | null; extra?: number | null };
-  team: { id: number; name: string; logo?: string | null };
-  player: { id?: number | null; name?: string | null };
-  assist?: { id?: number | null; name?: string | null } | null;
-  type: string;
-  detail: string;
-  comments?: string | null;
-};
-
-type ApiFootballFixtureStatisticsEntry = { type: string; value: number | string | null };
-type ApiFootballFixtureStatisticsTeam = {
-  team: { id: number; name: string; logo?: string | null };
-  statistics: ApiFootballFixtureStatisticsEntry[];
-};
-
-async function getLiveFixtureForTeam(teamId: number): Promise<ApiFootballFixtureItem | null> {
-  console.log(`[FOOTBALL] Fetching live fixture for team ${teamId}`);
+async function getNextEventForTeam(teamId: string): Promise<SportsDbEvent | null> {
+  console.log(`[FOOTBALL] Fetching next events for team ${teamId}`);
   try {
-    const fixtures = await apiFootballGet<ApiFootballFixtureItem[]>('/fixtures', {
-      team: teamId,
-      live: 'all',
-      timezone: 'Asia/Tehran',
-    });
-    console.log(`[FOOTBALL] Live fixtures response:`, fixtures?.length ?? 0, 'items');
-    if (!Array.isArray(fixtures) || fixtures.length === 0) return null;
-    fixtures.sort((a, b) => (a?.fixture?.timestamp ?? 0) - (b?.fixture?.timestamp ?? 0));
-    return fixtures[0] ?? null;
-  } catch (err) {
-    console.error(`[FOOTBALL] Error fetching live fixture:`, err);
-    throw err;
-  }
-}
-
-async function getNextFixtureForTeam(teamId: number): Promise<ApiFootballFixtureItem | null> {
-  console.log(`[FOOTBALL] Fetching next fixture for team ${teamId}`);
-  try {
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth();
-    const season = currentMonth >= 7 ? currentYear : currentYear - 1;
+    const resp = await sportsDbGet<{ events: SportsDbEvent[] | null }>(`/eventsnext.php?id=${teamId}`);
+    const events = resp?.events || [];
+    console.log(`[FOOTBALL] Next events response:`, events.length, 'items');
     
-    const today = now.toISOString().split('T')[0];
-    const futureDate = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
-    const future = futureDate.toISOString().split('T')[0];
+    if (events.length === 0) return null;
     
-    console.log(`[FOOTBALL] Querying fixtures from ${today} to ${future} for season ${season}`);
-    
-    const fixtures = await apiFootballGet<ApiFootballFixtureItem[]>('/fixtures', {
-      team: teamId,
-      season: season,
-      from: today,
-      to: future,
-      timezone: 'Asia/Tehran',
-    });
-    
-    console.log(`[FOOTBALL] Next fixtures response:`, fixtures?.length ?? 0, 'items');
-    
-    if (!Array.isArray(fixtures) || fixtures.length === 0) return null;
-    
-    const upcoming = fixtures
-      .filter((f) => {
-        const status = f?.fixture?.status?.short;
-        return status === 'NS' || status === 'TBD' || status === 'PST';
-      })
-      .sort((a, b) => (a?.fixture?.timestamp ?? 0) - (b?.fixture?.timestamp ?? 0));
+    const upcoming = events
+      .filter(e => e.strStatus === 'Not Started' || e.strStatus === '')
+      .sort((a, b) => {
+        const timeA = new Date(a.strTimestamp || a.dateEvent).getTime();
+        const timeB = new Date(b.strTimestamp || b.dateEvent).getTime();
+        return timeA - timeB;
+      });
     
     if (upcoming.length > 0) {
-      console.log(`[FOOTBALL] Next fixture found:`, upcoming[0]?.fixture?.id, upcoming[0]?.teams?.home?.name, 'vs', upcoming[0]?.teams?.away?.name);
+      console.log(`[FOOTBALL] Next event found:`, upcoming[0].strEvent);
       return upcoming[0];
     }
     
     return null;
   } catch (err) {
-    console.error(`[FOOTBALL] Error fetching next fixture:`, err);
+    console.error(`[FOOTBALL] Error fetching next event:`, err);
     throw err;
   }
 }
 
-async function getFixtureEvents(fixtureId: number): Promise<ApiFootballFixtureEvent[]> {
-  const events = await apiFootballGet<ApiFootballFixtureEvent[]>('/fixtures/events', { fixture: fixtureId }, 12_000);
-  return Array.isArray(events) ? events : [];
-}
 
-async function getFixtureStatistics(fixtureId: number): Promise<ApiFootballFixtureStatisticsTeam[]> {
-  const stats = await apiFootballGet<ApiFootballFixtureStatisticsTeam[]>('/fixtures/statistics', { fixture: fixtureId }, 12_000);
-  return Array.isArray(stats) ? stats : [];
-}
 
-type FootballMatchData = {
-  kind: 'live' | 'next';
-  fixture: ApiFootballFixtureItem;
-  events: ApiFootballFixtureEvent[];
-  statistics: ApiFootballFixtureStatisticsTeam[];
-};
-
-async function getLiveOrNextMatchForTeam(teamId: number): Promise<FootballMatchData | null> {
-  console.log(`[FOOTBALL] Getting live or next match for team ${teamId}`);
-  const live = await getLiveFixtureForTeam(teamId).catch((err) => {
-    console.error(`[FOOTBALL] Live fixture error:`, err);
+async function getMatchDataForTeam(teamId: string): Promise<FootballMatchData | null> {
+  console.log(`[FOOTBALL] Getting next match for team ${teamId}`);
+  const event = await getNextEventForTeam(teamId).catch((err) => {
+    console.error(`[FOOTBALL] Next event error:`, err);
     return null;
   });
-  if (live) {
-    console.log(`[FOOTBALL] Found live match for team ${teamId}`);
-    const fixtureId = live.fixture.id;
-    const [events, statistics] = await Promise.all([
-      getFixtureEvents(fixtureId).catch(() => []),
-      getFixtureStatistics(fixtureId).catch(() => []),
-    ]);
-    return { kind: 'live', fixture: live, events, statistics };
-  }
-  console.log(`[FOOTBALL] No live match, checking next fixture...`);
-  const next = await getNextFixtureForTeam(teamId).catch((err) => {
-    console.error(`[FOOTBALL] Next fixture error:`, err);
-    return null;
-  });
-  if (!next) {
-    console.log(`[FOOTBALL] No next fixture found for team ${teamId}`);
+  
+  if (!event) {
+    console.log(`[FOOTBALL] No next event found for team ${teamId}`);
     return null;
   }
-  console.log(`[FOOTBALL] Found next match for team ${teamId}`);
-  return { kind: 'next', fixture: next, events: [], statistics: [] };
+  
+  console.log(`[FOOTBALL] Found next match for team ${teamId}: ${event.strEvent}`);
+  return {
+    kind: 'next',
+    event,
+    homeTeam: { name: event.strHomeTeam, logo: event.strHomeTeamBadge },
+    awayTeam: { name: event.strAwayTeam, logo: event.strAwayTeamBadge },
+  };
 }
 
-function footballFormatEventMinute(time: { elapsed: number | null; extra?: number | null }): string {
-  const m = time?.elapsed;
-  if (typeof m !== 'number') return '';
-  const ex = time?.extra;
-  return typeof ex === 'number' && ex ? `${m}+${ex}` : String(m);
-}
 
 function footballFormatDateFa(dateStr: string): string {
   const d = new Date(dateStr);
@@ -615,13 +438,6 @@ function footballValueToString(v: number | string | null | undefined): string {
   return String(v);
 }
 
-function footballIsGoalEvent(e: ApiFootballFixtureEvent): boolean {
-  if (!e || e.type !== 'Goal') return false;
-  const d = (e.detail || '').toLowerCase();
-  if (d.includes('missed')) return false;
-  if (d.includes('cancel')) return false;
-  return true;
-}
 
 async function footballTryLoadImage(url: string | null | undefined): Promise<any | null> {
   if (!url || !loadImage) return null;
@@ -632,18 +448,13 @@ async function footballTryLoadImage(url: string | null | undefined): Promise<any
   }
 }
 
-function footballFindStat(teamStats: ApiFootballFixtureStatisticsTeam | null, statType: string): string {
-  if (!teamStats) return '';
-  const found = teamStats.statistics?.find(s => (s?.type || '').toLowerCase() === statType.toLowerCase());
-  return footballValueToString(found?.value);
-}
 
 async function renderFootballMatchImage(team: FootballTeam, data: FootballMatchData): Promise<Buffer> {
   if (!canvasAvailable || !createCanvas || !loadImage) {
     throw new Error('Canvas not available in this environment');
   }
 
-  const size = { w: 1000, h: 620 };
+  const size = { w: 1000, h: 500 };
   const canvas = createCanvas(size.w, size.h);
   const ctx = canvas.getContext('2d');
 
@@ -659,176 +470,80 @@ async function renderFootballMatchImage(team: FootballTeam, data: FootballMatchD
 
   ctx.textBaseline = 'middle';
   ctx.fillStyle = '#ffffff';
-
   ctx.textAlign = 'left';
   ctx.font = ssdFontAvailable ? `bold 30px "${ssdFontFamily}"` : 'bold 30px Arial';
   ctx.fillText(footballEllipsize(ctx, team.name, size.w * 0.55), 28, Math.floor(headerH / 2));
 
   ctx.textAlign = 'right';
   ctx.font = ssdFontAvailable ? `bold 24px "${ssdFontFamily}"` : 'bold 24px Arial';
-  ctx.fillText(data.kind === 'live' ? 'زنده' : 'بازی بعدی', size.w - 28, Math.floor(headerH / 2));
+  ctx.fillText('بازی بعدی', size.w - 28, Math.floor(headerH / 2));
 
-  const fixture = data.fixture;
-  const home = fixture.teams.home;
-  const away = fixture.teams.away;
-
-  const [homeImg, awayImg, leagueImg] = await Promise.all([
-    footballTryLoadImage(home.logo),
-    footballTryLoadImage(away.logo),
-    footballTryLoadImage(fixture.league.logo),
+  const event = data.event;
+  const [homeImg, awayImg] = await Promise.all([
+    footballTryLoadImage(data.homeTeam.logo),
+    footballTryLoadImage(data.awayTeam.logo),
   ]);
 
-  const leagueLine = [fixture.league.name, fixture.league.round].filter(Boolean).join(' — ');
   ctx.textAlign = 'center';
   ctx.font = ssdFontAvailable ? `bold 18px "${ssdFontFamily}"` : 'bold 18px Arial';
   ctx.fillStyle = '#dfe3ea';
-  ctx.fillText(footballEllipsize(ctx, leagueLine, size.w * 0.85), Math.floor(size.w / 2), headerH + 18);
-  if (leagueImg) {
-    try {
-      const icon = 22;
-      ctx.drawImage(leagueImg, Math.floor(size.w / 2 - icon / 2), headerH + 30, icon, icon);
-    } catch {}
-  }
+  ctx.fillText(footballEllipsize(ctx, event.strLeague || '', size.w * 0.85), Math.floor(size.w / 2), headerH + 24);
 
   const panelX = 20;
-  const panelY = headerH + 48;
+  const panelY = headerH + 50;
   const panelW = size.w - panelX * 2;
-  const panelH = 190;
+  const panelH = 220;
   ctx.fillStyle = '#2b2d31';
   ctx.fillRect(panelX, panelY, panelW, panelH);
 
-  const logoSize = 96;
-  const logoY = panelY + 22;
-  const homeLogoX = panelX + 42;
-  const awayLogoX = panelX + panelW - 42 - logoSize;
-  if (homeImg) ctx.drawImage(homeImg, homeLogoX, logoY, logoSize, logoSize);
-  if (awayImg) ctx.drawImage(awayImg, awayLogoX, logoY, logoSize, logoSize);
+  const logoSize = 110;
+  const logoY = panelY + 20;
+  const homeLogoX = panelX + 80;
+  const awayLogoX = panelX + panelW - 80 - logoSize;
+  
+  if (homeImg) {
+    try {
+      ctx.drawImage(homeImg, homeLogoX, logoY, logoSize, logoSize);
+    } catch {}
+  }
+  if (awayImg) {
+    try {
+      ctx.drawImage(awayImg, awayLogoX, logoY, logoSize, logoSize);
+    } catch {}
+  }
 
-  const nameY = logoY + logoSize + 30;
-  ctx.font = ssdFontAvailable ? `bold 22px "${ssdFontFamily}"` : 'bold 22px Arial';
+  const nameY = logoY + logoSize + 24;
+  ctx.font = ssdFontAvailable ? `bold 20px "${ssdFontFamily}"` : 'bold 20px Arial';
   ctx.fillStyle = '#ffffff';
   ctx.textAlign = 'center';
-  ctx.fillText(footballEllipsize(ctx, home.name, 320), homeLogoX + Math.floor(logoSize / 2), nameY);
-  ctx.fillText(footballEllipsize(ctx, away.name, 320), awayLogoX + Math.floor(logoSize / 2), nameY);
-
-  const homeGoals = typeof fixture.goals.home === 'number' ? fixture.goals.home : null;
-  const awayGoals = typeof fixture.goals.away === 'number' ? fixture.goals.away : null;
-  const scoreText = homeGoals !== null && awayGoals !== null ? `${homeGoals} - ${awayGoals}` : 'VS';
+  ctx.fillText(footballEllipsize(ctx, data.homeTeam.name, 280), homeLogoX + Math.floor(logoSize / 2), nameY);
+  ctx.fillText(footballEllipsize(ctx, data.awayTeam.name, 280), awayLogoX + Math.floor(logoSize / 2), nameY);
 
   ctx.fillStyle = '#ffffff';
   ctx.font = ssdFontAvailable ? `bold 64px "${ssdFontFamily}"` : 'bold 64px Arial';
-  ctx.fillText(scoreText, Math.floor(size.w / 2), panelY + 84);
+  ctx.textAlign = 'center';
+  ctx.fillText('VS', Math.floor(size.w / 2), panelY + 90);
 
-  const elapsed = fixture.fixture.status?.elapsed;
-  const statusLong = fixture.fixture.status?.long || '';
-  const statusLine =
-    data.kind === 'live'
-      ? [statusLong, typeof elapsed === 'number' ? `دقیقه ${elapsed}` : ''].filter(Boolean).join(' — ')
-      : footballFormatDateFa(fixture.fixture.date);
-
+  const matchTimestamp = event.strTimestamp || `${event.dateEvent}T${event.strTime}`;
+  const dateText = footballFormatDateFa(matchTimestamp);
   ctx.font = ssdFontAvailable ? `bold 18px "${ssdFontFamily}"` : 'bold 18px Arial';
   ctx.fillStyle = '#c9ced6';
-  ctx.fillText(footballEllipsize(ctx, statusLine, size.w * 0.78), Math.floor(size.w / 2), panelY + 150);
+  ctx.textAlign = 'center';
+  ctx.fillText(footballEllipsize(ctx, dateText, size.w * 0.85), Math.floor(size.w / 2), panelY + 170);
 
-  const venueLine = [fixture.fixture.venue?.name, fixture.fixture.venue?.city].filter(Boolean).join(' — ');
+  const venueLine = event.strVenue || '';
   if (venueLine) {
     ctx.font = ssdFontAvailable ? `16px "${ssdFontFamily}"` : '16px Arial';
     ctx.fillStyle = '#aeb4be';
-    ctx.fillText(footballEllipsize(ctx, venueLine, size.w * 0.78), Math.floor(size.w / 2), panelY + 176);
+    ctx.textAlign = 'center';
+    ctx.fillText(footballEllipsize(ctx, `🏟️ ${venueLine}`, size.w * 0.85), Math.floor(size.w / 2), panelY + 198);
   }
 
-  const leftX = 20;
-  const rightX = Math.floor(size.w / 2) + 10;
-  const bottomY = panelY + panelH + 18;
-  const bottomH = size.h - bottomY - 20;
-  const boxW = Math.floor(size.w / 2) - 30;
-  const boxH = bottomH;
-
-  ctx.fillStyle = '#2b2d31';
-  ctx.fillRect(leftX, bottomY, boxW, boxH);
-  ctx.fillRect(rightX, bottomY, boxW, boxH);
-
-  ctx.fillStyle = '#ffffff';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
-  ctx.font = ssdFontAvailable ? `bold 18px "${ssdFontFamily}"` : 'bold 18px Arial';
-  ctx.fillText('گلزنان', leftX + 16, bottomY + 30);
-  ctx.fillText('آمار', rightX + 16, bottomY + 30);
-
-  const goalEvents = (data.events || []).filter(footballIsGoalEvent);
-  const homeGoalsList: string[] = [];
-  const awayGoalsList: string[] = [];
-  for (const e of goalEvents) {
-    const minute = footballFormatEventMinute(e.time);
-    const who = (e.player?.name || '').trim() || 'Unknown';
-    const line = `${who}${minute ? ` (${minute}')` : ''}`;
-    if (e.team?.id === home.id) homeGoalsList.push(line);
-    else if (e.team?.id === away.id) awayGoalsList.push(line);
-  }
-
-  const goalsLeftLines: string[] = [];
-  goalsLeftLines.push(footballEllipsize(ctx, `${home.name}:`, boxW - 32));
-  if (homeGoalsList.length) goalsLeftLines.push(...homeGoalsList.slice(0, 7).map(s => `- ${s}`));
-  else goalsLeftLines.push('- —');
-  goalsLeftLines.push('');
-  goalsLeftLines.push(footballEllipsize(ctx, `${away.name}:`, boxW - 32));
-  if (awayGoalsList.length) goalsLeftLines.push(...awayGoalsList.slice(0, 7).map(s => `- ${s}`));
-  else goalsLeftLines.push('- —');
-
+  const bottomY = panelY + panelH + 20;
   ctx.font = ssdFontAvailable ? `16px "${ssdFontFamily}"` : '16px Arial';
-  ctx.fillStyle = '#dfe3ea';
-  let gy = bottomY + 56;
-  for (const line of goalsLeftLines) {
-    if (!line) {
-      gy += 10;
-      continue;
-    }
-    ctx.fillText(footballEllipsize(ctx, line, boxW - 32), leftX + 16, gy);
-    gy += 22;
-    if (gy > bottomY + boxH - 12) break;
-  }
-
-  const statsArr = Array.isArray(data.statistics) ? data.statistics : [];
-  const homeStats = statsArr.find(s => s?.team?.id === home.id) || null;
-  const awayStats = statsArr.find(s => s?.team?.id === away.id) || null;
-
-  const statRows: Array<{ label: string; key: string }> = [
-    { label: 'مالکیت', key: 'Ball Possession' },
-    { label: 'شوت', key: 'Total Shots' },
-    { label: 'شوت در چارچوب', key: 'Shots on Goal' },
-    { label: 'کرنر', key: 'Corner Kicks' },
-    { label: 'خطا', key: 'Fouls' },
-    { label: 'کارت زرد', key: 'Yellow Cards' },
-    { label: 'کارت قرمز', key: 'Red Cards' },
-  ];
-
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#dfe3ea';
-  ctx.font = ssdFontAvailable ? `16px "${ssdFontFamily}"` : '16px Arial';
-  let sy = bottomY + 60;
-  const colLabelX = rightX + 16;
-  const colHomeX = rightX + Math.floor(boxW * 0.62);
-  const colAwayX = rightX + boxW - 16;
-
-  ctx.fillStyle = '#aeb4be';
-  ctx.textAlign = 'left';
-  ctx.fillText(footballEllipsize(ctx, home.name, Math.floor(boxW * 0.32)), colHomeX, bottomY + 56);
-  ctx.textAlign = 'right';
-  ctx.fillText(footballEllipsize(ctx, away.name, Math.floor(boxW * 0.32)), colAwayX, bottomY + 56);
-
-  for (const row of statRows) {
-    const hv = footballFindStat(homeStats, row.key) || '—';
-    const av = footballFindStat(awayStats, row.key) || '—';
-    ctx.fillStyle = '#dfe3ea';
-    ctx.textAlign = 'left';
-    ctx.fillText(row.label, colLabelX, sy);
-    ctx.textAlign = 'left';
-    ctx.fillText(hv, colHomeX, sy);
-    ctx.textAlign = 'right';
-    ctx.fillText(av, colAwayX, sy);
-    sy += 24;
-    if (sy > bottomY + boxH - 12) break;
-  }
+  ctx.fillStyle = '#8a8f99';
+  ctx.textAlign = 'center';
+  ctx.fillText('📡 TheSportsDB.com - رایگان و بدون محدودیت', Math.floor(size.w / 2), bottomY + 20);
 
   return canvas.toBuffer('image/png');
 }
@@ -6391,14 +6106,14 @@ client.on('messageCreate', async (msg: Message) => {
       
       console.log(`[FOOTBALL] Found team: ${team.name} (ID: ${team.id}) for query "${rawQuery}"`);
 
-      const match = await getLiveOrNextMatchForTeam(team.id);
+      const match = await getMatchDataForTeam(team.id);
       if (!match) {
         console.log(`[FOOTBALL] No match found for team ${team.name} (${team.id})`);
-        await statusMsg.edit({ content: `❌ برای تیم **${team.name}** بازی زنده یا بازی بعدی پیدا نشد.` });
+        await statusMsg.edit({ content: `❌ برای تیم **${team.name}** بازی بعدی پیدا نشد.` });
         return;
       }
       
-      console.log(`[FOOTBALL] Match found for ${team.name}: ${match.kind} - ${match.fixture.teams.home.name} vs ${match.fixture.teams.away.name}`);
+      console.log(`[FOOTBALL] Match found for ${team.name}: ${match.event.strEvent}`);
 
       const buffer = await renderFootballMatchImage(team, match);
       const attachment = new AttachmentBuilder(buffer, { name: 'football.png' });
