@@ -35,7 +35,7 @@ const tavilyApiKey = process.env.TAVILY_API_KEY || '';
 const braveApiKey = process.env.BRAVE_API_KEY || '';
 const serpApiKey = process.env.SERPAPI_API_KEY || '';
 const hfApiKey = process.env.HF_API_KEY || '';
-const replicateApiToken = process.env.REPLICATE_API_TOKEN || '';
+const stabilityApiKey = process.env.STABILITY_API_KEY || '';
 const sportsDbBaseUrl = 'https://www.thesportsdb.com/api/v1/json/3';
 
 type ChatHistoryMessage = { role: 'user' | 'assistant'; content: string };
@@ -990,53 +990,49 @@ async function generateAiReply(
   return trimmed;
 }
 
-async function generateImageWithReplicate(prompt: string): Promise<string> {
-  if (!replicateApiToken) {
-    throw new Error('REPLICATE_API_TOKEN is not set');
+async function generateImageWithStability(prompt: string): Promise<Buffer> {
+  if (!stabilityApiKey) {
+    throw new Error('STABILITY_API_KEY is not set');
   }
 
-  const body = {
-    version: 'google/imagen-4',
-    input: {
-      prompt,
-      aspect_ratio: '16:9',
-      safety_filter_level: 'block_medium_and_above',
-    },
-  };
+  const form = new (globalThis as any).FormData();
+  form.append('prompt', prompt);
+  form.append('output_format', 'png');
+  form.append('aspect_ratio', '16:9');
+  form.append('none', '');
 
-  const res = await fetch('https://api.replicate.com/v1/predictions', {
+  const res = await fetch('https://api.stability.ai/v2beta/stable-image/generate/ultra', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${replicateApiToken}`,
-      Prefer: 'wait=60',
+      Authorization: `Bearer ${stabilityApiKey}`,
+      Accept: 'image/*',
     },
-    body: JSON.stringify(body),
+    body: form as any,
   });
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Replicate API error: ${res.status}${errText ? ` - ${errText}` : ''}`);
-  }
-
-  const data: any = await res.json();
-  const rawOutput = data?.output;
-  let url: string | undefined;
-  if (typeof rawOutput === 'string') {
-    url = rawOutput;
-  } else if (Array.isArray(rawOutput) && rawOutput.length > 0) {
-    const first = rawOutput[0];
-    if (typeof first === 'string') {
-      url = first;
-    } else if (first && typeof first === 'object') {
-      url = (first.url || first.uri || first.href || first.image || first.image_url) as string | undefined;
+    let errDetail = '';
+    try {
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const errJson = await res.json();
+        errDetail = JSON.stringify(errJson);
+      } else {
+        errDetail = await res.text();
+      }
+    } catch {
+      // ignore parse errors
     }
-  }
-  if (!url || typeof url !== 'string') {
-    throw new Error('Empty or invalid image output from Replicate');
+    throw new Error(`Stability API error: ${res.status}${errDetail ? ` - ${errDetail}` : ''}`);
   }
 
-  return url;
+  const arrayBuffer = await res.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  if (!buffer || buffer.length === 0) {
+    throw new Error('Empty image output from Stability');
+  }
+
+  return buffer;
 }
 
 // Bot ready status for health checks
@@ -4889,19 +4885,20 @@ client.on('messageCreate', async (msg: Message) => {
       try {
         await msg.channel.sendTyping();
       } catch {}
-      const imageUrl = await generateImageWithReplicate(prompt);
+      const buffer = await generateImageWithStability(prompt);
       let caption = prompt;
       if (caption.length > 1800) {
         caption = caption.slice(0, 1800) + '…';
       }
+      const attachment = new AttachmentBuilder(buffer, { name: 'ai-image.png' });
       await msg.reply({
         content: `🖼️ ${caption}`,
-        files: [imageUrl],
+        files: [attachment],
       });
     } catch (err: any) {
-      console.error('[REPLICATE PIC ERROR]', err);
-      const msgText = err instanceof Error && err.message.includes('REPLICATE_API_TOKEN')
-        ? '❌ توکن Replicate تنظیم نشده است. لطفاً با مالک بات تماس بگیر.'
+      console.error('[STABILITY PIC ERROR]', err);
+      const msgText = err instanceof Error && err.message.includes('STABILITY_API_KEY')
+        ? '❌ توکن Stability AI تنظیم نشده است. لطفاً با مالک بات تماس بگیر.'
         : '❌ خطا در تولید تصویر. لطفاً بعداً دوباره تلاش کن.';
       try {
         await msg.reply({ content: msgText });
@@ -5563,7 +5560,7 @@ client.on('messageCreate', async (msg: Message) => {
       `استفاده از \`!\` برای گروه‌بندی: \`!item1 item2!\` = یک آیتم\n\n` +
       `**🤖 هوش مصنوعی و فوتبال**\n` +
       `\`.chat سوال\` \`.چت سوال\` ⟹ چت با هوش مصنوعی (متن/عکس، با امکان ریپلای)\n` +
-      `\`.pic توضیح عکس\` \`.عکس توضیح عکس\` ⟹ ساخت تصویر با هوش مصنوعی (Replicate)\n` +
+      `\`.pic توضیح عکس\` \`.عکس توضیح عکس\` ⟹ ساخت تصویر با هوش مصنوعی (Stability AI / DreamStudio)\n` +
       `\`.football تیم1 vs تیم2\` \`.فوتبال تیم1 vs تیم2\` ⟹ نتایج و اطلاعات بازی‌های فوتبال`;
     
     const embed = new EmbedBuilder()
