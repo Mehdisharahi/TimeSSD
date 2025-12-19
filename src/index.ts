@@ -1020,14 +1020,20 @@ async function generateImageWithReplicate(prompt: string): Promise<string> {
   }
 
   const data: any = await res.json();
-  const output = data?.output;
-  if (!output || !Array.isArray(output) || !output[0]) {
-    throw new Error('Empty image output from Replicate');
+  const rawOutput = data?.output;
+  let url: string | undefined;
+  if (typeof rawOutput === 'string') {
+    url = rawOutput;
+  } else if (Array.isArray(rawOutput) && rawOutput.length > 0) {
+    const first = rawOutput[0];
+    if (typeof first === 'string') {
+      url = first;
+    } else if (first && typeof first === 'object') {
+      url = (first.url || first.uri || first.href || first.image || first.image_url) as string | undefined;
+    }
   }
-
-  const url = output[0];
-  if (typeof url !== 'string') {
-    throw new Error('Invalid image URL from Replicate');
+  if (!url || typeof url !== 'string') {
+    throw new Error('Empty or invalid image output from Replicate');
   }
 
   return url;
