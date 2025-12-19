@@ -5563,6 +5563,7 @@ client.on('messageCreate', async (msg: Message) => {
       `استفاده از \`!\` برای گروه‌بندی: \`!item1 item2!\` = یک آیتم\n\n` +
       `**🤖 هوش مصنوعی و فوتبال**\n` +
       `\`.chat سوال\` \`.چت سوال\` ⟹ چت با هوش مصنوعی (متن/عکس، با امکان ریپلای)\n` +
+      `\`.pic توضیح عکس\` \`.عکس توضیح عکس\` ⟹ ساخت تصویر با هوش مصنوعی (Replicate)\n` +
       `\`.football تیم1 vs تیم2\` \`.فوتبال تیم1 vs تیم2\` ⟹ نتایج و اطلاعات بازی‌های فوتبال`;
     
     const embed = new EmbedBuilder()
@@ -5575,7 +5576,7 @@ client.on('messageCreate', async (msg: Message) => {
   }
 
   // .av [@user|userId]
-  if (isCmd('av') || isCmd('عکس')) {
+  if (isCmd('av')) {
     const arg = content.slice(content.startsWith('.عکس') ? 5 : 3).trim();
     let user = msg.mentions.users.first() || null;
     if (!user && arg) {
