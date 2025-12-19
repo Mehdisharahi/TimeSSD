@@ -35,6 +35,7 @@ const tavilyApiKey = process.env.TAVILY_API_KEY || '';
 const braveApiKey = process.env.BRAVE_API_KEY || '';
 const serpApiKey = process.env.SERPAPI_API_KEY || '';
 const hfApiKey = process.env.HF_API_KEY || '';
+const replicateApiToken = process.env.REPLICATE_API_TOKEN || '';
 const sportsDbBaseUrl = 'https://www.thesportsdb.com/api/v1/json/3';
 
 type ChatHistoryMessage = { role: 'user' | 'assistant'; content: string };
@@ -987,6 +988,49 @@ async function generateAiReply(
   chatHistories.set(historyKey, finalHistory);
 
   return trimmed;
+}
+
+async function generateImageWithReplicate(prompt: string): Promise<string> {
+  if (!replicateApiToken) {
+    throw new Error('REPLICATE_API_TOKEN is not set');
+  }
+
+  const body = {
+    version: 'google/imagen-4',
+    input: {
+      prompt,
+      aspect_ratio: '16:9',
+      safety_filter_level: 'block_medium_and_above',
+    },
+  };
+
+  const res = await fetch('https://api.replicate.com/v1/predictions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${replicateApiToken}`,
+      Prefer: 'wait=60',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Replicate API error: ${res.status}${errText ? ` - ${errText}` : ''}`);
+  }
+
+  const data: any = await res.json();
+  const output = data?.output;
+  if (!output || !Array.isArray(output) || !output[0]) {
+    throw new Error('Empty image output from Replicate');
+  }
+
+  const url = output[0];
+  if (typeof url !== 'string') {
+    throw new Error('Invalid image URL from Replicate');
+  }
+
+  return url;
 }
 
 // Bot ready status for health checks
@@ -4821,15 +4865,41 @@ client.on('messageCreate', async (msg: Message) => {
       const endTime = Date.now();
       console.log(`[TOPFRIENDS] Generated in ${endTime - startTime}ms - Processed ${processedCount.total} pairs: ${processedCount.added} added, ${processedCount.bots} bots, ${processedCount.missing} missing members`);
       
-      // ایجاد امبد زیبا و پاسخ
-      const embed = new EmbedBuilder()
-        .setTitle('top friends')
-        .setDescription(linesTop.join('\n'))
-        .setColor(0x2f3136);
-      await msg.reply({ embeds: [embed] });
     } catch (err) {
       console.error('[TOPFRIENDS ERROR]', err);
       await msg.reply({ content: 'خطایی در محاسبه آمار دوستان روی داد. لطفا دوباره تلاش کنید.' });
+    }
+    return;
+  }
+
+  if (isCmd('pic') || isCmd('عکس')) {
+    const cmdLen = 4;
+    let prompt = content.slice(cmdLen).trim();
+    if (!prompt) {
+      await msg.reply({ content: 'استفاده: `.pic توضیح عکس`\nمثال: `.pic یک گربه در فضا`' });
+      return;
+    }
+    try {
+      try {
+        await msg.channel.sendTyping();
+      } catch {}
+      const imageUrl = await generateImageWithReplicate(prompt);
+      let caption = prompt;
+      if (caption.length > 1800) {
+        caption = caption.slice(0, 1800) + '…';
+      }
+      await msg.reply({
+        content: `🖼️ ${caption}`,
+        files: [imageUrl],
+      });
+    } catch (err: any) {
+      console.error('[REPLICATE PIC ERROR]', err);
+      const msgText = err instanceof Error && err.message.includes('REPLICATE_API_TOKEN')
+        ? '❌ توکن Replicate تنظیم نشده است. لطفاً با مالک بات تماس بگیر.'
+        : '❌ خطا در تولید تصویر. لطفاً بعداً دوباره تلاش کن.';
+      try {
+        await msg.reply({ content: msgText });
+      } catch {}
     }
     return;
   }
@@ -4900,9 +4970,8 @@ client.on('messageCreate', async (msg: Message) => {
 
   // .new — create room with join buttons (supports up to 4 concurrent sessions per channel)
   if (isCmd('new') || isCmd('hokm') || isCmd('حکم')) {
-    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    // ...
     const gId = msg.guildId!; const cId = msg.channelId;
-    
     // Check if this user already has an active table in this channel
     const userActiveTables = getChannelSessions(gId, cId).filter(s => 
       s.ownerId === msg.author.id && s.state !== 'finished'
