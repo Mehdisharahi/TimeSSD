@@ -990,6 +990,57 @@ async function generateAiReply(
   return trimmed;
 }
 
+async function translatePromptToEnglishForImage(originalPrompt: string): Promise<string> {
+  if (!openAiApiKey) {
+    throw new Error('OPENAI_API_KEY is not set');
+  }
+
+  const body = {
+    model: openAiModel,
+    messages: [
+      {
+        role: 'system' as const,
+        content:
+          'You are a professional prompt engineer for text-to-image models. ' +
+          'The user will send a prompt in Persian (Farsi) or mixed Persian/English. ' +
+          'Translate it into a single, fluent, detailed English prompt optimized for image generation. ' +
+          'Preserve all visual details, styles, composition, camera information, lighting, and mood from the original. ' +
+          'If the input is already in English, keep it and only make very small clarity improvements. ' +
+          'Do not add new concepts that are not implied by the original. ' +
+          'Return only the final English prompt, without quotation marks or any extra explanation.',
+      },
+      {
+        role: 'user' as const,
+        content: originalPrompt,
+      },
+    ],
+    max_tokens: 300,
+    temperature: 0.2,
+  };
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${openAiApiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`OpenAI translate API error: ${res.status}${errText ? ` - ${errText}` : ''}`);
+  }
+
+  const data: any = await res.json();
+  const text: string = data?.choices?.[0]?.message?.content || '';
+  const trimmed = (text || '').trim();
+  if (!trimmed) {
+    throw new Error('Empty response from OpenAI translate');
+  }
+  return trimmed;
+}
+
 async function generateImageWithStability(prompt: string): Promise<Buffer> {
   if (!stabilityApiKey) {
     throw new Error('STABILITY_API_KEY is not set');
@@ -4885,8 +4936,16 @@ client.on('messageCreate', async (msg: Message) => {
       try {
         await msg.channel.sendTyping();
       } catch {}
-      const buffer = await generateImageWithStability(prompt);
-      let caption = prompt;
+      const originalPrompt = prompt;
+      let promptForApi = prompt;
+      try {
+        promptForApi = await translatePromptToEnglishForImage(originalPrompt);
+      } catch (translateErr) {
+        console.error('[PIC TRANSLATE ERROR]', translateErr);
+        promptForApi = originalPrompt;
+      }
+      const buffer = await generateImageWithStability(promptForApi);
+      let caption = originalPrompt;
       if (caption.length > 1800) {
         caption = caption.slice(0, 1800) + '…';
       }
