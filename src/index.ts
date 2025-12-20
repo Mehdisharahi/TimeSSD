@@ -121,6 +121,40 @@ async function fetchJsonWithTimeout<T>(url: string, init: RequestInit, timeoutMs
   }
 }
 
+async function convertImageUrlToGif(url: string): Promise<Buffer | null> {
+  try {
+    const ffmpegPath = require('ffmpeg-static') as string | null;
+    if (!ffmpegPath) return null;
+    const { spawn } = require('child_process');
+
+    return await new Promise<Buffer | null>((resolve) => {
+      const args = [
+        '-v', 'error',
+        '-i', url,
+        '-vf', 'fps=15,scale=480:-1:flags=lanczos',
+        '-loop', '0',
+        '-f', 'gif',
+        'pipe:1',
+      ];
+
+      const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+      const chunks: Buffer[] = [];
+      proc.stdout.on('data', (c: Buffer) => chunks.push(c));
+      proc.on('error', () => resolve(null));
+      proc.on('close', (code: number) => {
+        if (code === 0 && chunks.length) {
+          resolve(Buffer.concat(chunks));
+        } else {
+          resolve(null);
+        }
+      });
+    });
+  } catch (err) {
+    console.error('[IMAGE GIF CONVERT ERROR]', err);
+    return null;
+  }
+}
+
 async function sportsDbGet<T>(endpoint: string, timeoutMs = 10_000): Promise<T> {
   const url = `${sportsDbBaseUrl}${endpoint}`;
   const data = await fetchJsonWithTimeout<T>(url, { method: 'GET' }, timeoutMs);
@@ -4779,8 +4813,8 @@ client.on('messageCreate', async (msg: Message) => {
             // خود فایل از قبل GIF است
             gifBuf = buf;
           } else {
-            // تلاش برای تبدیل به GIF (ممکن است به‌خاطر sharp یا فرمت فایل شکست بخورد)
-            gifBuf = await convertBufferToGif(buf);
+            // برای تصاویر (از جمله APNG/WEBP) به‌جای sharp از ffmpeg استفاده می‌کنیم
+            gifBuf = await convertImageUrlToGif(url);
           }
           if (!gifBuf) continue;
           attachments.push({ attachment: gifBuf, name: `emoji_${++index}.gif` });
