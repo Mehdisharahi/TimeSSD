@@ -4694,7 +4694,37 @@ client.on('messageCreate', async (msg: Message) => {
     };
   };
 
-  const sendEmojiLikeMedia = async (format: 'gif' | 'png') => {
+  const sendEmojiLikeMedia = async (format: 'gif' | 'png', rawArg?: string) => {
+    const idArg = rawArg?.trim();
+    const numericId = idArg && /^\d+$/.test(idArg) ? idArg : null;
+
+    if (numericId) {
+      const urlsToTry: string[] = [];
+      if (format === 'gif') {
+        urlsToTry.push(`https://cdn.discordapp.com/emojis/${numericId}.gif?v=1`);
+        urlsToTry.push(`https://cdn.discordapp.com/stickers/${numericId}.gif`);
+        urlsToTry.push(`https://cdn.discordapp.com/emojis/${numericId}.png?v=1`);
+        urlsToTry.push(`https://cdn.discordapp.com/stickers/${numericId}.png`);
+      } else {
+        urlsToTry.push(`https://cdn.discordapp.com/emojis/${numericId}.png?v=1`);
+        urlsToTry.push(`https://cdn.discordapp.com/stickers/${numericId}.png`);
+        urlsToTry.push(`https://cdn.discordapp.com/emojis/${numericId}.gif?v=1`);
+        urlsToTry.push(`https://cdn.discordapp.com/stickers/${numericId}.gif`);
+      }
+      let sent = false;
+      for (const url of urlsToTry) {
+        try {
+          await msg.reply({ files: [url] });
+          sent = true;
+          break;
+        } catch {}
+      }
+      if (!sent) {
+        await msg.reply({ content: 'هیچ فایل معتبری برای این آیدی پیدا نشد. مطمئن شوید آیدی درست است و استیکر/اموجی هنوز پاک نشده باشد.' });
+      }
+      return;
+    }
+
     if (!msg.reference?.messageId) {
       await msg.reply({ content: 'برای استفاده از این دستور باید روی یک پیام حاوی اموجی سرور یا استیکر ریپلای کنید.' });
       return;
@@ -4748,13 +4778,13 @@ client.on('messageCreate', async (msg: Message) => {
     }
 
     const maxPerMessage = 10;
-    let first = true;
+    let firstBatch = true;
     try {
       for (let i = 0; i < files.length; i += maxPerMessage) {
         const slice = files.slice(i, i + maxPerMessage);
-        if (first) {
+        if (firstBatch) {
           await msg.reply({ files: slice });
-          first = false;
+          firstBatch = false;
         } else {
           await msg.channel.send({ files: slice });
         }
@@ -5896,19 +5926,23 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .gif / .گیف — convert replied sticker or custom emoji to GIF/image
+  // .gif / .گیف — convert replied sticker or custom emoji to GIF/image (or by numeric ID)
   if (isCmd('gif') || isCmd('گیف')) {
-    await sendEmojiLikeMedia('gif');
+    const parts = content.split(/\s+/);
+    const arg = parts.length > 1 ? parts[1] : undefined;
+    await sendEmojiLikeMedia('gif', arg);
     return;
   }
 
-  // .png — same as .gif but PNG output
+  // .png — same as .gif but PNG output (or by numeric ID)
   if (isCmd('png')) {
-    await sendEmojiLikeMedia('png');
+    const parts = content.split(/\s+/);
+    const arg = parts.length > 1 ? parts[1] : undefined;
+    await sendEmojiLikeMedia('png', arg);
     return;
   }
 
-  // .addem — create guild emojis from replied message media/emoji/sticker
+  // .addem — create guild emojis from replied message media/emoji/sticker or by numeric ID
   if (isCmd('addem')) {
     if (!msg.guild) {
       await msg.reply({ content: 'این دستور فقط داخل سرور قابل استفاده است.' });
@@ -5919,6 +5953,36 @@ client.on('messageCreate', async (msg: Message) => {
       await msg.reply({ content: 'برای استفاده از این دستور باید دسترسی مدیریت اموجی/استیکر در سرور داشته باشید.' });
       return;
     }
+
+    const parts = content.split(/\s+/);
+    const arg = parts.length > 1 ? parts[1] : undefined;
+    const numericId = arg && /^\d+$/.test(arg) ? arg : null;
+
+    if (numericId) {
+      const urlsToTry = [
+        `https://cdn.discordapp.com/emojis/${numericId}.gif?v=1`,
+        `https://cdn.discordapp.com/emojis/${numericId}.png?v=1`,
+        `https://cdn.discordapp.com/stickers/${numericId}.gif`,
+        `https://cdn.discordapp.com/stickers/${numericId}.png`,
+      ];
+      let createdFromId = 0;
+      for (const url of urlsToTry) {
+        try {
+          const buf = await fetchBuffer(url);
+          const name = makeEmojiOrStickerName('emoji', createdFromId);
+          await msg.guild.emojis.create({ attachment: buf, name, reason: `Created via .addem by ${msg.author.tag}` });
+          createdFromId++;
+          break;
+        } catch {}
+      }
+      if (!createdFromId) {
+        await msg.reply({ content: 'هیچ اموجی‌ای با این آیدی پیدا نشد یا فایل آن قابل استفاده برای ساخت اموجی نیست.' });
+      } else {
+        await msg.reply({ content: `✅ ${createdFromId} اموجی ساخته شد.` });
+      }
+      return;
+    }
+
     if (!msg.reference?.messageId) {
       await msg.reply({ content: 'برای استفاده از این دستور باید روی یک پیام حاوی اموجی، استیکر یا تصویر ریپلای کنید.' });
       return;
@@ -6004,7 +6068,7 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .addst — create guild stickers from replied message media/emoji/sticker
+  // .addst — create guild stickers from replied message media/emoji/sticker or by numeric ID
   if (isCmd('addst')) {
     if (!msg.guild) {
       await msg.reply({ content: 'این دستور فقط داخل سرور قابل استفاده است.' });
@@ -6015,6 +6079,36 @@ client.on('messageCreate', async (msg: Message) => {
       await msg.reply({ content: 'برای استفاده از این دستور باید دسترسی مدیریت اموجی/استیکر در سرور داشته باشید.' });
       return;
     }
+
+    const parts = content.split(/\s+/);
+    const arg = parts.length > 1 ? parts[1] : undefined;
+    const numericId = arg && /^\d+$/.test(arg) ? arg : null;
+
+    if (numericId) {
+      const urlsToTry = [
+        `https://cdn.discordapp.com/emojis/${numericId}.png?v=1`,
+        `https://cdn.discordapp.com/stickers/${numericId}.png`,
+        `https://cdn.discordapp.com/emojis/${numericId}.gif?v=1`,
+        `https://cdn.discordapp.com/stickers/${numericId}.gif`,
+      ];
+      let createdFromId = 0;
+      for (const url of urlsToTry) {
+        try {
+          const buf = await fetchBuffer(url);
+          const name = makeEmojiOrStickerName('sticker', createdFromId);
+          await msg.guild.stickers.create({ file: buf, name, tags: '🙂', description: `Created via .addst by ${msg.author.tag}` });
+          createdFromId++;
+          break;
+        } catch {}
+      }
+      if (!createdFromId) {
+        await msg.reply({ content: 'هیچ استیکری با این آیدی پیدا نشد یا فایل آن قابل استفاده برای ساخت استیکر نیست.' });
+      } else {
+        await msg.reply({ content: `✅ ${createdFromId} استیکر ساخته شد.` });
+      }
+      return;
+    }
+
     if (!msg.reference?.messageId) {
       await msg.reply({ content: 'برای استفاده از این دستور باید روی یک پیام حاوی اموجی، استیکر یا تصویر ریپلای کنید.' });
       return;
@@ -6100,7 +6194,7 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .deleteem — delete guild emojis referenced in replied message
+  // .deleteem — delete guild emojis referenced in replied message or by numeric ID
   if (isCmd('deleteem')) {
     if (!msg.guild) {
       await msg.reply({ content: 'این دستور فقط داخل سرور قابل استفاده است.' });
@@ -6111,6 +6205,34 @@ client.on('messageCreate', async (msg: Message) => {
       await msg.reply({ content: 'برای استفاده از این دستور باید دسترسی مدیریت اموجی/استیکر در سرور داشته باشید.' });
       return;
     }
+
+    const parts = content.split(/\s+/);
+    const arg = parts.length > 1 ? parts[1] : undefined;
+    const numericId = arg && /^\d+$/.test(arg) ? arg : null;
+
+    if (numericId) {
+      let emoji = msg.guild.emojis.cache.get(numericId);
+      if (!emoji) {
+        try {
+          emoji = await msg.guild.emojis.fetch(numericId).catch(() => null as any);
+        } catch {
+          emoji = null as any;
+        }
+      }
+      if (!emoji) {
+        await msg.reply({ content: 'هیچ اموجی‌ای با این آیدی در این سرور پیدا نشد.' });
+        return;
+      }
+      try {
+        await emoji.delete(`Deleted via .deleteem by ${msg.author.tag}`);
+        await msg.reply({ content: '✅ اموجی مورد نظر از سرور حذف شد.' });
+      } catch (err) {
+        console.error('[DELETEEM ERROR]', err);
+        await msg.reply({ content: '❌ حذف اموجی با خطا مواجه شد. ممکن است به‌خاطر محدودیت دسترسی یا محدودیت‌های دیسکورد باشد.' });
+      }
+      return;
+    }
+
     if (!msg.reference?.messageId) {
       await msg.reply({ content: 'برای استفاده از این دستور باید روی پیامی که اموجی سرور در آن استفاده شده ریپلای کنید.' });
       return;
@@ -6159,7 +6281,7 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .deletest — delete guild sticker from replied message
+  // .deletest — delete guild sticker from replied message or by numeric ID
   if (isCmd('deletest')) {
     if (!msg.guild) {
       await msg.reply({ content: 'این دستور فقط داخل سرور قابل استفاده است.' });
@@ -6170,6 +6292,38 @@ client.on('messageCreate', async (msg: Message) => {
       await msg.reply({ content: 'برای استفاده از این دستور باید دسترسی مدیریت اموجی/استیکر در سرور داشته باشید.' });
       return;
     }
+
+    const parts = content.split(/\s+/);
+    const arg = parts.length > 1 ? parts[1] : undefined;
+    const numericId = arg && /^\d+$/.test(arg) ? arg : null;
+
+    if (numericId) {
+      let sticker = msg.guild.stickers.cache.get(numericId);
+      if (!sticker) {
+        try {
+          sticker = await msg.guild.stickers.fetch(numericId).catch(() => null as any);
+        } catch {
+          sticker = null as any;
+        }
+      }
+      if (!sticker) {
+        await msg.reply({ content: 'هیچ استیکری با این آیدی در این سرور پیدا نشد.' });
+        return;
+      }
+      if (sticker.guildId && sticker.guildId !== msg.guild.id) {
+        await msg.reply({ content: 'این استیکر متعلق به این سرور نیست و قابل حذف نیست.' });
+        return;
+      }
+      try {
+        await msg.guild.stickers.delete(sticker.id, `Deleted via .deletest by ${msg.author.tag}`);
+        await msg.reply({ content: '✅ استیکر مورد نظر از سرور حذف شد.' });
+      } catch (err) {
+        console.error('[DELETEST ERROR]', err);
+        await msg.reply({ content: '❌ حذف استیکر با خطا مواجه شد. ممکن است به‌خاطر محدودیت دسترسی یا محدودیت‌های دیسکورد باشد.' });
+      }
+      return;
+    }
+
     if (!msg.reference?.messageId) {
       await msg.reply({ content: 'برای استفاده از این دستور باید روی پیامی که استیکر سرور در آن استفاده شده ریپلای کنید.' });
       return;
