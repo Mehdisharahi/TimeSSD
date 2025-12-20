@@ -3450,27 +3450,27 @@ loadDMAllowedUsers();
 async function addDuration(guildId: string, a: string, b: string, deltaMs: number) {
   // افزودن بررسی مقدار درست زمان
   if (deltaMs <= 0) return;
-  
+
   // گرد کردن به عدد صحیح برای جلوگیری از خطاهای احتمالی
   const roundedDelta = Math.floor(deltaMs);
-  
+
   // دریافت نقشه‌های ذخیره‌سازی
   const gMap = getMap(partnerTotals, guildId, () => new Map());
   const aMap = getMap(gMap, a, () => new Map());
   const bMap = getMap(gMap, b, () => new Map());
-  
+
   // اطمینان از مقداردهی متقارن برای هر دو کاربر
   const aCurrentTotal = aMap.get(b) || 0;
   const bCurrentTotal = bMap.get(a) || 0;
-  
+
   // افزودن زمان جدید به مقادیر قبلی
   const aNewTotal = aCurrentTotal + roundedDelta;
   const bNewTotal = bCurrentTotal + roundedDelta;
-  
+
   // مطمئن شوید که هر دو رکورد مقدار یکسانی دارند
   aMap.set(b, aNewTotal);
   bMap.set(a, bNewTotal);
-  
+
   try {
     // ذخیره در پایگاه داده
     await store.addDuration(guildId, a, b, roundedDelta);
@@ -3479,7 +3479,7 @@ async function addDuration(guildId: string, a: string, b: string, deltaMs: numbe
     // اگر ذخیره با مشکل مواجه شد، دوباره تلاش می‌کنیم
     try {
       await store.addDuration(guildId, a, b, roundedDelta);
-    } catch {} // در صورت شکست مجدد، فقط صرفنظر می‌کنیم
+    } catch {}
   }
 }
 
@@ -3487,7 +3487,7 @@ async function addDuration(guildId: string, a: string, b: string, deltaMs: numbe
 function computeTotalsUpToNow(guildId: string, userId: string): Map<string, number> | null {
   // Создаем новую карту для выходных данных
   const out = new Map<string, number>();
-  
+
   // 1. Сначала загружаем сохраненные итоги из partnerTotals
   const baseGuild = partnerTotals.get(guildId);
   const base = baseGuild?.get(userId);
@@ -3497,7 +3497,7 @@ function computeTotalsUpToNow(guildId: string, userId: string): Map<string, numb
       out.set(pid, ms);
     }
   }
-  
+
   // 2. Теперь добавляем текущие активные сеансы из pairStarts
   const pMap = pairStarts.get(guildId);
   if (pMap && pMap.size > 0) {
@@ -3506,14 +3506,14 @@ function computeTotalsUpToNow(guildId: string, userId: string): Map<string, numb
       // key format: idA:idB:channelId
       const parts = key.split(':');
       if (parts.length < 3) continue;
-      
+
       const idA = parts[0];
       const idB = parts[1];
-      
+
       // Проверяем, является ли это релевантной парой для текущего пользователя
       const other = userId === idA ? idB : (userId === idB ? idA : null);
       if (!other) continue;
-      
+
       // Вычисляем продолжительность текущей сессии
       const delta = now - start;
       if (delta > 0) {
@@ -3522,7 +3522,7 @@ function computeTotalsUpToNow(guildId: string, userId: string): Map<string, numb
       }
     }
   }
-  
+
   return out.size ? out : null;
 }
 
@@ -3546,6 +3546,22 @@ async function fetchBuffer(url: string): Promise<Buffer> {
       reject(e);
     }
   });
+}
+
+function isGifBuffer(buf: Buffer): boolean {
+  return buf.length >= 4 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38; // 'GIF8'
+}
+
+async function convertBufferToGif(buffer: Buffer): Promise<Buffer | null> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const sharpLib: any = require('sharp');
+    const converted: Buffer = await sharpLib(buffer).gif().toBuffer();
+    return converted;
+  } catch (err) {
+    console.error('[GIF CONVERT ERROR]', err);
+    return null;
+  }
 }
 
 async function resolveImageForHosh(msg: Message): Promise<{ buffer: Buffer; mimeType: string } | null> {
@@ -4698,6 +4714,45 @@ client.on('messageCreate', async (msg: Message) => {
     const idArg = rawArg?.trim();
     const numericId = idArg && /^\d+$/.test(idArg) ? idArg : null;
 
+    const sendGifFromUrls = async (urls: string[]) => {
+      const attachments: { attachment: Buffer; name: string }[] = [];
+      let index = 0;
+      for (const url of urls) {
+        try {
+          const buf = await fetchBuffer(url);
+          let gifBuf: Buffer | null;
+          if (isGifBuffer(buf)) {
+            gifBuf = buf;
+          } else {
+            gifBuf = await convertBufferToGif(buf);
+          }
+          if (!gifBuf) continue;
+          attachments.push({ attachment: gifBuf, name: `emoji_${++index}.gif` });
+        } catch {}
+      }
+
+      if (!attachments.length) {
+        await msg.reply({ content: 'ارسال فایل به عنوان GIF با خطا مواجه شد.' });
+        return;
+      }
+
+      const maxPerMessage = 10;
+      let firstBatch = true;
+      try {
+        for (let i = 0; i < attachments.length; i += maxPerMessage) {
+          const slice = attachments.slice(i, i + maxPerMessage);
+          if (firstBatch) {
+            await msg.reply({ files: slice });
+            firstBatch = false;
+          } else {
+            await msg.channel.send({ files: slice });
+          }
+        }
+      } catch {
+        await msg.reply({ content: 'ارسال فایل به عنوان GIF با خطا مواجه شد.' }).catch(() => {});
+      }
+    };
+
     if (numericId) {
       const urlsToTry: string[] = [];
       if (format === 'gif') {
@@ -4705,22 +4760,23 @@ client.on('messageCreate', async (msg: Message) => {
         urlsToTry.push(`https://cdn.discordapp.com/stickers/${numericId}.gif`);
         urlsToTry.push(`https://cdn.discordapp.com/emojis/${numericId}.png?v=1`);
         urlsToTry.push(`https://cdn.discordapp.com/stickers/${numericId}.png`);
+        await sendGifFromUrls(urlsToTry);
       } else {
         urlsToTry.push(`https://cdn.discordapp.com/emojis/${numericId}.png?v=1`);
         urlsToTry.push(`https://cdn.discordapp.com/stickers/${numericId}.png`);
         urlsToTry.push(`https://cdn.discordapp.com/emojis/${numericId}.gif?v=1`);
         urlsToTry.push(`https://cdn.discordapp.com/stickers/${numericId}.gif`);
-      }
-      let sent = false;
-      for (const url of urlsToTry) {
-        try {
-          await msg.reply({ files: [url] });
-          sent = true;
-          break;
-        } catch {}
-      }
-      if (!sent) {
-        await msg.reply({ content: 'هیچ فایل معتبری برای این آیدی پیدا نشد. مطمئن شوید آیدی درست است و استیکر/اموجی هنوز پاک نشده باشد.' });
+        let sent = false;
+        for (const url of urlsToTry) {
+          try {
+            await msg.reply({ files: [url] });
+            sent = true;
+            break;
+          } catch {}
+        }
+        if (!sent) {
+          await msg.reply({ content: 'هیچ فایل معتبری برای این آیدی پیدا نشد. مطمئن شوید آیدی درست است و استیکر/اموجی هنوز پاک نشده باشد.' });
+        }
       }
       return;
     }
@@ -4738,25 +4794,24 @@ client.on('messageCreate', async (msg: Message) => {
 
     const { customEmoji, stickers, imageUrls } = await collectEmojiLikeMediaDeep(replied as Message);
 
-    const files: string[] = [];
+    const urls: string[] = [];
 
     for (const st of stickers) {
       if (st && typeof st.url === 'string') {
-        files.push(st.url);
+        urls.push(st.url);
       }
     }
 
     for (const e of customEmoji) {
-      const ext = format === 'gif' ? (e.animated ? 'gif' : 'png') : 'png';
-      const url = `https://cdn.discordapp.com/emojis/${e.id}.${ext}?v=1`;
-      files.push(url);
+      const url = `https://cdn.discordapp.com/emojis/${e.id}.png?v=1`;
+      urls.push(url);
     }
 
     for (const url of imageUrls) {
-      files.push(url);
+      urls.push(url);
     }
 
-    if (!files.length) {
+    if (!urls.length) {
       let nameCandidates = collectEmojiNamesFromMessage(replied as Message);
       try {
         const original = await resolveForwardedMessage(replied as Message);
@@ -4768,20 +4823,26 @@ client.on('messageCreate', async (msg: Message) => {
         ? await findEmojiGgByNames(nameCandidates, format === 'gif')
         : [];
       for (const item of fromEmojiGg) {
-        files.push(item.url);
+        urls.push(item.url);
       }
     }
 
-    if (!files.length) {
+    if (!urls.length) {
       await msg.reply({ content: 'در پیامی که ریپلای کردید هیچ اموجی سرور یا استیکر معتبری پیدا نشد.\nاین دستور فقط روی اموجی‌های سرور، استیکرهای دیسکورد و تصاویر مرتبط کار می‌کند.' });
       return;
     }
 
+    if (format === 'gif') {
+      await sendGifFromUrls(urls);
+      return;
+    }
+
+    // PNG حالت قبلی: فقط ارسال URL ها
     const maxPerMessage = 10;
     let firstBatch = true;
     try {
-      for (let i = 0; i < files.length; i += maxPerMessage) {
-        const slice = files.slice(i, i + maxPerMessage);
+      for (let i = 0; i < urls.length; i += maxPerMessage) {
+        const slice = urls.slice(i, i + maxPerMessage);
         if (firstBatch) {
           await msg.reply({ files: slice });
           firstBatch = false;
@@ -4790,10 +4851,7 @@ client.on('messageCreate', async (msg: Message) => {
         }
       }
     } catch {
-      const errText = format === 'gif'
-        ? 'ارسال فایل به عنوان GIF با خطا مواجه شد.'
-        : 'ارسال فایل به عنوان PNG با خطا مواجه شد.';
-      await msg.reply({ content: errText }).catch(() => {});
+      await msg.reply({ content: 'ارسال فایل به عنوان PNG با خطا مواجه شد.' }).catch(() => {});
     }
   };
 
