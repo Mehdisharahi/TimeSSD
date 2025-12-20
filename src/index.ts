@@ -4443,6 +4443,139 @@ client.on('messageCreate', async (msg: Message) => {
   setTimeout(() => processedMessages.delete(msg.id), 60_000);
   const content = msg.content.trim();
   const isCmd = (name: string) => new RegExp(`^\\.${name}(?:\\s|$)`).test(content);
+  const extractCustomEmojisFromText = (text?: string | null) => {
+    const result: { id: string; animated: boolean }[] = [];
+    if (!text) return result;
+    const regex = /<(a?):\w+:(\d+)>/g;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      result.push({ id: match[2], animated: match[1] === 'a' });
+    }
+    return result;
+  };
+
+  const collectEmojiLikeMedia = (source: Message) => {
+    const customEmoji: { id: string; animated: boolean }[] = [];
+    const stickers: any[] = [];
+    const imageUrls: string[] = [];
+    const imageSeen = new Set<string>();
+
+    const addFromText = (text?: string | null) => {
+      const found = extractCustomEmojisFromText(text);
+      for (const e of found) {
+        customEmoji.push(e);
+      }
+    };
+
+    addFromText(source.content);
+
+    for (const embed of source.embeds) {
+      addFromText(embed.title ?? undefined);
+      addFromText(embed.description ?? undefined);
+      if (embed.fields) {
+        for (const field of embed.fields) {
+          addFromText(field.name);
+          addFromText(field.value);
+        }
+      }
+      if (embed.footer?.text) addFromText(embed.footer.text);
+      const anyEmbed = embed as any;
+      if (anyEmbed.author?.name) addFromText(anyEmbed.author.name);
+      const imgUrl = embed.image?.url;
+      if (imgUrl && !imageSeen.has(imgUrl)) {
+        imageSeen.add(imgUrl);
+        imageUrls.push(imgUrl);
+      }
+      const thumbUrl = embed.thumbnail?.url;
+      if (thumbUrl && !imageSeen.has(thumbUrl)) {
+        imageSeen.add(thumbUrl);
+        imageUrls.push(thumbUrl);
+      }
+    }
+
+    if (source.stickers && source.stickers.size > 0) {
+      for (const st of source.stickers.values()) {
+        stickers.push(st);
+      }
+    }
+
+    source.attachments.forEach(att => {
+      const ct = att.contentType || '';
+      const name = (att.name || '').toLowerCase();
+      if (
+        ct.startsWith('image/') ||
+        name.endsWith('.png') ||
+        name.endsWith('.jpg') ||
+        name.endsWith('.jpeg') ||
+        name.endsWith('.gif') ||
+        name.endsWith('.webp')
+      ) {
+        if (!imageSeen.has(att.url)) {
+          imageSeen.add(att.url);
+          imageUrls.push(att.url);
+        }
+      }
+    });
+
+    return { customEmoji, stickers, imageUrls };
+  };
+
+  const sendEmojiLikeMedia = async (format: 'gif' | 'png') => {
+    if (!msg.reference?.messageId) {
+      await msg.reply({ content: 'برای استفاده از این دستور باید روی یک پیام حاوی اموجی سرور یا استیکر ریپلای کنید.' });
+      return;
+    }
+
+    const replied = await msg.fetchReference().catch(() => null as any);
+    if (!replied) {
+      await msg.reply({ content: 'پیام مورد نظر پیدا نشد.' });
+      return;
+    }
+
+    const { customEmoji, stickers, imageUrls } = collectEmojiLikeMedia(replied as Message);
+
+    const files: string[] = [];
+
+    for (const st of stickers) {
+      if (st && typeof st.url === 'string') {
+        files.push(st.url);
+      }
+    }
+
+    for (const e of customEmoji) {
+      const ext = format === 'gif' ? (e.animated ? 'gif' : 'png') : 'png';
+      const url = `https://cdn.discordapp.com/emojis/${e.id}.${ext}?v=1`;
+      files.push(url);
+    }
+
+    for (const url of imageUrls) {
+      files.push(url);
+    }
+
+    if (!files.length) {
+      await msg.reply({ content: 'در پیامی که ریپلای کردید هیچ اموجی سرور یا استیکر معتبری پیدا نشد.\nاین دستور فقط روی اموجی‌های سرور، استیکرهای دیسکورد و تصاویر مرتبط کار می‌کند.' });
+      return;
+    }
+
+    const maxPerMessage = 10;
+    let first = true;
+    try {
+      for (let i = 0; i < files.length; i += maxPerMessage) {
+        const slice = files.slice(i, i + maxPerMessage);
+        if (first) {
+          await msg.reply({ files: slice });
+          first = false;
+        } else {
+          await msg.channel.send({ files: slice });
+        }
+      }
+    } catch {
+      const errText = format === 'gif'
+        ? 'ارسال فایل به عنوان GIF با خطا مواجه شد.'
+        : 'ارسال فایل به عنوان PNG با خطا مواجه شد.';
+      await msg.reply({ content: errText }).catch(() => {});
+    }
+  };
   
   // Log text activity for .idlist command
   if (msg.guildId && msg.channelId) {
@@ -4610,7 +4743,30 @@ client.on('messageCreate', async (msg: Message) => {
       return;
     }
   }
-
+  
+  if (isCmd('komak') || isCmd('komakfa')) {
+    const lines: string[] = [
+      '• .t <مدت> [دلیل] — تنظیم تایمر. نمونه: `.t 10m` یا `.t 60 [دلیل]`',
+      '• .e <ثانیه> — افزودن چند ثانیه به آخرین تایمر خودت. نمونه: `.e 30`',
+      '• .friend [@کاربر|آیدی] — نمایش ۱۰ نفرِ برتر که بیشترین هم‌حضوری ویس با کاربر هدف را داشته‌اند (بدون ربات‌ها).',
+      '• .topfriend — نمایش ۱۰ زوج برتر با بیشترین هم‌حضوری در ویس (بدون ربات‌ها).',
+      '• .ll [@کاربر|آیدی] — محاسبه و ساخت تصویر درصد عشق بین شما و کاربر هدف.',
+      '• .llset @user1 @user2 <0..100> — فقط مدیران: تنظیم درصد ثابت عشق برای دو کاربر.',
+      '• .llunset @user1 @user2 — فقط مدیران: حذف تنظیم ثابت درصد عشق.',
+      '• .av [@کاربر|آیدی] — نمایش آواتار کاربر (با لینک).',
+      '• .ba [@کاربر|آیدی] — نمایش بنر کاربر (اگر داشته باشد).',
+      '• .gif / .گیف — تبدیل استیکر یا اموجی سرور در پیام ریپلای‌شده به GIF و ارسال آن.',
+      '• .png — تبدیل استیکر یا اموجی سرور در پیام ریپلای‌شده به تصویر PNG و ارسال آن.',
+      '• Slash: /timer set|list|cancel — تایمر با اینترفیس اسلش‌کامند (ثبت با `npm run register:commands`).',
+    ];
+    const embed = new EmbedBuilder()
+      .setTitle('راهنمای دستورات')
+      .setDescription(lines.join('\n'))
+      .setColor(0x2f3136);
+    await msg.reply({ embeds: [embed] });
+    return;
+  }
+  
   // .friend [@user|userId] or .friends
   if (isCmd('friend') || isCmd('friends') || isCmd('دوست')) {
     const cmdLen = content.startsWith('.friends') ? 8 : content.startsWith('.دوست') ? 5 : 7;
@@ -5534,47 +5690,12 @@ client.on('messageCreate', async (msg: Message) => {
 
   // .gif / .گیف — convert replied sticker or custom emoji to GIF/image
   if (isCmd('gif') || isCmd('گیف')) {
-    if (!msg.reference?.messageId) {
-      await msg.reply({ content: 'برای استفاده از این دستور باید روی یک پیام حاوی اموجی سرور یا استیکر ریپلای کنید.' });
-      return;
-    }
+    await sendEmojiLikeMedia('gif');
+    return;
+  }
 
-    const replied = await msg.fetchReference().catch(() => null);
-    if (!replied) {
-      await msg.reply({ content: 'پیام مورد نظر پیدا نشد.' });
-      return;
-    }
-
-    // Priority 1: Discord stickers
-    if (replied.stickers && replied.stickers.size > 0) {
-      const sticker = replied.stickers.first();
-      if (sticker) {
-        const url = sticker.url;
-        try {
-          await msg.reply({ files: [url] });
-        } catch {
-          await msg.reply({ content: 'ارسال فایل استیکر به عنوان GIF با خطا مواجه شد.' });
-        }
-        return;
-      }
-    }
-
-    // Priority 2: custom server emoji in message content
-    const emojiMatch = replied.content.match(/<(a?):\w+:(\d+)>/);
-    if (emojiMatch) {
-      const animated = emojiMatch[1] === 'a';
-      const id = emojiMatch[2];
-      const ext = animated ? 'gif' : 'png';
-      const url = `https://cdn.discordapp.com/emojis/${id}.${ext}?v=1`;
-      try {
-        await msg.reply({ files: [url] });
-      } catch {
-        await msg.reply({ content: 'ارسال فایل اموجی به عنوان GIF با خطا مواجه شد.' });
-      }
-      return;
-    }
-
-    await msg.reply({ content: 'در پیامی که ریپلای کردید هیچ اموجی سرور یا استیکر معتبری پیدا نشد.\nاین دستور فقط روی اموجی‌های سرور و استیکرهای دیسکورد کار می‌کند.' });
+  if (isCmd('png')) {
+    await sendEmojiLikeMedia('png');
     return;
   }
 
