@@ -4520,6 +4520,77 @@ client.on('messageCreate', async (msg: Message) => {
     return { customEmoji, stickers, imageUrls };
   };
 
+  // تلاش برای پیدا کردن پیام اصلی وقتی پیام ریپلای‌شده فقط یک فوروارد/امبد/لینک است
+  const resolveForwardedMessage = async (source: Message): Promise<Message | null> => {
+    // 1) اگر خودِ این پیام ریپلایِ یک پیام دیگر است
+    if (source.reference?.messageId) {
+      try {
+        const original = await source.fetchReference();
+        if (original) return original as Message;
+      } catch {}
+    }
+
+    // الگوی لینک پیام دیسکورد
+    const linkRegex = /https?:\/\/(?:canary\.|ptb\.)?discord\.com\/channels\/(?:\d+|@me)\/(\d+)\/(\d+)/;
+
+    const tryFetchByLink = async (text?: string | null): Promise<Message | null> => {
+      if (!text) return null;
+      const m = text.match(linkRegex);
+      if (!m) return null;
+      const [, channelId, messageId] = m;
+      try {
+        const channel: any = await source.client.channels.fetch(channelId).catch(() => null);
+        if (!channel || !channel.isTextBased?.()) return null;
+        const original: any = await channel.messages.fetch(messageId).catch(() => null);
+        return original ?? null;
+      } catch {
+        return null;
+      }
+    };
+
+    // 2) جستجو داخل امبدها (url / description / فیلدها)
+    for (const embed of source.embeds) {
+      if (embed.url) {
+        const found = await tryFetchByLink(embed.url);
+        if (found) return found;
+      }
+      if (embed.description) {
+        const found = await tryFetchByLink(embed.description);
+        if (found) return found;
+      }
+      if (embed.fields) {
+        for (const field of embed.fields) {
+          const found = await tryFetchByLink(field.value);
+          if (found) return found;
+        }
+      }
+    }
+
+    // 3) جستجو داخل متن خود پیام
+    const fromContent = await tryFetchByLink(source.content);
+    if (fromContent) return fromContent;
+
+    return null;
+  };
+
+  // نسخه‌ی «عمیق‌تر» که اگر چیزی در خود پیام نبود، سعی می‌کند پیام اصلی فوروارد/کوت‌شده را پیدا کند
+  const collectEmojiLikeMediaDeep = async (source: Message) => {
+    const first = collectEmojiLikeMedia(source);
+    if (first.customEmoji.length || first.stickers.length || first.imageUrls.length) {
+      return first;
+    }
+
+    const original = await resolveForwardedMessage(source);
+    if (!original) return first;
+
+    const second = collectEmojiLikeMedia(original as Message);
+    return {
+      customEmoji: [...first.customEmoji, ...second.customEmoji],
+      stickers: [...first.stickers, ...second.stickers],
+      imageUrls: [...first.imageUrls, ...second.imageUrls],
+    };
+  };
+
   const sendEmojiLikeMedia = async (format: 'gif' | 'png') => {
     if (!msg.reference?.messageId) {
       await msg.reply({ content: 'برای استفاده از این دستور باید روی یک پیام حاوی اموجی سرور یا استیکر ریپلای کنید.' });
@@ -4532,7 +4603,7 @@ client.on('messageCreate', async (msg: Message) => {
       return;
     }
 
-    const { customEmoji, stickers, imageUrls } = collectEmojiLikeMedia(replied as Message);
+    const { customEmoji, stickers, imageUrls } = await collectEmojiLikeMediaDeep(replied as Message);
 
     const files: string[] = [];
 
@@ -5740,7 +5811,7 @@ client.on('messageCreate', async (msg: Message) => {
       return;
     }
 
-    const { customEmoji, stickers, imageUrls } = collectEmojiLikeMedia(replied as Message);
+    const { customEmoji, stickers, imageUrls } = await collectEmojiLikeMediaDeep(replied as Message);
 
     const sources: { url: string; nameHint: string }[] = [];
 
@@ -5902,7 +5973,7 @@ client.on('messageCreate', async (msg: Message) => {
       return;
     }
 
-    const { customEmoji } = collectEmojiLikeMedia(replied as Message);
+    const { customEmoji } = await collectEmojiLikeMediaDeep(replied as Message);
     if (!customEmoji.length) {
       await msg.reply({ content: 'هیچ اموجی سروری در پیام ریپلای‌شده پیدا نشد.' });
       return;
