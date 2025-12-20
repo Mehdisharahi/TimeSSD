@@ -4813,8 +4813,12 @@ client.on('messageCreate', async (msg: Message) => {
             // خود فایل از قبل GIF است
             gifBuf = buf;
           } else {
-            // برای تصاویر (از جمله APNG/WEBP) به‌جای sharp از ffmpeg استفاده می‌کنیم
+            // برای تصاویر (از جمله APNG/WEBP) ابتدا با ffmpeg تلاش می‌کنیم
             gifBuf = await convertImageUrlToGif(url);
+            // اگر ffmpeg موفق نشد، در مرحله‌ی بعد با sharp تلاش می‌کنیم تا حداقل یک GIF بسازیم
+            if (!gifBuf) {
+              gifBuf = await convertBufferToGif(buf);
+            }
           }
           if (!gifBuf) continue;
           attachments.push({ attachment: gifBuf, name: `emoji_${++index}.gif` });
@@ -4824,20 +4828,11 @@ client.on('messageCreate', async (msg: Message) => {
       }
 
       if (!attachments.length) {
-        // اگر هیچ GIF معتبری نتوانستیم بسازیم، به‌جای فقط خطا، خود URLها را مستقیم می‌فرستیم
-        let sent = false;
-        for (const url of urls) {
-          try {
-            await msg.reply({ files: [url] });
-            sent = true;
-            break;
-          } catch {
-            // اگر این یکی هم نشد، می‌رویم سراغ بعدی
-          }
-        }
-        if (!sent) {
-          await msg.reply({ content: 'ارسال فایل به عنوان GIF با خطا مواجه شد.' });
-        }
+        // اگر هیچ GIF معتبری نتوانستیم بسازیم، توضیح می‌دهیم چرا (مثلاً استیکرهای Lottie یا مدیای پاک‌شده)
+        await msg.reply({
+          content:
+            'نتوانستم این مدیا را به GIF متحرک تبدیل کنم. این معمولاً زمانی رخ می‌دهد که فایل اصلی دیگر در دسترس نیست، یا از نوع استیکرهای خاص (مثل Lottie) باشد که دیسکورد فقط سمت کلاینت رندرشان می‌کند.',
+        });
         return;
       }
 
@@ -4978,17 +4973,10 @@ client.on('messageCreate', async (msg: Message) => {
           return;
         }
 
-        let sentVideo = false;
-        for (const v of videoSources) {
-          try {
-            await msg.reply({ files: [v] });
-            sentVideo = true;
-            break;
-          } catch {}
-        }
-        if (!sentVideo) {
-          await msg.reply({ content: 'ارسال فایل به عنوان GIF با خطا مواجه شد.' }).catch(() => {});
-        }
+        await msg.reply({
+          content:
+            'نتوانستم این ویدیو را به GIF متحرک تبدیل کنم. معمولاً وقتی کُدک ویدیو یا دسترسی به فایل محدود باشد این اتفاق می‌افتد.',
+        }).catch(() => {});
         return;
       }
 
