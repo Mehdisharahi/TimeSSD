@@ -127,6 +127,72 @@ async function sportsDbGet<T>(endpoint: string, timeoutMs = 10_000): Promise<T> 
   return data;
 }
 
+type EmojiGgItem = {
+  id?: number;
+  title?: string;
+  slug?: string;
+  image?: string;
+};
+
+let emojiGgData: EmojiGgItem[] | null = null;
+let emojiGgLoadedAt = 0;
+
+async function ensureEmojiGgData(): Promise<EmojiGgItem[] | null> {
+  const now = Date.now();
+  if (emojiGgData && now - emojiGgLoadedAt < 24 * 60 * 60 * 1000) return emojiGgData;
+  try {
+    const data = await fetchJsonWithTimeout<any[]>('https://emoji.gg/api', { method: 'GET' }, 10_000);
+    if (Array.isArray(data)) {
+      emojiGgData = data.filter((x: any) => typeof x?.image === 'string' && x.image) as EmojiGgItem[];
+      emojiGgLoadedAt = now;
+      return emojiGgData;
+    }
+  } catch (err) {
+    console.error('[emoji.gg] fetch error', err);
+  }
+  return null;
+}
+
+function normalizeEmojiGgName(value: string | undefined | null): string {
+  if (!value) return '';
+  return value
+    .toLowerCase()
+    .replace(/:/g, '')
+    .replace(/_/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+async function findEmojiGgByNames(names: string[], preferGif: boolean): Promise<{ url: string; name: string }[]> {
+  const list = await ensureEmojiGgData();
+  if (!list) return [];
+  const wanted = Array.from(
+    new Set(
+      names
+        .map(n => normalizeEmojiGgName(n))
+        .filter(n => n.length >= 2)
+    )
+  );
+  if (!wanted.length) return [];
+  const results: { url: string; name: string }[] = [];
+  const used = new Set<string>();
+  for (const item of list) {
+    const image = typeof item.image === 'string' ? item.image : '';
+    if (!image) continue;
+    if (preferGif && !image.toLowerCase().endsWith('.gif')) continue;
+    const titleNorm = normalizeEmojiGgName(item.title);
+    const slugNorm = normalizeEmojiGgName(item.slug);
+    let ok = false;
+    if (titleNorm && wanted.includes(titleNorm)) ok = true;
+    else if (slugNorm && wanted.includes(slugNorm)) ok = true;
+    if (!ok) continue;
+    if (used.has(image)) continue;
+    used.add(image);
+    const name = item.title || item.slug || 'emoji';
+    results.push({ url: image, name });
+  }
+  return results;
+}
+
 function normalizeFootballQuery(input: string): string {
   let s = (input || '').trim();
   s = s
@@ -4454,6 +4520,17 @@ client.on('messageCreate', async (msg: Message) => {
     return result;
   };
 
+  const extractEmojiNamesFromText = (text?: string | null) => {
+    const result: string[] = [];
+    if (!text) return result;
+    const regex = /:([a-zA-Z0-9_]{2,}):/g;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      result.push(match[1]);
+    }
+    return result;
+  };
+
   const collectEmojiLikeMedia = (source: Message) => {
     const customEmoji: { id: string; animated: boolean; name: string }[] = [];
     const stickers: any[] = [];
@@ -4518,6 +4595,32 @@ client.on('messageCreate', async (msg: Message) => {
     });
 
     return { customEmoji, stickers, imageUrls };
+  };
+
+  const collectEmojiNamesFromMessage = (source: Message) => {
+    const names: string[] = [];
+    const addNames = (text?: string | null) => {
+      const found = extractEmojiNamesFromText(text);
+      for (const n of found) names.push(n);
+    };
+
+    addNames(source.content);
+
+    for (const embed of source.embeds) {
+      addNames(embed.title ?? undefined);
+      addNames(embed.description ?? undefined);
+      if (embed.fields) {
+        for (const field of embed.fields) {
+          addNames(field.name);
+          addNames(field.value);
+        }
+      }
+      if (embed.footer?.text) addNames(embed.footer.text);
+      const anyEmbed = embed as any;
+      if (anyEmbed.author?.name) addNames(anyEmbed.author.name);
+    }
+
+    return names;
   };
 
   // تلاش برای پیدا کردن پیام اصلی وقتی پیام ریپلای‌شده فقط یک فوروارد/امبد/لینک است
@@ -4621,6 +4724,22 @@ client.on('messageCreate', async (msg: Message) => {
 
     for (const url of imageUrls) {
       files.push(url);
+    }
+
+    if (!files.length) {
+      let nameCandidates = collectEmojiNamesFromMessage(replied as Message);
+      try {
+        const original = await resolveForwardedMessage(replied as Message);
+        if (original) {
+          nameCandidates = nameCandidates.concat(collectEmojiNamesFromMessage(original as Message));
+        }
+      } catch {}
+      const fromEmojiGg = nameCandidates.length
+        ? await findEmojiGgByNames(nameCandidates, format === 'gif')
+        : [];
+      for (const item of fromEmojiGg) {
+        files.push(item.url);
+      }
     }
 
     if (!files.length) {
@@ -4976,7 +5095,7 @@ client.on('messageCreate', async (msg: Message) => {
     const favText = favArray.length > 0 ? favArray.join(' ') : '—';
     const lines: string[] = [];
     lines.push(`## 𖣔 <@${targetId}> Stats:`);
-    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
     lines.push(`### 🎮 Games : ${st.games||0}`);
     lines.push(`### 💫 WIN: ${st.wins||0}`);
     lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
@@ -5812,7 +5931,6 @@ client.on('messageCreate', async (msg: Message) => {
     }
 
     const { customEmoji, stickers, imageUrls } = await collectEmojiLikeMediaDeep(replied as Message);
-
     const sources: { url: string; nameHint: string }[] = [];
 
     const seenEmoji = new Set<string>();
@@ -5837,6 +5955,22 @@ client.on('messageCreate', async (msg: Message) => {
         base = pathPart.split('.')[0] || 'img';
       } catch {}
       sources.push({ url, nameHint: base });
+    }
+
+    if (!sources.length) {
+      let nameCandidates = collectEmojiNamesFromMessage(replied as Message);
+      try {
+        const original = await resolveForwardedMessage(replied as Message);
+        if (original) {
+          nameCandidates = nameCandidates.concat(collectEmojiNamesFromMessage(original as Message));
+        }
+      } catch {}
+      const fromEmojiGg = nameCandidates.length
+        ? await findEmojiGgByNames(nameCandidates, false)
+        : [];
+      for (const item of fromEmojiGg) {
+        sources.push({ url: item.url, nameHint: item.name });
+      }
     }
 
     if (!sources.length) {
@@ -5892,8 +6026,7 @@ client.on('messageCreate', async (msg: Message) => {
       return;
     }
 
-    const { customEmoji, stickers, imageUrls } = collectEmojiLikeMedia(replied as Message);
-
+    const { customEmoji, stickers, imageUrls } = await collectEmojiLikeMediaDeep(replied as Message);
     const sources: { url: string; nameHint: string }[] = [];
 
     const seenEmojiSt = new Set<string>();
@@ -5918,6 +6051,22 @@ client.on('messageCreate', async (msg: Message) => {
         base = pathPart.split('.')[0] || 'img';
       } catch {}
       sources.push({ url, nameHint: base });
+    }
+
+    if (!sources.length) {
+      let nameCandidates = collectEmojiNamesFromMessage(replied as Message);
+      try {
+        const original = await resolveForwardedMessage(replied as Message);
+        if (original) {
+          nameCandidates = nameCandidates.concat(collectEmojiNamesFromMessage(original as Message));
+        }
+      } catch {}
+      const fromEmojiGg = nameCandidates.length
+        ? await findEmojiGgByNames(nameCandidates, false)
+        : [];
+      for (const item of fromEmojiGg) {
+        sources.push({ url: item.url, nameHint: item.name });
+      }
     }
 
     if (!sources.length) {
