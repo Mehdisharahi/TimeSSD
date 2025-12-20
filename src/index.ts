@@ -3564,6 +3564,41 @@ async function convertBufferToGif(buffer: Buffer): Promise<Buffer | null> {
   }
 }
 
+async function convertVideoUrlToGif(url: string): Promise<Buffer | null> {
+  try {
+    const ffmpegPath = require('ffmpeg-static') as string | null;
+    if (!ffmpegPath) return null;
+    const { spawn } = require('child_process');
+
+    return await new Promise<Buffer | null>((resolve) => {
+      const args = [
+        '-v', 'error',
+        '-i', url,
+        '-t', '7',
+        '-vf', 'fps=15,scale=480:-1:flags=lanczos',
+        '-loop', '0',
+        '-f', 'gif',
+        'pipe:1',
+      ];
+
+      const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+      const chunks: Buffer[] = [];
+      proc.stdout.on('data', (c: Buffer) => chunks.push(c));
+      proc.on('error', () => resolve(null));
+      proc.on('close', (code: number) => {
+        if (code === 0 && chunks.length) {
+          resolve(Buffer.concat(chunks));
+        } else {
+          resolve(null);
+        }
+      });
+    });
+  } catch (err) {
+    console.error('[VIDEO GIF CONVERT ERROR]', err);
+    return null;
+  }
+}
+
 async function resolveImageForHosh(msg: Message): Promise<{ buffer: Buffer; mimeType: string } | null> {
   const pick = (m: Message) => {
     const att = m.attachments.find(a => {
@@ -4552,6 +4587,8 @@ client.on('messageCreate', async (msg: Message) => {
     const stickers: any[] = [];
     const imageUrls: string[] = [];
     const imageSeen = new Set<string>();
+    const videoUrls: string[] = [];
+    const videoSeen = new Set<string>();
 
     const addFromText = (text?: string | null) => {
       const found = extractCustomEmojisFromText(text);
@@ -4584,6 +4621,11 @@ client.on('messageCreate', async (msg: Message) => {
         imageSeen.add(thumbUrl);
         imageUrls.push(thumbUrl);
       }
+      const videoUrl = (anyEmbed.video && (anyEmbed.video.url || anyEmbed.video.proxy_url)) as string | undefined;
+      if (videoUrl && !videoSeen.has(videoUrl)) {
+        videoSeen.add(videoUrl);
+        videoUrls.push(videoUrl);
+      }
     }
 
     if (source.stickers && source.stickers.size > 0) {
@@ -4607,10 +4649,21 @@ client.on('messageCreate', async (msg: Message) => {
           imageSeen.add(att.url);
           imageUrls.push(att.url);
         }
+      } else if (
+        ct.startsWith('video/') ||
+        name.endsWith('.mp4') ||
+        name.endsWith('.webm') ||
+        name.endsWith('.mov') ||
+        name.endsWith('.m4v')
+      ) {
+        if (!videoSeen.has(att.url)) {
+          videoSeen.add(att.url);
+          videoUrls.push(att.url);
+        }
       }
     });
 
-    return { customEmoji, stickers, imageUrls };
+    return { customEmoji, stickers, imageUrls, videoUrls };
   };
 
   const collectEmojiNamesFromMessage = (source: Message) => {
@@ -4695,7 +4748,7 @@ client.on('messageCreate', async (msg: Message) => {
   // نسخه‌ی «عمیق‌تر» که اگر چیزی در خود پیام نبود، سعی می‌کند پیام اصلی فوروارد/کوت‌شده را پیدا کند
   const collectEmojiLikeMediaDeep = async (source: Message) => {
     const first = collectEmojiLikeMedia(source);
-    if (first.customEmoji.length || first.stickers.length || first.imageUrls.length) {
+    if (first.customEmoji.length || first.stickers.length || first.imageUrls.length || first.videoUrls.length) {
       return first;
     }
 
@@ -4707,6 +4760,7 @@ client.on('messageCreate', async (msg: Message) => {
       customEmoji: [...first.customEmoji, ...second.customEmoji],
       stickers: [...first.stickers, ...second.stickers],
       imageUrls: [...first.imageUrls, ...second.imageUrls],
+      videoUrls: [...first.videoUrls, ...second.videoUrls],
     };
   };
 
@@ -4809,9 +4863,10 @@ client.on('messageCreate', async (msg: Message) => {
       return;
     }
 
-    const { customEmoji, stickers, imageUrls } = await collectEmojiLikeMediaDeep(replied as Message);
+    const { customEmoji, stickers, imageUrls, videoUrls } = await collectEmojiLikeMediaDeep(replied as Message);
 
     const urls: string[] = [];
+    const videoSources: string[] = [];
 
     for (const st of stickers) {
       if (st && typeof st.url === 'string') {
@@ -4820,8 +4875,6 @@ client.on('messageCreate', async (msg: Message) => {
     }
 
     for (const e of customEmoji) {
-      // اگر فرمت درخواستی GIF است و اموجی انیمیت است، مستقیم از نسخه GIF دیسکورد استفاده می‌کنیم
-      // تا انیمیشن کامل حفظ شود و فقط به فریم اول تبدیل نشود.
       let url: string;
       if (format === 'gif' && (e as any).animated) {
         url = `https://cdn.discordapp.com/emojis/${e.id}.gif?v=1`;
@@ -4835,7 +4888,11 @@ client.on('messageCreate', async (msg: Message) => {
       urls.push(url);
     }
 
-    if (!urls.length) {
+    for (const v of videoUrls) {
+      videoSources.push(v);
+    }
+
+    if (!urls.length && !videoSources.length) {
       let nameCandidates = collectEmojiNamesFromMessage(replied as Message);
       try {
         const original = await resolveForwardedMessage(replied as Message);
@@ -4851,12 +4908,56 @@ client.on('messageCreate', async (msg: Message) => {
       }
     }
 
-    if (!urls.length) {
+    if (!urls.length && !videoSources.length) {
       await msg.reply({ content: 'در پیامی که ریپلای کردید هیچ اموجی سرور یا استیکر معتبری پیدا نشد.\nاین دستور فقط روی اموجی‌های سرور، استیکرهای دیسکورد و تصاویر مرتبط کار می‌کند.' });
       return;
     }
 
     if (format === 'gif') {
+      if (videoSources.length) {
+        const videoAttachments: { attachment: Buffer; name: string }[] = [];
+        let vIndex = 0;
+        for (const v of videoSources) {
+          try {
+            const gifBuf = await convertVideoUrlToGif(v);
+            if (!gifBuf) continue;
+            videoAttachments.push({ attachment: gifBuf, name: `video_${++vIndex}.gif` });
+          } catch {}
+        }
+
+        if (videoAttachments.length) {
+          const maxPerMessage = 10;
+          let firstBatch = true;
+          try {
+            for (let i = 0; i < videoAttachments.length; i += maxPerMessage) {
+              const slice = videoAttachments.slice(i, i + maxPerMessage);
+              if (firstBatch) {
+                await msg.reply({ files: slice });
+                firstBatch = false;
+              } else {
+                await msg.channel.send({ files: slice });
+              }
+            }
+          } catch {
+            await msg.reply({ content: 'ارسال فایل به عنوان GIF با خطا مواجه شد.' }).catch(() => {});
+          }
+          return;
+        }
+
+        let sentVideo = false;
+        for (const v of videoSources) {
+          try {
+            await msg.reply({ files: [v] });
+            sentVideo = true;
+            break;
+          } catch {}
+        }
+        if (!sentVideo) {
+          await msg.reply({ content: 'ارسال فایل به عنوان GIF با خطا مواجه شد.' }).catch(() => {});
+        }
+        return;
+      }
+
       await sendGifFromUrls(urls);
       return;
     }
