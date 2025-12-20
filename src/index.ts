@@ -4820,7 +4820,14 @@ client.on('messageCreate', async (msg: Message) => {
     }
 
     for (const e of customEmoji) {
-      const url = `https://cdn.discordapp.com/emojis/${e.id}.png?v=1`;
+      // اگر فرمت درخواستی GIF است و اموجی انیمیت است، مستقیم از نسخه GIF دیسکورد استفاده می‌کنیم
+      // تا انیمیشن کامل حفظ شود و فقط به فریم اول تبدیل نشود.
+      let url: string;
+      if (format === 'gif' && (e as any).animated) {
+        url = `https://cdn.discordapp.com/emojis/${e.id}.gif?v=1`;
+      } else {
+        url = `https://cdn.discordapp.com/emojis/${e.id}.png?v=1`;
+      }
       urls.push(url);
     }
 
