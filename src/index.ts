@@ -4722,17 +4722,34 @@ client.on('messageCreate', async (msg: Message) => {
           const buf = await fetchBuffer(url);
           let gifBuf: Buffer | null;
           if (isGifBuffer(buf)) {
+            // خود فایل از قبل GIF است
             gifBuf = buf;
           } else {
+            // تلاش برای تبدیل به GIF (ممکن است به‌خاطر sharp یا فرمت فایل شکست بخورد)
             gifBuf = await convertBufferToGif(buf);
           }
           if (!gifBuf) continue;
           attachments.push({ attachment: gifBuf, name: `emoji_${++index}.gif` });
-        } catch {}
+        } catch {
+          // اگر دانلود/تبدیل این URL شکست خورد، ادامه می‌دهیم سراغ بعدی
+        }
       }
 
       if (!attachments.length) {
-        await msg.reply({ content: 'ارسال فایل به عنوان GIF با خطا مواجه شد.' });
+        // اگر هیچ GIF معتبری نتوانستیم بسازیم، به‌جای فقط خطا، خود URLها را مستقیم می‌فرستیم
+        let sent = false;
+        for (const url of urls) {
+          try {
+            await msg.reply({ files: [url] });
+            sent = true;
+            break;
+          } catch {
+            // اگر این یکی هم نشد، می‌رویم سراغ بعدی
+          }
+        }
+        if (!sent) {
+          await msg.reply({ content: 'ارسال فایل به عنوان GIF با خطا مواجه شد.' });
+        }
         return;
       }
 
