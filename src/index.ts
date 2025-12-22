@@ -7279,8 +7279,13 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .football / .فوتبال command
-  if (isCmd('football') || isCmd('فوتبال')) {
+  const isFootballEnDot = isCmd('football');
+  const isFootballFaDot = isCmd('فوتبال');
+  const isFootballEnDollar = /^\$football(?:\s|$)/.test(content);
+  const isFootballFaDollar = /^\$فوتبال(?:\s|$)/.test(content);
+
+  // .football / .فوتبال / $football / $فوتبال command
+  if (isFootballEnDot || isFootballFaDot || isFootballEnDollar || isFootballFaDollar) {
     if (footballInFlight.has(msg.id)) return;
     footballInFlight.add(msg.id);
     try {
@@ -7289,7 +7294,9 @@ client.on('messageCreate', async (msg: Message) => {
         return;
       }
 
-      const cmdLen = isCmd('football') ? 9 : 7;
+      const cmdLen = isFootballEnDot || isFootballEnDollar
+        ? content.indexOf('football') + 'football'.length
+        : content.indexOf('فوتبال') + 'فوتبال'.length;
       const rawQuery = content.slice(cmdLen).trim();
       if (!rawQuery) {
         let reply = 'لیگ مورد نظرت رو از لیست زیر انتخاب کن و بعد اسم تیم رو با دستور `.فوتبال <نام تیم>` بنویس:\n\n';
