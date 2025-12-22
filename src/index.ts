@@ -469,6 +469,52 @@ type FootballMatchData = {
   homeTeam: { name: string; logo: string | null };
   awayTeam: { name: string; logo: string | null };
 };
+const FOOTBALL_POPULAR_LEAGUES: { id: string; apiName: string; title: string; flag: string }[] = [
+  { id: 'epl', apiName: 'English Premier League', title: 'لیگ برتر انگلیس', flag: '🏴' },
+  { id: 'laliga', apiName: 'Spanish La Liga', title: 'لالیگا اسپانیا', flag: '🇪🇸' },
+  { id: 'seriea', apiName: 'Italian Serie A', title: 'سری آ ایتالیا', flag: '🇮🇹' },
+  { id: 'bundesliga', apiName: 'German Bundesliga', title: 'بوندسلیگا آلمان', flag: '🇩🇪' },
+  { id: 'ligue1', apiName: 'French Ligue 1', title: 'لیگ ۱ فرانسه', flag: '🇫🇷' },
+  { id: 'ucl', apiName: 'UEFA Champions League', title: 'لیگ قهرمانان اروپا', flag: '⭐' },
+];
+
+type SportsDbLeagueTeamsResponse = {
+  teams: SportsDbTeam[] | null;
+};
+
+async function footballFetchTeamsByLeague(apiLeagueName: string): Promise<SportsDbTeam[]> {
+  // TheSportsDB example uses underscores but API also accepts spaces when URL-encoded.
+  const endpoint = `/search_all_teams.php?l=${encodeURIComponent(apiLeagueName)}`;
+  console.log(`[FOOTBALL] Fetching teams for league: "${apiLeagueName}" via ${sportsDbBaseUrl}${endpoint}`);
+  const resp = await sportsDbGet<SportsDbLeagueTeamsResponse>(endpoint);
+  const teams = resp?.teams || [];
+  console.log(`[FOOTBALL] League teams response for "${apiLeagueName}":`, teams.length, 'teams');
+  return teams.filter(t => (t?.strSport === 'Soccer') && !!t?.strTeam);
+}
+
+function footballFormatMatchSummary(team: FootballTeam, data: FootballMatchData): string {
+  const event = data.event;
+  const ts = event.strTimestamp || `${event.dateEvent}T${event.strTime}`;
+  const dateText = footballFormatDateFa(ts);
+  const league = event.strLeague || '';
+  const venue = event.strVenue || '';
+  const status = (event.strStatus || '').trim();
+  const home = event.strHomeTeam;
+  const away = event.strAwayTeam;
+
+  const lines: string[] = [];
+  lines.push(`**${team.name}**`);
+  lines.push('');
+  if (league) lines.push(`🏆 لیگ: **${league}**`);
+  lines.push(`⚽️ بازی: **${home}** vs **${away}**`);
+  lines.push(`📅 زمان: ${dateText}`);
+  if (venue) lines.push(`🏟️ ورزشگاه: ${venue}`);
+  if (status) lines.push(`📌 وضعیت: ${status}`);
+  lines.push('');
+  lines.push('منبع: TheSportsDB.com');
+
+  return lines.join('\n');
+}
 
 async function getNextEventForTeam(teamId: string, teamName: string): Promise<SportsDbEvent | null> {
   console.log(`[FOOTBALL] Fetching next events for team ${teamName} (ID: ${teamId})`);
@@ -7246,7 +7292,10 @@ client.on('messageCreate', async (msg: Message) => {
       const cmdLen = isCmd('football') ? 9 : 7;
       const rawQuery = content.slice(cmdLen).trim();
       if (!rawQuery) {
-        await msg.reply({ content: 'استفاده: `.football <team>` یا `.فوتبال <team>`' });
+        let reply = 'لیگ مورد نظرت رو از لیست زیر انتخاب کن و بعد اسم تیم رو با دستور `.فوتبال <نام تیم>` بنویس:\n\n';
+        reply += FOOTBALL_POPULAR_LEAGUES.map(l => `• ${l.flag} ${l.title}`).join('\n');
+        reply += '\n\nمثال: `.فوتبال Liverpool` یا `.football Real Madrid`';
+        await msg.reply({ content: reply });
         return;
       }
 
@@ -7270,7 +7319,8 @@ client.on('messageCreate', async (msg: Message) => {
 
       const buffer = await renderFootballMatchImage(team, match);
       const attachment = new AttachmentBuilder(buffer, { name: 'football.png' });
-      await statusMsg.edit({ content: `**${team.name}**`, files: [attachment] });
+      const summary = footballFormatMatchSummary(team, match);
+      await statusMsg.edit({ content: summary, files: [attachment] });
       return;
     } catch (err) {
       console.error('Error in .football command:', err);
