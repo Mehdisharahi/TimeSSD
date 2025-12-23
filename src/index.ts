@@ -5298,11 +5298,116 @@ client.on('messageCreate', async (msg: Message) => {
     await msg.reply({ embeds: [embed] });
     return;
   }
-  
+
   // .friend [@user|userId] or .friends
   if (isCmd('friend') || isCmd('friends') || isCmd('دوست')) {
     const cmdLen = content.startsWith('.friends') ? 8 : content.startsWith('.دوست') ? 5 : 7;
     const arg = content.slice(cmdLen).trim();
+
+    const args = arg ? arg.split(/\s+/).filter(Boolean) : [];
+    const pairIds: string[] = [];
+
+    // اول از منشن‌ها آی‌دی‌ها را جمع می‌کنیم
+    for (const u of msg.mentions.users.values()) {
+      if (pairIds.length >= 2) break;
+      if (!pairIds.includes(u.id)) pairIds.push(u.id);
+    }
+    // سپس از توکن‌ها (آی‌دی یا منشن به صورت متن)
+    for (const token of args) {
+      if (pairIds.length >= 2) break;
+      const m = token.match(/^<@!?(\d+)>$/);
+      if (m) {
+        if (!pairIds.includes(m[1])) pairIds.push(m[1]);
+        continue;
+      }
+      if (/^\d+$/.test(token) && !pairIds.includes(token)) {
+        pairIds.push(token);
+      }
+    }
+
+    // حالت مقایسه دو نفره: .friend @user1 @user2
+    if (pairIds.length >= 2 && msg.guild) {
+      const gId = msg.guildId!;
+      const [id1, id2] = pairIds;
+
+      if (id1 !== id2) {
+        const [user1, user2] = await Promise.all([
+          msg.client.users.fetch(id1).catch(() => null),
+          msg.client.users.fetch(id2).catch(() => null),
+        ]);
+        if (!user1 || !user2) {
+          await msg.reply({ content: 'خطایی در دریافت اطلاعات کاربران رخ داد.' });
+          return;
+        }
+
+        const totals1 = computeTotalsUpToNow(gId, id1);
+        const totalMs = totals1?.get(id2) || 0;
+        if (!totalMs || totalMs <= 0) {
+          await msg.reply({ content: 'هنوز دیتای مشترکی برای این دو نفر در ویس ثبت نشده است.' });
+          return;
+        }
+
+        const buildRank = async (selfId: string, otherId: string): Promise<number | null> => {
+          const map = computeTotalsUpToNow(gId, selfId);
+          if (!map || map.size === 0) return null;
+          const rawEntries = Array.from(map.entries()).filter(([pid]) => pid !== selfId);
+          const entries: Array<[string, number]> = [];
+          for (const [pid, ms] of rawEntries) {
+            try {
+              const member = await msg.guild!.members.fetch(pid).catch(() => null);
+              if (member && !member.user.bot) entries.push([pid, ms]);
+            } catch {}
+          }
+          if (entries.length === 0) return null;
+          entries.sort((a, b) => b[1] - a[1]);
+          const idx = entries.findIndex(([pid]) => pid === otherId);
+          return idx >= 0 ? idx + 1 : null;
+        };
+
+        const [rank1, rank2] = await Promise.all([
+          buildRank(id1, id2),
+          buildRank(id2, id1),
+        ]);
+
+        const fmt = (ms: number) => {
+          const totalSeconds = Math.floor(ms / 1000);
+          const days = Math.floor(totalSeconds / 86400);
+          const hours = Math.floor((totalSeconds % 86400) / 3600);
+          const minutes = Math.floor((totalSeconds % 3600) / 60);
+          const seconds = totalSeconds % 60;
+          if (days > 0) return `${days}d ${hours}h`;
+          if (hours > 0) return `${hours}h ${minutes}m`;
+          if (minutes > 0) return `${minutes}m ${seconds}s`;
+          return `${seconds}s`;
+        };
+
+        const lines: string[] = [];
+        lines.push(`**⏱️ زمان هم‌حضوری روی ویس:** ${fmt(totalMs)}`);
+        lines.push('');
+        lines.push(`**${user1} friend:**`);
+        lines.push(rank1 ? `${rank1}. <@${id2}>` : 'دیتای کافی برای رتبه‌بندی این دوست وجود ندارد.');
+        lines.push('');
+        lines.push(`**${user2} friend:**`);
+        lines.push(rank2 ? `${rank2}. <@${id1}>` : 'دیتای کافی برای رتبه‌بندی این دوست وجود ندارد.');
+
+        const embed = new EmbedBuilder()
+          .setTitle('friends')
+          .setDescription(lines.join('\n'))
+          .setColor(0x2f3136);
+        await msg.reply({ embeds: [embed] });
+        return;
+      }
+
+      // اگر دو آی‌دی یکسان باشند، مثل حالت عادی رفتار می‌کنیم (لیست دوستان یک نفر)
+      if (pairIds[0]) {
+        try {
+          const u = await msg.client.users.fetch(pairIds[0]).catch(() => null);
+          if (u) msg.mentions.users.set(u.id, u);
+        } catch {}
+      }
+    }
+
+    // حالت عادی: یک کاربر یا بدون آرگومان
     let target = msg.mentions.users.first() || null;
     if (!target && arg) {
       let id: string | null = null;
@@ -5339,11 +5444,7 @@ client.on('messageCreate', async (msg: Message) => {
       const hours = Math.floor((totalSeconds % 86400) / 3600);
       const minutes = Math.floor((totalSeconds % 3600) / 60);
       const seconds = totalSeconds % 60;
-      
-      if (days > 0) {
-        // اگر روز داشتیم، فقط روز و ساعت نشان می‌دهیم (دقیقه نه)
-        return `${days}d ${hours}h`;
-      }
+      if (days > 0) return `${days}d ${hours}h`;
       if (hours > 0) return `${hours}h ${minutes}m`;
       if (minutes > 0) return `${minutes}m ${seconds}s`;
       return `${seconds}s`;
@@ -5361,262 +5462,178 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
-  // .best — top 20 Hokm winners (by wins)
-  if (isCmd('best') || isCmd('بست')) {
-    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
-    const gId = msg.guildId!;
-    const stats = hokmStats.get(gId);
-    if (!stats || stats.size === 0) { await msg.reply({ content: 'در این سرور بازی انجام نشده است.' }); return; }
-    const entries = Array.from(stats.entries()) as Array<[string, HokmUserStat]>;
-    const arr = entries
-      .filter(([uid, st]) => ((st?.games)||0) > 0 && !isVirtualBot(uid)) // Exclude bots
-      .sort((a: [string, HokmUserStat], b: [string, HokmUserStat]) => ((b[1].wins||0) - (a[1].wins||0)) || ((b[1].games||0) - (a[1].games||0)))
-      .slice(0, 20);
-    if (arr.length === 0) { await msg.reply({ content: 'در این سرور بازی انجام نشده است.' }); return; }
-    const server = msg.guild.name;
-    const lines: string[] = [];
-    lines.push(`## ✵ ${server} WINNER LIST:`);
-    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-    let idx = 0;
-    for (const [uid, st] of arr) {
-      idx++;
-      const rank = String(idx).padStart(2, '0');
-      lines.push(`### ➡ ${rank} - <@${uid}> 🎮Games : ${st.games||0} 💫WIN: ${st.wins||0}`);
-    }
-    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-    const embedBest = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
-    await msg.reply({ embeds: [embedBest] });
-    return;
-  }
-
-  // .bazikon — show user's Hokm stats
-  if (isCmd('bazikon') || isCmd('بازیکن')) {
-    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
-    const gId = msg.guildId!;
-    const targetIds = await resolveTargetIds(msg, content, content.startsWith('.بازیکن') ? '.بازیکن' : '.bazikon');
-    const targetId = targetIds[0] || msg.author.id;
-    const stMap = hokmStats.get(gId);
-    const st: HokmUserStat = stMap?.get(targetId) || { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} };
-    if (!st.games) { await msg.reply({ content: 'این کاربر بازی انجام نداده است.' }); return; }
-    
-    // Best teammate (exclude bots)
-    let bestMate: string | null = null; let bestWins = 0;
-    for (const [uid, w] of Object.entries((st.teammateWins||{}) as Record<string, number>)) {
-      if (isVirtualBot(uid)) continue; // Skip bots
-      const val = Number(w)||0;
-      if (val > bestWins) { bestWins = val; bestMate = uid; }
-    }
-    const mateText = bestMate ? `<@${bestMate}> (${bestWins} WIN)` : '—';
-    
-    // Favorite hokm (only show suit(s) with most picks)
-    const picks = (st.hokmPicks || {}) as Partial<Record<Suit, number>>;
-    const suitOrder: Suit[] = ['C','S','D','H'];
-    const sortedSuits = suitOrder.sort((a,b)=> (picks[b]||0) - (picks[a]||0));
-    const maxPicks = picks[sortedSuits[0]] || 0;
-    const favArray = maxPicks > 0 
-      ? sortedSuits.filter(su => picks[su] === maxPicks).map(su => SUIT_EMOJI[su as Suit])
-      : [];
-    const favText = favArray.length > 0 ? favArray.join(' ') : '—';
-    const lines: string[] = [];
-    lines.push(`## 𖣔 <@${targetId}> Stats:`);
-    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
-    lines.push(`### 🎮 Games : ${st.games||0}`);
-    lines.push(`### 💫 WIN: ${st.wins||0}`);
-    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
-    lines.push(`### 🀄 Trick: ${st.tricks || 0}`);
-    lines.push(`### 🎯 Set: ${st.sets || 0}`);
-    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
-    lines.push(`### ⭐ Kot: ${st.kot || 0}`);
-    lines.push(`### ❌ Kot Lose: ${st.kotLose || 0}`);
-    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
-    lines.push(`### 💎 Hakem Kot: ${st.hakemKot || 0}`);
-    lines.push(`### ☠️ HakemKot Lose: ${st.hakemKotLose || 0}`);
-    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
-    lines.push(`### 🫂 Best Teamate: ${mateText}`);
-    lines.push(`### 🃏 Favorite hokm: ${favText}`);
-    const embedBaz = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
-    await msg.reply({ embeds: [embedBaz] });
-    return;
-  }
-
-  // .topfriend / .topfriends / .top / .تاپ — list top 10 pairs with most co-voice time (exclude bots)
+  // .topfriend / .topfriends / .top / .تاپ — top voice pairs
   if (isCmd('topfriend') || isCmd('topfriends') || isCmd('top') || isCmd('تاپ')) {
-    try {
-      const gId = msg.guildId!;
-      
-      // مدیریت بهتر جمع‌آوری جفت‌ها
-      const startTime = Date.now();
-      
-      // ذخیره فوری جلسات فعلی قبل از محاسبه مجموعه
-      await saveCurrent(gId);
-      
-      // نقشه‌ای برای ذخیره جمع مدت‌های هر جفت
-      const pairTotals = new Map<string, { a: string; b: string; ms: number }>();
-      
-      // نقشه‌ای برای تشخیص بات‌ها
-      const botFlags = new Map<string, boolean>();
-      
-      // 1. بررسی مقادیر ذخیره‌شده در پایگاه داده
-      const baseGuild = partnerTotals.get(gId);
-      if (baseGuild) {
-        // ابتدا از شکل ذخیره‌شده در ذهن استفاده می‌کنیم (user -> partner -> ms)
-        for (const [a, partners] of baseGuild.entries()) {
-          for (const [b, ms] of partners.entries()) {
-            // ترتیب منظم برای جلوگیری از تکرار
-            const [x, y] = a < b ? [a, b] : [b, a];
-            const key = `${x}:${y}`;
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const gId = msg.guildId!;
+    const startTime = Date.now();
+    
+    // ذخیره فوری جلسات فعلی قبل از محاسبه مجموعه
+    await saveCurrent(gId);
+    
+    // نقشه‌ای برای ذخیره جمع مدت‌های هر جفت
+    const pairTotals = new Map<string, { a: string; b: string; ms: number }>();
+    
+    // نقشه‌ای برای تشخیص بات‌ها
+    const botFlags = new Map<string, boolean>();
+    
+    // 1. بررسی مقادیر ذخیره‌شده در پایگاه داده
+    const baseGuild = partnerTotals.get(gId);
+    if (baseGuild) {
+      // ابتدا از شکل ذخیره‌شده در ذهن استفاده می‌کنیم (user -> partner -> ms)
+      for (const [a, partners] of baseGuild.entries()) {
+        for (const [b, ms] of partners.entries()) {
+          // ترتیب منظم برای جلوگیری از تکرار
+          const [x, y] = a < b ? [a, b] : [b, a];
+          const key = `${x}:${y}`;
+          
+          // فقط زمانی که a < b است محاسبه می‌کنیم تا دوباره‌کاری نشود
+          // چون در partnerTotals هر جفت دو طرفه ذخیره شده (a->b و b->a)
+          if (a < b) {
+            // دریافت یا ایجاد رکورد برای این جفت
+            const pair = pairTotals.get(key) || { a: x, b: y, ms: 0 };
             
-            // فقط زمانی که a < b است محاسبه می‌کنیم تا دوباره‌کاری نشود
-            // چون در partnerTotals هر جفت دو طرفه ذخیره شده (a->b و b->a)
-            if (a < b) {
-              // دریافت یا ایجاد رکورد برای این جفت
-              const pair = pairTotals.get(key) || { a: x, b: y, ms: 0 };
-              
-              // فقط یکبار زمان را اضافه می‌کنیم (زمان مشترک واقعی)
-              pair.ms += ms;
-              
-              // ذخیره به‌روز شده در مجموعه
-              pairTotals.set(key, pair);
-            }
+            // فقط یکبار زمان را اضافه می‌کنیم (زمان مشترک واقعی)
+            pair.ms += ms;
+            
+            // ذخیره به‌روز شده در مجموعه
+            pairTotals.set(key, pair);
           }
         }
       }
-      
-      // 2. اضافه کردن جلسات جاری (در عمل، با استفاده از ذخیره فوری قبلی، این بخش نادیده گرفته می‌شود)
-      const pMap = pairStarts.get(gId);
-      if (pMap && pMap.size > 0) {
-        const now = Date.now();
-        for (const [key, start] of pMap.entries()) {
-          try {
-            const parts = key.split(':');
-            if (parts.length < 3) continue;
-            
-            const a = parts[0];
-            const b = parts[1];
-            const [x, y] = a < b ? [a, b] : [b, a];
-            const pairKey = `${x}:${y}`;
-            
-            // ورودی را بگیر یا ایجاد کن
-            const pair = pairTotals.get(pairKey) || { a: x, b: y, ms: 0 };
-            
-            // زمان جاری را اضافه کن
-            const delta = now - start;
-            if (delta > 0) {
-              pair.ms += delta;
-              pairTotals.set(pairKey, pair);
-            }
-          } catch (err) {
-            console.error(`[TOPFRIENDS] Error processing active session ${key}:`, err);
-          }
-        }
-      }
-      
-      // بررسی برای داده‌های خالی
-      if (pairTotals.size === 0) {
-        await msg.reply({ content: 'هیچ زوجی یافت نشد.' });
-        return;
-      }
-      
-      // مرتب‌سازی بر اساس زمان نزولی
-      const allPairs = Array.from(pairTotals.values())
-        .sort((p, q) => q.ms - p.ms);
-      
-      // تابع قالب‌بندی زمان با پشتیبانی از روز
-      const fmt = (ms: number) => {
-        const totalSeconds = Math.floor(ms / 1000);
-        const days = Math.floor(totalSeconds / 86400);
-        const hours = Math.floor((totalSeconds % 86400) / 3600);
-        const minutes = Math.floor((totalSeconds % 3600) / 60);
-        const seconds = totalSeconds % 60;
-        
-        if (days > 0) {
-          // اگر روز داشتیم، فقط روز و ساعت نشان می‌دهیم (دقیقه نه)
-          return `${days}d ${hours}h`;
-        }
-        if (hours > 0) {
-          return `${hours}h ${minutes}m`;
-        }
-        if (minutes > 0) {
-          return `${minutes}m ${seconds}s`;
-        }
-        return `${seconds}s`;
-      };
-      
-      // ایجاد خطوط نتیجه برای 10 جفت برتر (بدون بات‌ها)
-      const linesTop: string[] = [];
-      const processedCount = { total: 0, bots: 0, added: 0, missing: 0 };
-      
-      // ابتدا سعی کنید بات‌ها را از کش شناسایی کنید تا در ادامه از آن‌ها اجتناب شود
-      msg.guild?.members.cache.forEach(m => {
-        if (m.user.bot) botFlags.set(m.id, true);
-      });
-      
-      // پردازش جفت‌ها برای ایجاد خطوط نتیجه
-      for (const p of allPairs) {
-        if (linesTop.length >= 10) break;
-        processedCount.total++;
-        
-        // بررسی سریع برای بات‌ها از کش
-        if (botFlags.get(p.a) || botFlags.get(p.b)) {
-          processedCount.bots++;
-          continue;
-        }
-        
-        // تلاش برای دریافت اعضا از کش
-        let m1 = msg.guild?.members.cache.get(p.a);
-        let m2 = msg.guild?.members.cache.get(p.b);
-        
-        // دریافت اعضای کش نشده
-        try { 
-          if (!m1) {
-            const fetchedMember = await msg.guild?.members.fetch(p.a).catch(() => undefined);
-            m1 = fetchedMember || undefined;
-          } 
-          if (!m2) {
-            const fetchedMember = await msg.guild?.members.fetch(p.b).catch(() => undefined);
-            m2 = fetchedMember || undefined;
-          }
-        } catch {}
-        
-        // بررسی کنید اگر هر یک از اعضا نادرست باشند
-        if (!m1 || !m2) {
-          processedCount.missing++;
-          continue;
-        }
-        
-        // بررسی کنید که هیچ کدام بات نباشند
-        if (m1.user.bot || m2.user.bot) {
-          botFlags.set(m1.user.bot ? m1.id : m2.id, true);
-          processedCount.bots++;
-          continue;
-        }
-        
-        // افزودن به نتایج
-        linesTop.push(`${linesTop.length + 1}. <@${p.a}> + <@${p.b}> — ${fmt(p.ms)}`);
-        processedCount.added++;
-      }
-      
-      // بررسی برای نتایج خالی
-      if (linesTop.length === 0) {
-        await msg.reply({ content: 'هیچ زوج غیر باتی یافت نشد.' });
-        return;
-      }
-
-      // ساخت و ارسال امبد نتایج
-      const embed = new EmbedBuilder()
-        .setTitle('👥 زوج‌های برتر ویس')
-        .setDescription(linesTop.join('\n'))
-        .setColor(0x2f3136);
-      await msg.reply({ embeds: [embed] });
-
-      // لاگ برای تشخیص مشکلات
-      const endTime = Date.now();
-      console.log(`[TOPFRIENDS] Generated in ${endTime - startTime}ms - Processed ${processedCount.total} pairs: ${processedCount.added} added, ${processedCount.bots} bots, ${processedCount.missing} missing members`);
-      
-    } catch (err) {
-      console.error('[TOPFRIENDS ERROR]', err);
-      await msg.reply({ content: 'خطایی در محاسبه آمار دوستان روی داد. لطفا دوباره تلاش کنید.' });
     }
+    
+    // 2. اضافه کردن جلسات جاری (در عمل، با استفاده از ذخیره فوری قبلی، این بخش نادیده گرفته می‌شود)
+    const pMap = pairStarts.get(gId);
+    if (pMap && pMap.size > 0) {
+      const now = Date.now();
+      for (const [key, start] of pMap.entries()) {
+        try {
+          const parts = key.split(':');
+          if (parts.length < 3) continue;
+          
+          const a = parts[0];
+          const b = parts[1];
+          const [x, y] = a < b ? [a, b] : [b, a];
+          const pairKey = `${x}:${y}`;
+          
+          // ورودی را بگیر یا ایجاد کن
+          const pair = pairTotals.get(pairKey) || { a: x, b: y, ms: 0 };
+          
+          // زمان جاری را اضافه کن
+          const delta = now - start;
+          if (delta > 0) {
+            pair.ms += delta;
+            pairTotals.set(pairKey, pair);
+          }
+        } catch (err) {
+          console.error(`[TOPFRIENDS] Error processing active session ${key}:`, err);
+        }
+      }
+    }
+    
+    // بررسی برای داده‌های خالی
+    if (pairTotals.size === 0) {
+      await msg.reply({ content: 'هیچ زوجی یافت نشد.' });
+      return;
+    }
+    
+    // مرتب‌سازی بر اساس زمان نزولی
+    const allPairs = Array.from(pairTotals.values())
+      .sort((p, q) => q.ms - p.ms);
+    
+    // تابع قالب‌بندی زمان با پشتیبانی از روز
+    const fmtTop = (ms: number) => {
+      const totalSeconds = Math.floor(ms / 1000);
+      const days = Math.floor(totalSeconds / 86400);
+      const hours = Math.floor((totalSeconds % 86400) / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      
+      if (days > 0) {
+        // اگر روز داشتیم، فقط روز و ساعت نشان می‌دهیم (دقیقه نه)
+        return `${days}d ${hours}h`;
+      }
+      if (hours > 0) {
+        return `${hours}h ${minutes}m`;
+      }
+      if (minutes > 0) {
+        return `${minutes}m ${seconds}s`;
+      }
+      return `${seconds}s`;
+    };
+    
+    // ایجاد خطوط نتیجه برای 10 جفت برتر (بدون بات‌ها)
+    const linesTop: string[] = [];
+    const processedCount = { total: 0, bots: 0, added: 0, missing: 0 };
+    
+    // ابتدا سعی کنید بات‌ها را از کش شناسایی کنید تا در ادامه از آن‌ها اجتناب شود
+    msg.guild.members.cache.forEach(m => {
+      if (m.user.bot) botFlags.set(m.id, true);
+    });
+    
+    // پردازش جفت‌ها برای ایجاد خطوط نتیجه
+    for (const p of allPairs) {
+      if (linesTop.length >= 10) break;
+      processedCount.total++;
+      
+      // بررسی سریع برای بات‌ها از کش
+      if (botFlags.get(p.a) || botFlags.get(p.b)) {
+        processedCount.bots++;
+        continue;
+      }
+      
+      // تلاش برای دریافت اعضا از کش
+      let m1 = msg.guild.members.cache.get(p.a);
+      let m2 = msg.guild.members.cache.get(p.b);
+      
+      // دریافت اعضای کش نشده
+      try { 
+        if (!m1) {
+          const fetchedMember = await msg.guild.members.fetch(p.a).catch(() => undefined);
+          m1 = fetchedMember || undefined;
+        } 
+        if (!m2) {
+          const fetchedMember = await msg.guild.members.fetch(p.b).catch(() => undefined);
+          m2 = fetchedMember || undefined;
+        }
+      } catch {}
+      
+      // بررسی کنید اگر هر یک از اعضا نادرست باشند
+      if (!m1 || !m2) {
+        processedCount.missing++;
+        continue;
+      }
+      
+      // بررسی کنید که هیچ کدام بات نباشند
+      if (m1.user.bot || m2.user.bot) {
+        botFlags.set(m1.user.bot ? m1.id : m2.id, true);
+        processedCount.bots++;
+        continue;
+      }
+      
+      // افزودن به نتایج
+      linesTop.push(`${linesTop.length + 1}. <@${p.a}> + <@${p.b}> — ${fmtTop(p.ms)}`);
+      processedCount.added++;
+    }
+    
+    // بررسی برای نتایج خالی
+    if (linesTop.length === 0) {
+      await msg.reply({ content: 'هیچ زوج غیر باتی یافت نشد.' });
+      return;
+    }
+
+    // ساخت و ارسال امبد نتایج
+    const embedTop = new EmbedBuilder()
+      .setTitle('👥 زوج‌های برتر ویس')
+      .setDescription(linesTop.join('\n'))
+      .setColor(0x2f3136);
+    await msg.reply({ embeds: [embedTop] });
+
+    // لاگ برای تشخیص مشکلات
+    const endTime = Date.now();
+    console.log(`[TOPFRIENDS] Generated in ${endTime - startTime}ms - Processed ${processedCount.total} pairs: ${processedCount.added} added, ${processedCount.bots} bots, ${processedCount.missing} missing members`);
+    
     return;
   }
 
