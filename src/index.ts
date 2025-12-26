@@ -5299,6 +5299,85 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  // .best — top 20 Hokm winners (by wins)
+  if (isCmd('best') || isCmd('بست')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const gId = msg.guildId!;
+
+    const stats = hokmStats.get(gId);
+    if (!stats || stats.size === 0) { await msg.reply({ content: 'در این سرور بازی انجام نشده است.' }); return; }
+    const entries = Array.from(stats.entries()) as Array<[string, HokmUserStat]>;
+    const arr = entries
+      .filter(([uid, st]) => ((st?.games) || 0) > 0 && !isVirtualBot(uid)) // Exclude bots
+      .sort((a: [string, HokmUserStat], b: [string, HokmUserStat]) => ((b[1].wins || 0) - (a[1].wins || 0)) || ((b[1].games || 0) - (a[1].games || 0)))
+      .slice(0, 20);
+    if (arr.length === 0) { await msg.reply({ content: 'در این سرور بازی انجام نشده است.' }); return; }
+    const server = msg.guild.name;
+    const lines: string[] = [];
+    lines.push(`## ✵ ${server} WINNER LIST:`);
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    let idx = 0;
+    for (const [uid, st] of arr) {
+      idx++;
+      const rank = String(idx).padStart(2, '0');
+      lines.push(`### ➡ ${rank} - <@${uid}> 🎮Games : ${st.games || 0} 💫WIN: ${st.wins || 0}`);
+    }
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    const embedBest = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
+    await msg.reply({ embeds: [embedBest] });
+    return;
+  }
+
+  // .bazikon — show user's Hokm stats
+  if (isCmd('bazikon') || isCmd('بازیکن')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const gId = msg.guildId!;
+    const targetIds = await resolveTargetIds(msg, content, content.startsWith('.بازیکن') ? '.بازیکن' : '.bazikon');
+    const targetId = targetIds[0] || msg.author.id;
+    const stMap = hokmStats.get(gId);
+    const st: HokmUserStat = stMap?.get(targetId) || { games: 0, wins: 0, teammateWins: {}, hokmPicks: {} };
+    if (!st.games) { await msg.reply({ content: 'این کاربر بازی انجام نداده است.' }); return; }
+    
+    // Best teammate (exclude bots)
+    let bestMate: string | null = null; let bestWins = 0;
+    for (const [uid, w] of Object.entries((st.teammateWins || {}) as Record<string, number>)) {
+      if (isVirtualBot(uid)) continue; // Skip bots
+      const val = Number(w) || 0;
+      if (val > bestWins) { bestWins = val; bestMate = uid; }
+    }
+    const mateText = bestMate ? `<@${bestMate}> (${bestWins} WIN)` : '—';
+    
+    // Favorite hokm (only show suit(s) with most picks)
+    const picks = (st.hokmPicks || {}) as Partial<Record<Suit, number>>;
+    const suitOrder: Suit[] = ['C', 'S', 'D', 'H'];
+    const sortedSuits = suitOrder.sort((a, b) => (picks[b] || 0) - (picks[a] || 0));
+    const maxPicks = picks[sortedSuits[0]] || 0;
+    const favArray = maxPicks > 0 
+      ? sortedSuits.filter(su => picks[su] === maxPicks).map(su => SUIT_EMOJI[su as Suit])
+      : [];
+    const favText = favArray.length > 0 ? favArray.join(' ') : '—';
+    const lines: string[] = [];
+    lines.push(`## 𖣔 <@${targetId}> Stats:`);
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push(`### 🎮 Games : ${st.games || 0}`);
+    lines.push(`### 💫 WIN: ${st.wins || 0}`);
+    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
+    lines.push(`### 🀄 Trick: ${st.tricks || 0}`);
+    lines.push(`### 🎯 Set: ${st.sets || 0}`);
+    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
+    lines.push(`### ⭐ Kot: ${st.kot || 0}`);
+    lines.push(`### ❌ Kot Lose: ${st.kotLose || 0}`);
+    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
+    lines.push(`### 💎 Hakem Kot: ${st.hakemKot || 0}`);
+    lines.push(`### ☠️ HakemKot Lose: ${st.hakemKotLose || 0}`);
+    lines.push('### ◦⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯◦');
+    lines.push(`### 🫂 Best Teamate: ${mateText}`);
+    lines.push(`### 🃏 Favorite hokm: ${favText}`);
+    const embedBaz = new EmbedBuilder().setDescription(lines.join('\n')).setColor(0x2f3136);
+    await msg.reply({ embeds: [embedBaz] });
+    return;
+  }
+
   // .friend [@user|userId] or .friends
   if (isCmd('friend') || isCmd('friends') || isCmd('دوست')) {
     const cmdLen = content.startsWith('.friends') ? 8 : content.startsWith('.دوست') ? 5 : 7;
