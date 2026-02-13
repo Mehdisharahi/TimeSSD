@@ -29,7 +29,7 @@ try {
 const token = process.env.BOT_TOKEN || '';
 const ownerId = process.env.OWNER_ID || '';
 const geminiApiKey = process.env.GEMINI_API_KEY || '';
-const geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-flash-8b';
+const geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-pro';
 const aiWebSearchMode = (process.env.AI_WEB_SEARCH_MODE || 'auto').toLowerCase();
 const tavilyApiKey = process.env.TAVILY_API_KEY || '';
 const braveApiKey = process.env.BRAVE_API_KEY || '';
@@ -1050,15 +1050,19 @@ async function generateAiReply(
   const genAI = new GoogleGenerativeAI(geminiApiKey);
   const model = genAI.getGenerativeModel({
     model: geminiModel,
-    systemInstruction:
-      'You are a helpful Persian-speaking assistant inside a Discord bot.\n' +
-      'Always answer in Persian unless the user explicitly asks for another language.\n' +
-      'For time-sensitive questions (live sports scores, prices, news, weather), do not guess. If web search results are provided, use them as the primary source of truth. If the provided results are insufficient, say so.\n' +
-      'When using web information, include a final section named "منابع:" with 2 to 5 source URLs.\n' +
-      'If sources conflict, mention the conflict briefly and prefer the most recent/credible source.\n' +
-      'Be clear and reasonably concise, but include key details when available (e.g., score + minute + scorers/times for live matches).\n' +
-      'Avoid explicit hate, threats, or sexual content. Be respectful.',
-  });
+  }, { apiVersion: 'v1' });
+  model.systemInstruction = {
+    role: 'system',
+    parts: [{
+      text: 'You are a helpful Persian-speaking assistant inside a Discord bot.\n' +
+            'Always answer in Persian unless the user explicitly asks for another language.\n' +
+            'For time-sensitive questions (live sports scores, prices, news, weather), do not guess. If web search results are provided, use them as the primary source of truth. If the provided results are insufficient, say so.\n' +
+            'When using web information, include a final section named "منابع:" with 2 to 5 source URLs.\n' +
+            'If sources conflict, mention the conflict briefly and prefer the most recent/credible source.\n' +
+            'Be clear and reasonably concise, but include key details when available (e.g., score + minute + scorers/times for live matches).\n' +
+            'Avoid explicit hate, threats, or sexual content. Be respectful.'
+    }]
+  };
 
   const historyKey = getChatHistoryKey(userId, channelId);
   const history = chatHistories.get(historyKey) || [];
@@ -1159,15 +1163,19 @@ async function translatePromptToEnglishForImage(originalPrompt: string): Promise
   const genAI = new GoogleGenerativeAI(geminiApiKey);
   const model = genAI.getGenerativeModel({
     model: geminiModel,
-    systemInstruction:
-      'You are a professional prompt engineer for text-to-image models. ' +
-      'The user will send a prompt in Persian (Farsi) or mixed Persian/English. ' +
-      'Translate it into a single, fluent, detailed English prompt optimized for image generation. ' +
-      'Preserve all visual details, styles, composition, camera information, lighting, and mood from the original. ' +
-      'If the input is already in English, keep it and only make very small clarity improvements. ' +
-      'Do not add new concepts that are not implied by the original. ' +
-      'Return only the final English prompt, without quotation marks or any extra explanation.',
-  });
+  }, { apiVersion: 'v1' });
+  model.systemInstruction = {
+    role: 'system',
+    parts: [{
+      text: 'You are a professional prompt engineer for text-to-image models. ' +
+            'The user will send a prompt in Persian (Farsi) or mixed Persian/English. ' +
+            'Translate it into a single, fluent, detailed English prompt optimized for image generation. ' +
+            'Preserve all visual details, styles, composition, camera information, lighting, and mood from the original. ' +
+            'If the input is already in English, keep it and only make very small clarity improvements. ' +
+            'Do not add new concepts that are not implied by the original. ' +
+            'Return only the final English prompt, without quotation marks or any extra explanation.'
+    }]
+  };
 
   try {
     const result = await model.generateContent(originalPrompt);
