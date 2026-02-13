@@ -3,6 +3,7 @@ import { Client, GatewayIntentBits, Interaction, Message, EmbedBuilder, VoiceSta
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { PgFriendStore } from './storage/pgFriendStore';
 import { handleTimerInteraction, TimerManager, parseDuration, makeTimerSetEmbed } from './modules/timerManager';
 
@@ -27,9 +28,8 @@ try {
 
 const token = process.env.BOT_TOKEN || '';
 const ownerId = process.env.OWNER_ID || '';
-const openAiApiKey = process.env.OPENAI_API_KEY || '';
-const openAiModel = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const openAiVisionModel = process.env.OPENAI_VISION_MODEL || openAiModel;
+const geminiApiKey = process.env.GEMINI_API_KEY || '';
+const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 const aiWebSearchMode = (process.env.AI_WEB_SEARCH_MODE || 'auto').toLowerCase();
 const tavilyApiKey = process.env.TAVILY_API_KEY || '';
 const braveApiKey = process.env.BRAVE_API_KEY || '';
@@ -1043,9 +1043,22 @@ async function generateAiReply(
   replyText?: string,
   replyImageUrl?: string | null
 ): Promise<string> {
-  if (!openAiApiKey) {
-    throw new Error('OPENAI_API_KEY is not set');
+  if (!geminiApiKey) {
+    throw new Error('GEMINI_API_KEY is not set');
   }
+
+  const genAI = new GoogleGenerativeAI(geminiApiKey);
+  const model = genAI.getGenerativeModel({
+    model: geminiModel,
+    systemInstruction:
+      'You are a helpful Persian-speaking assistant inside a Discord bot.\n' +
+      'Always answer in Persian unless the user explicitly asks for another language.\n' +
+      'For time-sensitive questions (live sports scores, prices, news, weather), do not guess. If web search results are provided, use them as the primary source of truth. If the provided results are insufficient, say so.\n' +
+      'When using web information, include a final section named "منابع:" with 2 to 5 source URLs.\n' +
+      'If sources conflict, mention the conflict briefly and prefer the most recent/credible source.\n' +
+      'Be clear and reasonably concise, but include key details when available (e.g., score + minute + scorers/times for live matches).\n' +
+      'Avoid explicit hate, threats, or sexual content. Be respectful.',
+  });
 
   const historyKey = getChatHistoryKey(userId, channelId);
   const history = chatHistories.get(historyKey) || [];
@@ -1055,136 +1068,115 @@ async function generateAiReply(
     baseText = `پیام ارجاع‌شده:\n"${replyText}"\n\nدرخواست من: ${prompt}`;
   }
 
-  let userContent: any = baseText;
-  if (replyImageUrl) {
-    userContent = [
-      { type: 'text', text: baseText },
-      { type: 'image_url', image_url: { url: replyImageUrl } },
-    ];
+  const webSummary = shouldUseWebSearch(baseText) ? await webSearchSummary(baseText).catch(() => null) : null;
+  
+  const contents: any[] = [];
+
+  // Add history
+  for (const h of history) {
+    contents.push({
+      role: h.role === 'user' ? 'user' : 'model',
+      parts: [{ text: h.content }],
+    });
   }
 
-  const webSummary = shouldUseWebSearch(baseText) ? await webSearchSummary(baseText).catch(() => null) : null;
-  const model = replyImageUrl ? openAiVisionModel : openAiModel;
+  // Add web search context if available
+  if (webSummary) {
+    contents.push({
+      role: 'user',
+      parts: [{
+        text: 'نتایج جستجوی وب برای پرسش فعلی (برای پاسخ دقیق و استناد):\n' +
+          webSummary +
+          '\n\nقوانین: درباره اطلاعات زمان-حساس فقط بر اساس این نتایج جواب بده و حدس نزن. اگر کافی نیست بگو اطلاعات کافی پیدا نشد. در انتهای پاسخ حتماً بخش «منابع:» را با چند لینک معتبر بنویس. اگر منابع متناقض‌اند، تناقض را توضیح بده و منبع تازه‌تر/معتبرتر را ترجیح بده.'
+      }],
+    });
+    contents.push({
+      role: 'model',
+      parts: [{ text: 'متوجه شدم. از اطلاعات وب برای پاسخ دقیق‌تر استفاده می‌کنم.' }],
+    });
+  }
 
-  const body = {
-    model,
-    messages: [
-      {
-        role: 'system',
-        content:
-          'You are a helpful Persian-speaking assistant inside a Discord bot.\n' +
-          'Always answer in Persian unless the user explicitly asks for another language.\n' +
-          'For time-sensitive questions (live sports scores, prices, news, weather), do not guess. If web search results are provided, use them as the primary source of truth. If the provided results are insufficient, say so.\n' +
-          'When using web information, include a final section named "منابع:" with 2 to 5 source URLs.\n' +
-          'If sources conflict, mention the conflict briefly and prefer the most recent/credible source.\n' +
-          'Be clear and reasonably concise, but include key details when available (e.g., score + minute + scorers/times for live matches).\n' +
-          'Avoid explicit hate, threats, or sexual content. Be respectful.',
-      },
-      ...history,
-      ...(webSummary
-        ? [
-            {
-              role: 'system' as const,
-              content:
-                'نتایج جستجوی وب برای پرسش فعلی (برای پاسخ دقیق و استناد):\n' +
-                webSummary +
-                '\n\nقوانین: درباره اطلاعات زمان-حساس فقط بر اساس این نتایج جواب بده و حدس نزن. اگر کافی نیست بگو اطلاعات کافی پیدا نشد. در انتهای پاسخ حتماً بخش «منابع:» را با چند لینک معتبر بنویس. اگر منابع متناقض‌اند، تناقض را توضیح بده و منبع تازه‌تر/معتبرتر را ترجیح بده.',
-            },
-          ]
-        : []),
-      {
-        role: 'user',
-        content: userContent,
-      },
-    ],
-    max_tokens: 400,
-  };
+  // Current prompt + Image
+  const currentParts: any[] = [{ text: baseText }];
+  
+  if (replyImageUrl) {
+    try {
+      const response = await fetch(replyImageUrl);
+      const buffer = await response.arrayBuffer();
+      const base64Image = Buffer.from(buffer).toString('base64');
+      const mimeType = response.headers.get('content-type') || 'image/jpeg';
+      
+      currentParts.push({
+        inlineData: {
+          data: base64Image,
+          mimeType: mimeType
+        }
+      });
+    } catch (err) {
+      console.error('[GEMINI IMAGE FETCH ERROR]', err);
+    }
+  }
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${openAiApiKey}`,
-    },
-    body: JSON.stringify(body),
+  contents.push({
+    role: 'user',
+    parts: currentParts,
   });
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`OpenAI API error: ${res.status}${errText ? ` - ${errText}` : ''}`);
+  try {
+    const result = await model.generateContent({ contents });
+    const response = await result.response;
+    const text = response.text();
+    
+    if (!text) {
+      throw new Error('Empty response from Gemini');
+    }
+
+    const trimmed = text.trim();
+
+    // Update history
+    const updatedHistory: ChatHistoryMessage[] = [
+      ...history,
+      { role: 'user', content: baseText },
+      { role: 'assistant', content: trimmed },
+    ];
+    if (updatedHistory.length > 10) {
+      updatedHistory.splice(0, updatedHistory.length - 10);
+    }
+    chatHistories.set(historyKey, updatedHistory);
+
+    return trimmed;
+  } catch (err: any) {
+    console.error('[GEMINI API ERROR]', err);
+    throw err;
   }
-
-  const data: any = await res.json();
-  const text: string = data?.choices?.[0]?.message?.content || '';
-  if (!text) {
-    throw new Error('Empty response from AI');
-  }
-  const trimmed = text.trim();
-
-  const updatedHistory: ChatHistoryMessage[] = [
-    ...history,
-    { role: 'user', content: baseText },
-    { role: 'assistant', content: trimmed },
-  ];
-  const maxHistoryMessages = 10;
-  const finalHistory =
-    updatedHistory.length > maxHistoryMessages
-      ? updatedHistory.slice(updatedHistory.length - maxHistoryMessages)
-      : updatedHistory;
-  chatHistories.set(historyKey, finalHistory);
-
-  return trimmed;
 }
 
 async function translatePromptToEnglishForImage(originalPrompt: string): Promise<string> {
-  if (!openAiApiKey) {
-    throw new Error('OPENAI_API_KEY is not set');
+  if (!geminiApiKey) {
+    throw new Error('GEMINI_API_KEY is not set');
   }
 
-  const body = {
-    model: openAiModel,
-    messages: [
-      {
-        role: 'system' as const,
-        content:
-          'You are a professional prompt engineer for text-to-image models. ' +
-          'The user will send a prompt in Persian (Farsi) or mixed Persian/English. ' +
-          'Translate it into a single, fluent, detailed English prompt optimized for image generation. ' +
-          'Preserve all visual details, styles, composition, camera information, lighting, and mood from the original. ' +
-          'If the input is already in English, keep it and only make very small clarity improvements. ' +
-          'Do not add new concepts that are not implied by the original. ' +
-          'Return only the final English prompt, without quotation marks or any extra explanation.',
-      },
-      {
-        role: 'user' as const,
-        content: originalPrompt,
-      },
-    ],
-    max_tokens: 300,
-    temperature: 0.2,
-  };
-
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${openAiApiKey}`,
-    },
-    body: JSON.stringify(body),
+  const genAI = new GoogleGenerativeAI(geminiApiKey);
+  const model = genAI.getGenerativeModel({
+    model: geminiModel,
+    systemInstruction:
+      'You are a professional prompt engineer for text-to-image models. ' +
+      'The user will send a prompt in Persian (Farsi) or mixed Persian/English. ' +
+      'Translate it into a single, fluent, detailed English prompt optimized for image generation. ' +
+      'Preserve all visual details, styles, composition, camera information, lighting, and mood from the original. ' +
+      'If the input is already in English, keep it and only make very small clarity improvements. ' +
+      'Do not add new concepts that are not implied by the original. ' +
+      'Return only the final English prompt, without quotation marks or any extra explanation.',
   });
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`OpenAI translate API error: ${res.status}${errText ? ` - ${errText}` : ''}`);
+  try {
+    const result = await model.generateContent(originalPrompt);
+    const response = await result.response;
+    return response.text().trim() || originalPrompt;
+  } catch (err) {
+    console.error('[GEMINI TRANSLATE ERROR]', err);
+    return originalPrompt;
   }
-
-  const data: any = await res.json();
-  const text: string = data?.choices?.[0]?.message?.content || '';
-  const trimmed = (text || '').trim();
-  if (!trimmed) {
-    throw new Error('Empty response from OpenAI translate');
-  }
-  return trimmed;
 }
 
 async function generateImageWithStability(prompt: string): Promise<Buffer> {
@@ -5816,7 +5808,19 @@ client.on('messageCreate', async (msg: Message) => {
       await msg.reply({ content: reply });
     } catch (err) {
       console.error('[AI CHAT ERROR]', err);
-      await msg.reply({ content: 'خطا در تماس با هوش مصنوعی. لطفاً بعداً دوباره تلاش کن.' });
+
+      const errText = String((err as any)?.message || err || '');
+      if (errText.includes('GEMINI_API_KEY is not set')) {
+        await msg.reply({
+          content: '❌ توکن Gemini تنظیم نشده است. لطفاً `GEMINI_API_KEY` را در تنظیمات ست کن.',
+        });
+      } else if (errText.includes('429') || errText.includes('quota')) {
+        await msg.reply({
+          content: '❌ سهمیه (Quota) اکانت Gemini تمام شده یا ریت‌لیمیت شده‌ای. لطفاً بعداً تلاش کن یا کلید را عوض کن.',
+        });
+      } else {
+        await msg.reply({ content: 'خطا در تماس با هوش مصنوعی (Gemini). لطفاً بعداً دوباره تلاش کن.' });
+      }
     }
     return;
   }
