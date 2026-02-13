@@ -14,7 +14,7 @@
     "register:commands": "ts-node-dev --transpile-only src/register-commands.ts"
   },
   "dependencies": {
-    "@google/genai": "^1.33.0",
+    "@google/generative-ai": "^0.24.1",
     "@napi-rs/canvas": "^0.1.81",
     "@types/better-sqlite3": "^7.6.13",
     "@types/pg": "^8.15.5",
