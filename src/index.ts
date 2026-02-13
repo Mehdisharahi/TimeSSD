@@ -1050,7 +1050,7 @@ async function generateAiReply(
   const genAI = new GoogleGenerativeAI(geminiApiKey);
   const model = genAI.getGenerativeModel({
     model: geminiModel,
-  });
+  }, { apiVersion: 'v1' });
   
   const historyKey = getChatHistoryKey(userId, channelId);
   const history = chatHistories.get(historyKey) || [];
@@ -1168,7 +1168,7 @@ async function translatePromptToEnglishForImage(originalPrompt: string): Promise
   const genAI = new GoogleGenerativeAI(geminiApiKey);
   const model = genAI.getGenerativeModel({
     model: geminiModel,
-  });
+  }, { apiVersion: 'v1' });
 
   try {
     const contents = [
