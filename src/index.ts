@@ -29,7 +29,7 @@ try {
 const token = process.env.BOT_TOKEN || '';
 const ownerId = process.env.OWNER_ID || '';
 const geminiApiKey = process.env.GEMINI_API_KEY || '';
-const geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-flash-latest';
+const geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 const aiWebSearchMode = (process.env.AI_WEB_SEARCH_MODE || 'auto').toLowerCase();
 const tavilyApiKey = process.env.TAVILY_API_KEY || '';
 const braveApiKey = process.env.BRAVE_API_KEY || '';
@@ -1048,8 +1048,10 @@ async function generateAiReply(
   }
 
   const genAI = new GoogleGenerativeAI(geminiApiKey);
+  // Use the models/ prefix which is sometimes required by the v1beta endpoint
+  const modelId = geminiModel.startsWith('models/') ? geminiModel : `models/${geminiModel}`;
   const model = genAI.getGenerativeModel({
-    model: geminiModel,
+    model: modelId,
     systemInstruction:
       'You are a helpful Persian-speaking assistant inside a Discord bot.\n' +
       'Always answer in Persian unless the user explicitly asks for another language.\n' +
@@ -1157,8 +1159,9 @@ async function translatePromptToEnglishForImage(originalPrompt: string): Promise
   }
 
   const genAI = new GoogleGenerativeAI(geminiApiKey);
+  const modelId = geminiModel.startsWith('models/') ? geminiModel : `models/${geminiModel}`;
   const model = genAI.getGenerativeModel({
-    model: geminiModel,
+    model: modelId,
     systemInstruction:
       'You are a professional prompt engineer for text-to-image models. ' +
       'The user will send a prompt in Persian (Farsi) or mixed Persian/English. ' +
