@@ -1048,9 +1048,13 @@ async function generateAiReply(
   }
 
   const genAI = new GoogleGenerativeAI(geminiApiKey);
-  const model = genAI.getGenerativeModel({
-    model: geminiModel,
-  }, { apiVersion: 'v1' });
+  const modelCandidates = Array.from(new Set([
+    geminiModel,
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+    'gemini-1.0-pro',
+    'gemini-pro'
+  ]));
   
   const historyKey = getChatHistoryKey(userId, channelId);
   const history = chatHistories.get(historyKey) || [];
@@ -1132,28 +1136,44 @@ async function generateAiReply(
   });
 
   try {
-    const result = await model.generateContent({ contents });
-    const response = await result.response;
-    const text = response.text();
+    let lastErr: any;
+    for (const modelName of modelCandidates) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName }, { apiVersion: 'v1' });
+        const result = await model.generateContent({ contents });
+        const response = await result.response;
+        const text = response.text();
+        
+        if (!text) {
+          throw new Error('Empty response from Gemini');
+        }
+
+        const trimmed = text.trim();
+
+        // Update history
+        const updatedHistory: ChatHistoryMessage[] = [
+          ...history,
+          { role: 'user', content: baseText },
+          { role: 'assistant', content: trimmed },
+        ];
+        if (updatedHistory.length > 10) {
+          updatedHistory.splice(0, updatedHistory.length - 10);
+        }
+        chatHistories.set(historyKey, updatedHistory);
+
+        return trimmed;
+      } catch (err: any) {
+        lastErr = err;
+        const status = err?.status ?? err?.response?.status;
+        if (status === 404) {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw lastErr || new Error('No available Gemini models');
     
-    if (!text) {
-      throw new Error('Empty response from Gemini');
-    }
-
-    const trimmed = text.trim();
-
-    // Update history
-    const updatedHistory: ChatHistoryMessage[] = [
-      ...history,
-      { role: 'user', content: baseText },
-      { role: 'assistant', content: trimmed },
-    ];
-    if (updatedHistory.length > 10) {
-      updatedHistory.splice(0, updatedHistory.length - 10);
-    }
-    chatHistories.set(historyKey, updatedHistory);
-
-    return trimmed;
   } catch (err: any) {
     console.error('[GEMINI API ERROR]', err);
     throw err;
@@ -1166,9 +1186,13 @@ async function translatePromptToEnglishForImage(originalPrompt: string): Promise
   }
 
   const genAI = new GoogleGenerativeAI(geminiApiKey);
-  const model = genAI.getGenerativeModel({
-    model: geminiModel,
-  }, { apiVersion: 'v1' });
+  const modelCandidates = Array.from(new Set([
+    geminiModel,
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+    'gemini-1.0-pro',
+    'gemini-pro'
+  ]));
 
   try {
     const contents = [
@@ -1193,9 +1217,25 @@ async function translatePromptToEnglishForImage(originalPrompt: string): Promise
         parts: [{ text: originalPrompt }]
       }
     ];
-    const result = await model.generateContent({ contents });
-    const response = await result.response;
-    return response.text().trim() || originalPrompt;
+
+    let lastErr: any;
+    for (const modelName of modelCandidates) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName }, { apiVersion: 'v1' });
+        const result = await model.generateContent({ contents });
+        const response = await result.response;
+        return response.text().trim() || originalPrompt;
+      } catch (err: any) {
+        lastErr = err;
+        const status = err?.status ?? err?.response?.status;
+        if (status === 404) {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw lastErr || new Error('No available Gemini models');
   } catch (err) {
     console.error('[GEMINI TRANSLATE ERROR]', err);
     return originalPrompt;
