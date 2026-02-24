@@ -5503,7 +5503,7 @@ client.on('messageCreate', async (msg: Message) => {
 
     const durationStr = formatDuration(totalMs);
     const embedVoice = new EmbedBuilder()
-      .setDescription(`## ✵ VOICE STATS:\n### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●\n### ➡ <@${targetId}>\n### ⌛ Total Voice: ${durationStr}\n### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●`)
+      .setDescription(`## ✵ VOICE STATS:\n### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●\n### ➡ <@${targetId}>\n### ⌛ Total Voice: ${durationStr}\n### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●`)
       .setColor(0x2f3136);
     await msg.reply({ embeds: [embedVoice] });
     return;
@@ -5523,7 +5523,7 @@ client.on('messageCreate', async (msg: Message) => {
     const lines: string[] = [];
     const serverName = msg.guild.name.toUpperCase();
     lines.push(`## ✵ ${serverName} TOP VOICE:`);
-    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
     
     for (let i = 0; i < topData.length; i++) {
       const entry = topData[i];
@@ -5539,7 +5539,7 @@ client.on('messageCreate', async (msg: Message) => {
       const rank = String(i + 1).padStart(2, '0');
       lines.push(`### ➡ ${rank} - <@${entry.user_id}> ⌛ ${formatDuration(totalMs)}`);
     }
-    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬●');
     
     const embedTopVoice = new EmbedBuilder()
       .setDescription(lines.join('\n'))
