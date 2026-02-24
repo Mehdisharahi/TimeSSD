@@ -17,6 +17,48 @@ export class PgFriendStore {
         PRIMARY KEY (guild_id, user_id, partner_id)
       );
     `);
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS voice_activity (
+        guild_id   TEXT NOT NULL,
+        user_id    TEXT NOT NULL,
+        total_ms   BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (guild_id, user_id)
+      );
+    `);
+  }
+
+  async addVoiceDuration(guildId: string, userId: string, deltaMs: number) {
+    const d = Math.max(0, Math.floor(deltaMs));
+    if (d <= 0) return;
+    await this.pool.query(
+      `INSERT INTO voice_activity (guild_id, user_id, total_ms)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (guild_id, user_id)
+       DO UPDATE SET total_ms = voice_activity.total_ms + EXCLUDED.total_ms`,
+      [guildId, userId, d]
+    );
+  }
+
+  async getVoiceDuration(guildId: string, userId: string): Promise<number> {
+    const res = await this.pool.query(
+      `SELECT total_ms FROM voice_activity WHERE guild_id = $1 AND user_id = $2`,
+      [guildId, userId]
+    );
+    return res.rows.length > 0 ? Number(res.rows[0].total_ms) : 0;
+  }
+
+  async getTopVoice(guildId: string, limit: number = 20): Promise<{ user_id: string, total_ms: number }[]> {
+    const res = await this.pool.query(
+      `SELECT user_id, total_ms FROM voice_activity 
+       WHERE guild_id = $1 
+       ORDER BY total_ms DESC 
+       LIMIT $2`,
+      [guildId, limit]
+    );
+    return res.rows.map(row => ({
+      user_id: String(row.user_id),
+      total_ms: Number(row.total_ms)
+    }));
   }
 
   async addDuration(guildId: string, a: string, b: string, deltaMs: number) {
