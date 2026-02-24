@@ -3406,6 +3406,8 @@ export const timerManager = new TimerManager(client);
  const channelMembers: Map<string, Map<string, Set<string>>> = new Map();
 // pairStarts[guildId][pairKey] -> startEpochMs (active session per channel)
 const pairStarts: Map<string, Map<string, number>> = new Map();
+// userVoiceStarts[guildId][userId] -> startEpochMs (active single-user session)
+const userVoiceStarts: Map<string, Map<string, number>> = new Map();
 // partnerTotals[guildId][userId][partnerId] -> totalMs
 const partnerTotals: Map<string, Map<string, Map<string, number>>> = new Map();
 
@@ -3551,6 +3553,9 @@ type Store = {
   init: () => Promise<void>;
   addDuration: (guildId: string, a: string, b: string, deltaMs: number) => Promise<void> | void;
   loadGuild: (guildId: string) => Promise<Map<string, Map<string, number>>>;
+  addVoiceDuration: (guildId: string, userId: string, deltaMs: number) => Promise<void> | void;
+  getVoiceDuration: (guildId: string, userId: string) => Promise<number> | number;
+  getTopVoice: (guildId: string, limit?: number) => Promise<{ user_id: string, total_ms: number }[]> | { user_id: string, total_ms: number }[];
 };
 
 let store: Store;
@@ -3561,6 +3566,9 @@ if (pgUrl) {
     init: () => pg.init(),
     addDuration: (g, a, b, ms) => pg.addDuration(g, a, b, ms),
     loadGuild: (g) => pg.loadGuild(g),
+    addVoiceDuration: (g, u, ms) => pg.addVoiceDuration(g, u, ms),
+    getVoiceDuration: (g, u) => pg.getVoiceDuration(g, u),
+    getTopVoice: (g, l) => pg.getTopVoice(g, l),
   };
 } else {
   const dbPath = process.env.FRIENDS_DB_PATH || path.join(process.cwd(), 'data', 'friends.db');
@@ -3574,6 +3582,9 @@ if (pgUrl) {
     init: async () => { sqlite.init(); },
     addDuration: async (g, a, b, ms) => { sqlite.addDuration(g, a, b, ms); },
     loadGuild: async (g) => sqlite.loadGuild(g),
+    addVoiceDuration: (g, u, ms) => sqlite.addVoiceDuration(g, u, ms),
+    getVoiceDuration: (g, u) => sqlite.getVoiceDuration(g, u),
+    getTopVoice: (g, l) => sqlite.getTopVoice(g, l),
   };
 }
 
@@ -3616,6 +3627,19 @@ async function addDuration(guildId: string, a: string, b: string, deltaMs: numbe
       await store.addDuration(guildId, a, b, roundedDelta);
     } catch {}
   }
+}
+
+// Helper to format duration in ms to readable string
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 // Compute live totals for a user: persisted totals + ongoing sessions until now
@@ -3901,9 +3925,21 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
     
     const chMap = getMap<string, Map<string, Set<string>>>(channelMembers, guildId, () => new Map<string, Set<string>>());
     const pMap = getMap<string, Map<string, number>>(pairStarts, guildId, () => new Map<string, number>());
+    const uvMap = getMap<string, Map<string, number>>(userVoiceStarts, guildId, () => new Map<string, number>());
     
     // خروج از کانال قدیم: نهایی کردن جلسات با اعضای باقیمانده در آنجا
     if (oldCid) {
+      // ثبت زمان کل ویس کاربر
+      const startU = uvMap.get(userId);
+      if (startU) {
+        const duration = now - startU;
+        if (duration > 0) {
+          const res = store.addVoiceDuration(guildId, userId, duration);
+          if (res instanceof Promise) res.catch((e: any) => console.error('[VOICE TOTAL ERR]', e));
+        }
+        uvMap.delete(userId);
+      }
+
       const set = chMap.get(oldCid);
       if (set && set.has(userId)) {
         // حذف کاربر از کانال قدیم
@@ -3959,6 +3995,11 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
       
       // افزودن کاربر به مجموعه کاربران کانال
       set.add(userId);
+
+      // شروع جلسه ویس انفرادی
+      if (!uvMap.has(userId)) {
+        uvMap.set(userId, now);
+      }
       
       // ثبت فعالیت صوتی برای دستور .idlist
       const voiceLog = getMap(voiceActivityLog, guildId, () => new Map());
@@ -5323,6 +5364,11 @@ client.on('messageCreate', async (msg: Message) => {
       '.friend @user ⟹ دوستان برتر شخص منشن شده',
       '.topfriend / .topfriends / .top / .تاپ ⟹ زوج های برتر سرور',
       '',
+      '🎙️ دستورات فعالیت صوتی (Voice)',
+      '.voice / .ویس ⟹ مشاهده کل زمان حضور در ویس',
+      '.voice @user ⟹ زمان حضور شخص منشن شده در ویس',
+      '.topvoice / .تاپ‌ویس ⟹ لیست ۲۰ نفر برتر از نظر زمان ویس',
+      '',
       '👤 پروفایل کاربر',
       '.av @user ⟹ نمایش آواتار با لینک',
       '.ba @user ⟹ نمایش بنر کاربر',
@@ -5433,6 +5479,75 @@ client.on('messageCreate', async (msg: Message) => {
     return;
   }
 
+  // .voice [@user] - Total voice duration
+  if (isCmd('voice') || isCmd('ویس')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const gId = msg.guildId!;
+    const cmdName = content.startsWith('.ویس') ? '.ویس' : '.voice';
+    const targetIds = await resolveTargetIds(msg, content, cmdName);
+    const targetId = targetIds[0] || msg.author.id;
+    
+    let totalMs = await store.getVoiceDuration(gId, targetId);
+    
+    // Add ongoing session if user is currently in voice
+    const uvMap = userVoiceStarts.get(gId);
+    const currentStart = uvMap?.get(targetId);
+    if (currentStart) {
+      totalMs += (Date.now() - currentStart);
+    }
+
+    if (totalMs <= 0) {
+      await msg.reply('این کاربر زمان حضور در ویس ندارد.');
+      return;
+    }
+
+    const durationStr = formatDuration(totalMs);
+    const embedVoice = new EmbedBuilder()
+      .setDescription(`## ✵ VOICE STATS:\n### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●\n### ➡ <@${targetId}>\n### ⌛ Total Voice: ${durationStr}\n### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●`)
+      .setColor(0x2f3136);
+    await msg.reply({ embeds: [embedVoice] });
+    return;
+  }
+
+  // .topvoice - Leaderboard for voice time
+  if (isCmd('topvoice') || isCmd('تاپ‌ویس')) {
+    if (!msg.guild) { await msg.reply('فقط داخل سرور.'); return; }
+    const gId = msg.guildId!;
+    const topData = await store.getTopVoice(gId, 20);
+    
+    if (topData.length === 0) {
+      await msg.reply('هنوز اطلاعاتی برای این سرور ثبت نشده است.');
+      return;
+    }
+
+    const lines: string[] = [];
+    const serverName = msg.guild.name.toUpperCase();
+    lines.push(`## ✵ ${serverName} TOP VOICE:`);
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    
+    for (let i = 0; i < topData.length; i++) {
+      const entry = topData[i];
+      let totalMs = entry.total_ms;
+      
+      // Add ongoing session if active
+      const uvMap = userVoiceStarts.get(gId);
+      const currentStart = uvMap?.get(entry.user_id);
+      if (currentStart) {
+        totalMs += (Date.now() - currentStart);
+      }
+      
+      const rank = String(i + 1).padStart(2, '0');
+      lines.push(`### ➡ ${rank} - <@${entry.user_id}> ⌛ ${formatDuration(totalMs)}`);
+    }
+    lines.push('### ●▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬●');
+    
+    const embedTopVoice = new EmbedBuilder()
+      .setDescription(lines.join('\n'))
+      .setColor(0x2f3136);
+    await msg.reply({ embeds: [embedTopVoice] });
+    return;
+  }
+
   // .friend [@user|userId] or .friends
   if (isCmd('friend') || isCmd('friends') || isCmd('دوست')) {
     const cmdLen = content.startsWith('.friends') ? 8 : content.startsWith('.دوست') ? 5 : 7;
@@ -5503,20 +5618,8 @@ client.on('messageCreate', async (msg: Message) => {
           buildRank(id2, id1),
         ]);
 
-        const fmt = (ms: number) => {
-          const totalSeconds = Math.floor(ms / 1000);
-          const days = Math.floor(totalSeconds / 86400);
-          const hours = Math.floor((totalSeconds % 86400) / 3600);
-          const minutes = Math.floor((totalSeconds % 3600) / 60);
-          const seconds = totalSeconds % 60;
-          if (days > 0) return `${days}d ${hours}h`;
-          if (hours > 0) return `${hours}h ${minutes}m`;
-          if (minutes > 0) return `${minutes}m ${seconds}s`;
-          return `${seconds}s`;
-        };
-
         const lines: string[] = [];
-        lines.push(`**⏱️ زمان هم‌حضوری روی ویس:** ${fmt(totalMs)}`);
+        lines.push(`**⏱️ زمان هم‌حضوری روی ویس:** ${formatDuration(totalMs)}`);
         lines.push('');
         lines.push(`**${user1} friend:**`);
         lines.push(rank1 ? `${rank1}. <@${id2}>` : 'دیتای کافی برای رتبه‌بندی این دوست وجود ندارد.');
